@@ -23,12 +23,7 @@ type Client struct {
 	client *tgclient.Client
 }
 
-func NewClient(cfg config.Config) (*Client, error) {
-	log, err := createZapLogger(cfg.Sub("telegram.logger"))
-	if err != nil {
-		return nil, err
-	}
-
+func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	storage := &session.FileStorage{
 		Path: cfg.GetString("telegram.session.path"),
 	}
@@ -85,18 +80,4 @@ func (c *Client) Run(ctx context.Context, f func(context.Context, *tg.Client) er
 	if err != nil {
 		c.logger.Error("client run", zap.Error(err))
 	}
-}
-
-func createZapLogger(cfg config.Config) (*zap.Logger, error) {
-	zapConfig := zap.NewDevelopmentConfig()
-	if err := cfg.Unmarshal(&zapConfig); err != nil {
-		return nil, err
-	}
-
-	zap, err := zapConfig.Build()
-	if err != nil {
-		return nil, err
-	}
-
-	return zap, nil
 }

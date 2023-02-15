@@ -9,15 +9,19 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/config/viper"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 // Root is the root command for the application.
 type Root struct {
-	cfgPath string
-	version string
+	cfgPath   string
+	version   string
+	verbosity string
 
 	cfg    config.Config
 	client *telegram.Client
+	log    *zap.Logger
+	level  zap.AtomicLevel
 }
 
 // NewRoot creates a new root command.
@@ -25,9 +29,11 @@ func NewRoot(version string) (*Root, error) {
 	root := &Root{
 		version: version,
 		cfg:     viper.NewConfig(),
+		level:   zap.NewAtomicLevelAt(zap.ErrorLevel),
 	}
 
 	cobra.OnInitialize(
+		root.initLogger,
 		root.loadConfig,
 		root.initClient,
 	)
@@ -54,6 +60,24 @@ func (r *Root) Execute(ctx context.Context) error {
 		"config file (default \"$HOME/.tgdownloader\")",
 	)
 
+	rootCmd.PersistentFlags().StringVarP(
+		&r.verbosity,
+		"verbosity",
+		"v",
+		"info",
+		"verbosity level (debug, info, warn, error, fatal, panic)",
+	)
+
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		level, err := zap.ParseAtomicLevel(r.verbosity)
+		if err != nil {
+			return err
+		}
+
+		r.level.SetLevel(level.Level())
+		return nil
+	}
+
 	versionCmd := &cobra.Command{
 		Use:   "version",
 		Short: "print version info",
@@ -78,11 +102,29 @@ func (r *Root) loadConfig() {
 }
 
 func (r *Root) initClient() {
-	client, err := telegram.NewClient(r.cfg)
+	client, err := telegram.NewClient(r.cfg, r.log)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	r.client = client
+}
+
+func (r *Root) initLogger() {
+	zapConfig := zap.NewDevelopmentConfig()
+	if err := r.cfg.Unmarshal(&zapConfig); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	zapConfig.Level = r.level
+
+	log, err := zapConfig.Build()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	r.log = log
 }

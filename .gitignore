@@ -33,6 +33,5 @@ out/
 *.yaml
 *.json
 
-# Certificates
-cert
-certs
+# Downloaded files
+downloads/

@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"os"
 
 	"github.com/gotd/td/tg"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func newChannelsCmd(ctx context.Context, r *Root) *cobra.Command {
@@ -19,7 +19,8 @@ func newChannelsCmd(ctx context.Context, r *Root) *cobra.Command {
 			r.client.Run(ctx, func(ctx context.Context, api *tg.Client) error {
 				groupsClass, err := api.MessagesGetAllChats(ctx, []int64{})
 				if err != nil {
-					return fmt.Errorf("get all chats: %w", err)
+					r.log.Error("get all chats", zap.Error(err))
+					return err
 				}
 
 				t := table.NewWriter()

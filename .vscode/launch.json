@@ -27,6 +27,24 @@
                 "--config",
                 "${workspaceFolder}/tgdownloader.yaml"
             ]
+        },
+        {
+            "name": "Download",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/main.go",
+            "args": [
+                "download",
+                "--config",
+                "${workspaceFolder}/tgdownloader.yaml",
+                "--id",
+                "1745633015",
+                "--output",
+                "${workspaceFolder}/downloads",
+                "--limit",
+                "25"
+            ]
         }
     ]
 }
