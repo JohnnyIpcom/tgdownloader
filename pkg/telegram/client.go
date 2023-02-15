@@ -21,6 +21,7 @@ import (
 type Client interface {
 	ChatClient
 	FileClient
+	UserClient
 
 	Run(ctx context.Context, f func(context.Context, Client) error) error
 }

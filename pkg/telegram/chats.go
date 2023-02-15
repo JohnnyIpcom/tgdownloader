@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
@@ -91,5 +92,5 @@ func (c *client) FindChat(ctx context.Context, ID int64) (Chat, error) {
 		}
 	}
 
-	return Chat{}, nil
+	return Chat{}, fmt.Errorf("chat %d not found", ID)
 }
