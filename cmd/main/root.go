@@ -19,7 +19,7 @@ type Root struct {
 	verbosity string
 
 	cfg    config.Config
-	client *telegram.Client
+	client telegram.Client
 	log    *zap.Logger
 	level  zap.AtomicLevel
 }

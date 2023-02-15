@@ -11,24 +11,35 @@ import (
 	"github.com/gotd/td/session"
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/tg"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
 
-type Client struct {
-	config config.Config
-	logger *zap.Logger
-	client *tgclient.Client
+type Client interface {
+	ChatClient
+	FileClient
+
+	Run(ctx context.Context, f func(context.Context, Client) error) error
 }
 
-func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
+type client struct {
+	config     config.Config
+	logger     *zap.Logger
+	client     *tgclient.Client
+	downloader *downloader.Downloader
+}
+
+var _ Client = (*client)(nil)
+
+func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 	storage := &session.FileStorage{
 		Path: cfg.GetString("telegram.session.path"),
 	}
 
-	client := tgclient.NewClient(cfg.GetInt("telegram.app.id"), cfg.GetString("telegram.app.hash"), tgclient.Options{
+	c := tgclient.NewClient(cfg.GetInt("telegram.app.id"), cfg.GetString("telegram.app.hash"), tgclient.Options{
 		Logger:         log,
 		SessionStorage: storage,
 		Middlewares: []tgclient.Middleware{
@@ -39,10 +50,11 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		},
 	})
 
-	return &Client{
-		config: cfg,
-		logger: log,
-		client: client,
+	return &client{
+		config:     cfg,
+		logger:     log,
+		client:     c,
+		downloader: downloader.NewDownloader(),
 	}, nil
 }
 
@@ -58,8 +70,8 @@ func (c *codeAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode)
 	return strings.TrimSpace(code), nil
 }
 
-func (c *Client) Run(ctx context.Context, f func(context.Context, *tg.Client) error) {
-	err := c.client.Run(ctx, func(ctx context.Context) error {
+func (c *client) Run(ctx context.Context, f func(context.Context, Client) error) error {
+	return c.client.Run(ctx, func(ctx context.Context) error {
 		c.logger.Info("auth start")
 		flow := auth.NewFlow(
 			auth.Constant(
@@ -74,10 +86,6 @@ func (c *Client) Run(ctx context.Context, f func(context.Context, *tg.Client) er
 		}
 
 		c.logger.Info("auth success")
-		return f(ctx, c.client.API())
+		return f(ctx, c)
 	})
-
-	if err != nil {
-		c.logger.Error("client run", zap.Error(err))
-	}
 }
