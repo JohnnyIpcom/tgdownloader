@@ -61,6 +61,18 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 					return err
 				}
 
+				limit, err := cmd.Flags().GetInt("limit")
+				if err != nil {
+					r.log.Error("failed to get limit", zap.Error(err))
+					return err
+				}
+
+				user, err := cmd.Flags().GetInt64("user")
+				if err != nil {
+					r.log.Error("failed to get user", zap.Error(err))
+					return err
+				}
+
 				chatID, err := strconv.ParseInt(args[0], 10, 64)
 				if err != nil {
 					r.log.Error("failed to convert chatID", zap.Error(err))
@@ -96,10 +108,9 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 				}()
 
 				pw := progress.NewWriter()
-				pw.SetAutoStop(true)
+				pw.SetAutoStop(false)
 				pw.SetTrackerLength(25)
 				pw.SetMessageWidth(35)
-				pw.SetNumTrackersExpected(5)
 				pw.SetSortBy(progress.SortByPercentDsc)
 				pw.SetStyle(progress.StyleDefault)
 				pw.SetTrackerPosition(progress.PositionRight)
@@ -111,7 +122,18 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 
 				go pw.Render()
 
-				files, errors := c.GetFiles(ctx, chat)
+				defer pw.Stop()
+
+				var getFileOptions []telegram.GetFileOption
+				if limit != 0 {
+					getFileOptions = append(getFileOptions, telegram.GetFileWithLimit(limit))
+				}
+
+				if user != 0 {
+					getFileOptions = append(getFileOptions, telegram.GetFileWithUserID(user))
+				}
+
+				files, errors := c.GetFiles(ctx, chat, getFileOptions...)
 
 				g, ctx := errgroup.WithContext(ctx)
 				g.Go(func() error {
@@ -124,7 +146,11 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 						case err := <-errors:
 							r.log.Error("failed to get documents", zap.Error(err))
 
-						case file := <-files:
+						case file, ok := <-files:
+							if !ok {
+								return nil
+							}
+
 							r.log.Info("found file", zap.Int64("fileID", file.ID()))
 
 							filename := fmt.Sprintf("%d%s", file.ID(), file.GetExtension())
@@ -146,7 +172,6 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 							}
 
 							pw.AppendTracker(tracker)
-
 							if err := c.Download(ctx, file, writerFunc(func(p []byte) (int, error) {
 								select {
 								case <-ctx.Done():
@@ -198,6 +223,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 
 	cmd.Flags().StringP("output", "o", "./downloads", "Output directory")
 	cmd.Flags().StringP("temp", "t", "./downloads/tmp", "Temporary directory")
-	cmd.Flags().IntP("limit", "l", 100, "Limit of messages to download")
+	cmd.Flags().IntP("limit", "l", 0, "Limit of files to download")
+	cmd.Flags().Int64P("user", "u", 0, "User ID to download from")
 	return cmd
 }

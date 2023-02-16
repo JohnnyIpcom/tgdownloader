@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
 )
 
 type User struct {
@@ -24,6 +25,8 @@ var _ UserClient = (*client)(nil)
 // GetUsers returns all users in a chat. This method has a limit of 100 users.
 // If there are more than 100 users in a chat, you need to use the offset parameter to get the next 100 users.
 func (c *client) GetUsers(ctx context.Context, chat Chat, query string, offset int) ([]User, error) {
+	c.logger.Info("getting users", zap.String("chat", chat.Title), zap.String("query", query), zap.Int("offset", offset))
+
 	participants, err := c.client.API().ChannelsGetParticipants(ctx, &tg.ChannelsGetParticipantsRequest{
 		Channel: &tg.InputChannel{
 			ChannelID:  chat.ID,

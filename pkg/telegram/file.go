@@ -47,26 +47,72 @@ func (f File) GetExtension() string {
 }
 
 type FileClient interface {
-	GetFiles(ctx context.Context, chat Chat) (<-chan File, <-chan error)
+	GetFiles(ctx context.Context, chat Chat, opts ...GetFileOption) (<-chan File, <-chan error)
 	Download(ctx context.Context, file File, out io.Writer) error
 }
 
 var _ FileClient = (*client)(nil)
 
+type getfileOptions struct {
+	userID int64
+	limit  int
+}
+
+type GetFileOption interface {
+	apply(*getfileOptions) error
+}
+
+type getfileUserIDOption struct {
+	userID int64
+}
+
+func (o getfileUserIDOption) apply(opts *getfileOptions) error {
+	opts.userID = o.userID
+	return nil
+}
+
+func GetFileWithUserID(userID int64) GetFileOption {
+	return getfileUserIDOption{userID: userID}
+}
+
+type getfileLimitOption struct {
+	limit int
+}
+
+func (o getfileLimitOption) apply(opts *getfileOptions) error {
+	opts.limit = o.limit
+	return nil
+}
+
+func GetFileWithLimit(limit int) GetFileOption {
+	return getfileLimitOption{limit: limit}
+}
+
 // GetFiles returns channel for file IDs and error channel.
-func (c *client) GetFiles(ctx context.Context, chat Chat) (<-chan File, <-chan error) {
+func (c *client) GetFiles(ctx context.Context, chat Chat, opts ...GetFileOption) (<-chan File, <-chan error) {
 	fileChan := make(chan File)
 	errChan := make(chan error)
 
 	hasher := hasher.Hasher{}
 
+	var fileCounter int
 	go func() {
 		defer close(fileChan)
 		defer close(errChan)
 
-		var offsetID int
+		options := getfileOptions{
+			limit: int(^uint(0) >> 1), // MaxInt
+		}
+		for _, opt := range opts {
+			if err := opt.apply(&options); err != nil {
+				errChan <- err
+				return
+			}
+		}
 
 		hasher.Reset()
+
+		var offsetID int
 		for {
 			history, err := c.client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 				Peer: &tg.InputPeerChannel{
@@ -94,6 +140,25 @@ func (c *client) GetFiles(ctx context.Context, chat Chat) (<-chan File, <-chan e
 			for _, message := range messages.GetMessages() {
 				switch message := message.(type) {
 				case *tg.Message:
+					offsetID = message.GetID()
+
+					if options.userID != 0 {
+						fromID, ok := message.GetFromID()
+						if !ok {
+							continue
+						}
+
+						switch fromID := fromID.(type) {
+						case *tg.PeerUser:
+							if fromID.GetUserID() != options.userID {
+								continue
+							}
+
+						default:
+							continue
+						}
+					}
+
 					if message.Media != nil {
 						switch media := message.Media.(type) {
 						case *tg.MessageMediaPhoto:
@@ -118,6 +183,9 @@ func (c *client) GetFiles(ctx context.Context, chat Chat) (<-chan File, <-chan e
 
 							case fileChan <- file:
 								hasher.Update64(uint64(p.GetID()))
+								if fileCounter++; fileCounter >= options.limit {
+									return
+								}
 							}
 
 						case *tg.MessageMediaDocument:
@@ -142,14 +210,15 @@ func (c *client) GetFiles(ctx context.Context, chat Chat) (<-chan File, <-chan e
 
 							case fileChan <- file:
 								hasher.Update64(uint64(d.GetID()))
+								if fileCounter++; fileCounter >= options.limit {
+									return
+								}
 							}
 
 						default:
 							c.logger.Warn("unsupported media type", zap.Any("media", media))
 						}
 					}
-
-					offsetID = message.GetID()
 
 				case *tg.MessageService:
 					offsetID = message.GetID()

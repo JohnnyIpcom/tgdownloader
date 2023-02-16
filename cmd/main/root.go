@@ -15,6 +15,7 @@ import (
 // Root is the root command for the application.
 type Root struct {
 	cfgPath   string
+	logPath   string
 	version   string
 	verbosity string
 
@@ -33,8 +34,8 @@ func NewRoot(version string) (*Root, error) {
 	}
 
 	cobra.OnInitialize(
-		root.initLogger,
 		root.loadConfig,
+		root.initLogger,
 		root.initClient,
 	)
 
@@ -58,6 +59,13 @@ func (r *Root) Execute(ctx context.Context) error {
 		"c",
 		"",
 		"config file (default \"$HOME/.tgdownloader\")",
+	)
+
+	rootCmd.PersistentFlags().StringVar(
+		&r.logPath,
+		"log",
+		"",
+		"log file (default \"stderr\")",
 	)
 
 	rootCmd.PersistentFlags().StringVarP(
@@ -113,9 +121,14 @@ func (r *Root) initClient() {
 
 func (r *Root) initLogger() {
 	zapConfig := zap.NewDevelopmentConfig()
-	if err := r.cfg.Unmarshal(&zapConfig); err != nil {
+	logCfg := r.cfg.Sub("logger")
+	if err := logCfg.Unmarshal(&zapConfig); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+
+	if r.logPath != "" {
+		zapConfig.OutputPaths = []string{r.logPath}
 	}
 
 	zapConfig.Level = r.level
