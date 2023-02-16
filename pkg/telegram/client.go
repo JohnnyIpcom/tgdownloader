@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/gotd/contrib/middleware/floodwait"
 	"github.com/gotd/contrib/middleware/ratelimit"
 	"github.com/gotd/td/session"
 	tgclient "github.com/gotd/td/telegram"
@@ -48,6 +49,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 				rate.Every(cfg.GetDuration("telegram.rate.limit")),
 				cfg.GetInt("telegram.rate.burst"),
 			),
+			floodwait.NewSimpleWaiter(),
 		},
 	})
 
