@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/gotd/td/fileid"
 	"github.com/gotd/td/telegram/query/hasher"
@@ -14,6 +15,8 @@ import (
 
 type File struct {
 	fileID fileid.FileID
+	fromID int64
+	date   time.Time
 	size   int64
 }
 
@@ -25,7 +28,19 @@ func (f File) Size() int64 {
 	return f.size
 }
 
-func (f File) GetExtension() string {
+func (f File) String() string {
+	return fmt.Sprintf("%v %d %s %d", f.fileID, f.fromID, f.date, f.size)
+}
+
+func (f File) FromID() int64 {
+	return f.fromID
+}
+
+func (f File) Filename() string {
+	return fmt.Sprintf("%d", f.fileID.ID)
+}
+
+func (f File) Extension() string {
 	switch f.fileID.Type {
 	case fileid.Thumbnail, fileid.ProfilePhoto, fileid.Photo:
 		return ".jpg"
@@ -142,21 +157,26 @@ func (c *client) GetFiles(ctx context.Context, chat Chat, opts ...GetFileOption)
 				case *tg.Message:
 					offsetID = message.GetID()
 
-					if options.userID != 0 {
-						fromID, ok := message.GetFromID()
-						if !ok {
-							continue
-						}
-
-						switch fromID := fromID.(type) {
+					var fromID int64
+					peer, ok := message.GetFromID()
+					if ok {
+						switch peer := peer.(type) {
 						case *tg.PeerUser:
-							if fromID.GetUserID() != options.userID {
-								continue
-							}
+							fromID = peer.GetUserID()
+
+						case *tg.PeerChat:
+							fromID = peer.GetChatID()
+
+						case *tg.PeerChannel:
+							fromID = peer.GetChannelID()
 
 						default:
-							continue
+							c.logger.Warn("unknown peer type", zap.Any("peer", peer))
 						}
+					}
+
+					if options.userID != 0 && fromID != options.userID {
+						continue
 					}
 
 					if message.Media != nil {
@@ -174,6 +194,8 @@ func (c *client) GetFiles(ctx context.Context, chat Chat, opts ...GetFileOption)
 
 							file := File{
 								fileID: fileid.FromPhoto(p, 'x'),
+								fromID: fromID,
+								date:   time.Unix(int64(p.GetDate()), 0),
 								size:   0, // TODO: get size
 							}
 
@@ -201,6 +223,8 @@ func (c *client) GetFiles(ctx context.Context, chat Chat, opts ...GetFileOption)
 
 							file := File{
 								fileID: fileid.FromDocument(d),
+								fromID: fromID,
+								date:   time.Unix(int64(d.GetDate()), 0),
 								size:   d.GetSize(),
 							}
 

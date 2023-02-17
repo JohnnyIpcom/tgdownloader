@@ -136,85 +136,96 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 				files, errors := c.GetFiles(ctx, chat, getFileOptions...)
 
 				g, ctx := errgroup.WithContext(ctx)
-				g.Go(func() error {
-					for {
-						select {
-						case <-ctx.Done():
-							r.log.Error("context canceled")
-							return ctx.Err()
+				for i := 0; i < 5; i++ {
+					g.Go(func() error {
+						for {
+							select {
+							case <-ctx.Done():
+								r.log.Error("context canceled")
+								return ctx.Err()
 
-						case err := <-errors:
-							r.log.Error("failed to get documents", zap.Error(err))
+							case err := <-errors:
+								r.log.Error("failed to get documents", zap.Error(err))
 
-						case file, ok := <-files:
-							if !ok {
-								return nil
-							}
-
-							r.log.Info("found file", zap.Int64("fileID", file.ID()))
-
-							filename := fmt.Sprintf("%d%s", file.ID(), file.GetExtension())
-							tempPath := filepath.Join(temp, filename)
-							if _, err := os.Stat(tempPath); err == nil {
-								continue
-							}
-
-							f, err := os.Create(filepath.Clean(tempPath))
-							if err != nil {
-								r.log.Error("failed to create file", zap.Error(err))
-								continue
-							}
-
-							tracker := &progress.Tracker{
-								Message: fmt.Sprintf("Downloading %s", filename),
-								Total:   file.Size(),
-								Units:   progress.UnitsBytes,
-							}
-
-							pw.AppendTracker(tracker)
-							if err := c.Download(ctx, file, writerFunc(func(p []byte) (int, error) {
-								select {
-								case <-ctx.Done():
-									tracker.MarkAsErrored()
-									return 0, ctx.Err()
-
-								default:
+							case file, ok := <-files:
+								if !ok {
+									return nil
 								}
 
-								n, err := f.Write(p)
+								r.log.Info("found file", zap.Stringer("file", file))
+
+								filename := fmt.Sprintf("%s%s", file.Filename(), file.Extension())
+								tempPath := filepath.Join(temp, filename)
+								if _, err := os.Stat(tempPath); err == nil {
+									continue
+								}
+
+								f, err := os.Create(filepath.Clean(tempPath))
 								if err != nil {
+									r.log.Error("failed to create file", zap.Error(err))
+									continue
+								}
+
+								tracker := &progress.Tracker{
+									Message: fmt.Sprintf("Downloading %s", filename),
+									Total:   file.Size(),
+									Units:   progress.UnitsBytes,
+								}
+
+								pw.AppendTracker(tracker)
+								if err := c.Download(ctx, file, writerFunc(func(p []byte) (int, error) {
+									select {
+									case <-ctx.Done():
+										tracker.MarkAsErrored()
+										return 0, ctx.Err()
+
+									default:
+									}
+
+									n, err := f.Write(p)
+									if err != nil {
+										tracker.MarkAsErrored()
+										return n, err
+									}
+
+									tracker.Increment(int64(n))
+									return n, nil
+								})); err != nil {
 									tracker.MarkAsErrored()
-									return n, err
+									f.Close()
+
+									if err := os.Remove(tempPath); err != nil {
+										r.log.Error("failed to remove file", zap.Error(err))
+									}
+
+									r.log.Error("failed to download document", zap.Error(err))
+									continue
 								}
 
-								tracker.Increment(int64(n))
-								return n, nil
-							})); err != nil {
-								tracker.MarkAsErrored()
+								tracker.MarkAsDone()
 								f.Close()
+								r.log.Info("downloaded document", zap.Int64("id", file.ID()))
 
-								if err := os.Remove(tempPath); err != nil {
-									r.log.Error("failed to remove file", zap.Error(err))
+								userFolder := fmt.Sprintf("%d", file.FromID())
+								output := filepath.Join(output, userFolder)
+
+								err = createDirectoryIfNotExists(output)
+								if err != nil {
+									r.log.Error("failed to create directory", zap.Error(err))
+									continue
 								}
 
-								r.log.Error("failed to download document", zap.Error(err))
-								continue
+								dstPath := filepath.Join(output, filename)
+								if err := moveFile(tempPath, dstPath); err != nil {
+									r.log.Error("failed to move file", zap.Error(err))
+									continue
+								}
+
+								r.log.Info("moved file", zap.String("src", tempPath), zap.String("dst", dstPath))
 							}
-
-							tracker.MarkAsDone()
-							f.Close()
-							r.log.Info("downloaded document", zap.Int64("id", file.ID()))
-
-							dstPath := filepath.Join(output, filename)
-							if err := moveFile(tempPath, dstPath); err != nil {
-								r.log.Error("failed to move file", zap.Error(err))
-								continue
-							}
-
-							r.log.Info("moved file", zap.String("src", tempPath), zap.String("dst", dstPath))
 						}
-					}
-				})
+					})
+				}
 
 				return g.Wait()
 			})

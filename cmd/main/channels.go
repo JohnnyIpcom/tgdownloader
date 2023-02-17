@@ -31,6 +31,10 @@ func renderChatTable(chats []telegram.Chat) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.AppendHeader(table.Row{"Title", "ID", "Type"})
+	t.SortBy([]table.SortBy{
+		{Name: "Type", Mode: table.Asc},
+		{Name: "Title", Mode: table.Asc},
+	})
 
 	for _, chat := range chats {
 		t.AppendRow(table.Row{chat.Title, chat.ID, getTypeTextByType(chat.Type)})
@@ -42,10 +46,14 @@ func renderChatTable(chats []telegram.Chat) {
 func renderUserTable(users []telegram.User) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
-	t.AppendHeader(table.Row{"Username", "First Name", "Last Name", "ID"})
+	t.SetAutoIndex(true)
+	t.AppendHeader(table.Row{"ID", "Username", "First Name", "Last Name"})
+	t.SortBy([]table.SortBy{
+		{Name: "ID", Mode: table.AscNumeric},
+	})
 
 	for _, user := range users {
-		t.AppendRow(table.Row{user.Username, user.FirstName, user.LastName, user.ID})
+		t.AppendRow(table.Row{user.ID, user.Username, user.FirstName, user.LastName})
 	}
 
 	t.Render()
