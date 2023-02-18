@@ -4,19 +4,22 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gotd/td/telegram/query/hasher"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 )
 
 type User struct {
-	ID        int64
-	Username  string
-	FirstName string
-	LastName  string
+	ID         int64
+	AccessHash int64
+	Username   string
+	FirstName  string
+	LastName   string
 }
 
 type UserClient interface {
 	GetUsers(ctx context.Context, chat Chat, query string, offset int) ([]User, error)
+	GetUsersFromMessageHistory(ctx context.Context, chat Chat) (<-chan User, <-chan error)
 	GetAllUsers(ctx context.Context, chat Chat) ([]User, error)
 }
 
@@ -53,10 +56,11 @@ func (c *client) GetUsers(ctx context.Context, chat Chat, query string, offset i
 		switch u := user.(type) {
 		case *tg.User:
 			result = append(result, User{
-				ID:        u.ID,
-				Username:  u.Username,
-				FirstName: u.FirstName,
-				LastName:  u.LastName,
+				ID:         u.ID,
+				AccessHash: u.AccessHash,
+				Username:   u.Username,
+				FirstName:  u.FirstName,
+				LastName:   u.LastName,
 			})
 
 		case *tg.UserEmpty:
@@ -68,6 +72,117 @@ func (c *client) GetUsers(ctx context.Context, chat Chat, query string, offset i
 	}
 
 	return result, nil
+}
+
+// GetUsersFromMessageHistory returns chan with users from message history. Sometimes chat doesn't provide list of users.
+// This method is a workaround for this problem.
+func (c *client) GetUsersFromMessageHistory(ctx context.Context, chat Chat) (<-chan User, <-chan error) {
+	usersChan := make(chan User)
+	errChan := make(chan error)
+
+	hasher := hasher.Hasher{}
+
+	go func() {
+		defer close(usersChan)
+		defer close(errChan)
+
+		var offsetID int
+		for {
+			history, err := c.client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+				Peer: &tg.InputPeerChannel{
+					ChannelID:  chat.ID,
+					AccessHash: chat.AccessHash,
+				},
+				OffsetID:   offsetID,
+				OffsetDate: 0,
+				AddOffset:  0,
+				Limit:      100,
+				MaxID:      0,
+				MinID:      0,
+				Hash:       hasher.Sum(),
+			})
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			messages, ok := history.AsModified()
+			if !ok {
+				errChan <- fmt.Errorf("unexpected response type: %T", history)
+				return
+			}
+
+			for _, message := range messages.GetMessages() {
+				switch message := message.(type) {
+				case *tg.Message:
+					offsetID = message.GetID()
+
+					fromID, ok := message.GetFromID()
+					if !ok {
+						continue
+					}
+
+					switch fromID := fromID.(type) {
+					case *tg.PeerUser:
+						c.logger.Info("got fromID", zap.Int64("fromID", fromID.UserID))
+						participant, err := c.client.API().ChannelsGetParticipant(ctx, &tg.ChannelsGetParticipantRequest{
+							Channel: &tg.InputChannel{
+								ChannelID:  chat.ID,
+								AccessHash: chat.AccessHash,
+							},
+
+							Participant: &tg.InputPeerUser{
+								UserID:     fromID.UserID,
+								AccessHash: chat.AccessHash,
+							},
+						})
+
+						if err != nil {
+							errChan <- err
+							continue
+						}
+
+						for _, user := range participant.GetUsers() {
+							switch u := user.(type) {
+							case *tg.User:
+								hasher.Update64(uint64(u.ID))
+								usersChan <- User{
+									ID:         u.ID,
+									AccessHash: u.AccessHash,
+									Username:   u.Username,
+									FirstName:  u.FirstName,
+									LastName:   u.LastName,
+								}
+
+							case *tg.UserEmpty:
+								continue
+
+							default:
+								errChan <- fmt.Errorf("unknown user type: %T", u)
+								continue
+							}
+						}
+
+					default:
+						continue
+					}
+
+				case *tg.MessageEmpty:
+					continue
+
+				default:
+					errChan <- fmt.Errorf("unknown message type: %T", message)
+					return
+				}
+			}
+
+			if len(messages.GetMessages()) < 100 {
+				break
+			}
+		}
+	}()
+
+	return usersChan, errChan
 }
 
 // GetAllUsers returns all users in a chat.

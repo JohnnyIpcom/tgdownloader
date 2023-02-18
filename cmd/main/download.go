@@ -42,6 +42,18 @@ func moveFile(src, dst string) error {
 }
 
 func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
+	type downloadOptions struct {
+		output     string
+		temp       string
+		limit      int
+		user       int64
+		offsetDate string
+		minID      int
+		maxID      int
+	}
+
+	var opts downloadOptions
+
 	cmd := &cobra.Command{
 		Use:   "download",
 		Short: "Download files from a chat, channel or user",
@@ -49,30 +61,6 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				output, err := cmd.Flags().GetString("output")
-				if err != nil {
-					r.log.Error("failed to get output", zap.Error(err))
-					return err
-				}
-
-				temp, err := cmd.Flags().GetString("temp")
-				if err != nil {
-					r.log.Error("failed to get temp", zap.Error(err))
-					return err
-				}
-
-				limit, err := cmd.Flags().GetInt("limit")
-				if err != nil {
-					r.log.Error("failed to get limit", zap.Error(err))
-					return err
-				}
-
-				user, err := cmd.Flags().GetInt64("user")
-				if err != nil {
-					r.log.Error("failed to get user", zap.Error(err))
-					return err
-				}
-
 				chatID, err := strconv.ParseInt(args[0], 10, 64)
 				if err != nil {
 					r.log.Error("failed to convert chatID", zap.Error(err))
@@ -87,20 +75,20 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 
 				r.log.Info("found chat", zap.String("title", chat.Title))
 
-				err = createDirectoryIfNotExists(output)
+				err = createDirectoryIfNotExists(opts.output)
 				if err != nil {
 					r.log.Error("failed to create directory", zap.Error(err))
 					return err
 				}
 
-				err = createDirectoryIfNotExists(temp)
+				err = createDirectoryIfNotExists(opts.temp)
 				if err != nil {
 					r.log.Error("failed to create directory", zap.Error(err))
 					return err
 				}
 
 				defer func() {
-					if err := os.RemoveAll(temp); err != nil {
+					if err := os.RemoveAll(opts.temp); err != nil {
 						r.log.Error("failed to remove temp directory", zap.Error(err))
 					}
 
@@ -110,7 +98,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 				pw := progress.NewWriter()
 				pw.SetAutoStop(false)
 				pw.SetTrackerLength(25)
-				pw.SetMessageWidth(35)
+				pw.SetMessageWidth(45)
 				pw.SetSortBy(progress.SortByPercentDsc)
 				pw.SetStyle(progress.StyleDefault)
 				pw.SetTrackerPosition(progress.PositionRight)
@@ -125,12 +113,22 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 				defer pw.Stop()
 
 				var getFileOptions []telegram.GetFileOption
-				if limit != 0 {
-					getFileOptions = append(getFileOptions, telegram.GetFileWithLimit(limit))
+				getFileOptions = append(getFileOptions, telegram.GetFileWithUserID(opts.user))
+				getFileOptions = append(getFileOptions, telegram.GetFileWithMinID(opts.minID))
+				getFileOptions = append(getFileOptions, telegram.GetFileWithMaxID(opts.maxID))
+
+				if opts.limit > 0 {
+					getFileOptions = append(getFileOptions, telegram.GetFileWithLimit(opts.limit))
 				}
 
-				if user != 0 {
-					getFileOptions = append(getFileOptions, telegram.GetFileWithUserID(user))
+				if opts.offsetDate != "" {
+					offsetDate, err := time.Parse("2006-01-02 15:04:05", opts.offsetDate)
+					if err != nil {
+						r.log.Error("failed to parse offset date", zap.Error(err))
+						return err
+					}
+
+					getFileOptions = append(getFileOptions, telegram.GetFileWithOffsetDate(int(offsetDate.Unix())))
 				}
 
 				files, errors := c.GetFiles(ctx, chat, getFileOptions...)
@@ -155,7 +153,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 								r.log.Info("found file", zap.Stringer("file", file))
 
 								filename := fmt.Sprintf("%s%s", file.Filename(), file.Extension())
-								tempPath := filepath.Join(temp, filename)
+								tempPath := filepath.Join(opts.temp, filename)
 								if _, err := os.Stat(tempPath); err == nil {
 									continue
 								}
@@ -167,7 +165,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 								}
 
 								tracker := &progress.Tracker{
-									Message: fmt.Sprintf("Downloading %s", filename),
+									Message: filename,
 									Total:   file.Size(),
 									Units:   progress.UnitsBytes,
 								}
@@ -207,7 +205,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 								r.log.Info("downloaded document", zap.Int64("id", file.ID()))
 
 								userFolder := fmt.Sprintf("%d", file.FromID())
-								output := filepath.Join(output, userFolder)
+								output := filepath.Join(opts.output, userFolder)
 
 								err = createDirectoryIfNotExists(output)
 								if err != nil {
@@ -232,9 +230,12 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringP("output", "o", "./downloads", "Output directory")
-	cmd.Flags().StringP("temp", "t", "./downloads/tmp", "Temporary directory")
-	cmd.Flags().IntP("limit", "l", 0, "Limit of files to download")
-	cmd.Flags().Int64P("user", "u", 0, "User ID to download from")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", "./downloads", "Output directory")
+	cmd.Flags().StringVarP(&opts.temp, "temp", "t", "./downloads/tmp", "Temporary directory")
+	cmd.Flags().IntVarP(&opts.limit, "limit", "l", 0, "Limit of files to download")
+	cmd.Flags().Int64VarP(&opts.user, "user", "u", 0, "User ID to download from")
+	cmd.Flags().StringVarP(&opts.offsetDate, "offset-date", "d", "", "Offset date to download from, format: 2006-01-02 15:04:05")
+	cmd.Flags().IntVarP(&opts.minID, "minid", "m", 0, "Minimum message(not file!) ID to download from")
+	cmd.Flags().IntVarP(&opts.maxID, "maxid", "x", 0, "Maximum message(not file!) ID to download from")
 	return cmd
 }

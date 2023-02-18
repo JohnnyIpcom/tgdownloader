@@ -37,7 +37,7 @@ func (f File) FromID() int64 {
 }
 
 func (f File) Filename() string {
-	return fmt.Sprintf("%d", f.fileID.ID)
+	return fmt.Sprintf("%d-%s", f.fileID.ID, f.date.Format("2006-01-02 15-04-05"))
 }
 
 func (f File) Extension() string {
@@ -69,8 +69,11 @@ type FileClient interface {
 var _ FileClient = (*client)(nil)
 
 type getfileOptions struct {
-	userID int64
-	limit  int
+	userID     int64
+	limit      int
+	offsetDate int
+	minID      int
+	maxID      int
 }
 
 type GetFileOption interface {
@@ -101,6 +104,45 @@ func (o getfileLimitOption) apply(opts *getfileOptions) error {
 
 func GetFileWithLimit(limit int) GetFileOption {
 	return getfileLimitOption{limit: limit}
+}
+
+type getfileOffsetDateOption struct {
+	offsetDate int
+}
+
+func (o getfileOffsetDateOption) apply(opts *getfileOptions) error {
+	opts.offsetDate = o.offsetDate
+	return nil
+}
+
+func GetFileWithOffsetDate(offsetDate int) GetFileOption {
+	return getfileOffsetDateOption{offsetDate: offsetDate}
+}
+
+type getfileMinIDOption struct {
+	minID int
+}
+
+func (o getfileMinIDOption) apply(opts *getfileOptions) error {
+	opts.minID = o.minID
+	return nil
+}
+
+func GetFileWithMinID(minID int) GetFileOption {
+	return getfileMinIDOption{minID: minID}
+}
+
+type getfileMaxIDOption struct {
+	maxID int
+}
+
+func (o getfileMaxIDOption) apply(opts *getfileOptions) error {
+	opts.maxID = o.maxID
+	return nil
+}
+
+func GetFileWithMaxID(maxID int) GetFileOption {
+	return getfileMaxIDOption{maxID: maxID}
 }
 
 // GetFiles returns channel for file IDs and error channel.
@@ -134,12 +176,13 @@ func (c *client) GetFiles(ctx context.Context, chat Chat, opts ...GetFileOption)
 					ChannelID:  chat.ID,
 					AccessHash: chat.AccessHash,
 				},
-				OffsetID:  offsetID,
-				AddOffset: 0,
-				Limit:     100,
-				MaxID:     0,
-				MinID:     0,
-				Hash:      0,
+				OffsetID:   offsetID,
+				OffsetDate: options.offsetDate,
+				AddOffset:  0,
+				Limit:      100,
+				MaxID:      options.maxID,
+				MinID:      options.minID,
+				Hash:       hasher.Sum(),
 			})
 			if err != nil {
 				errChan <- err

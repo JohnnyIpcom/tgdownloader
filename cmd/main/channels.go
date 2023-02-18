@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 func getTypeTextByType(t telegram.ChatType) string {
@@ -142,6 +144,52 @@ func newChannelsCmd(ctx context.Context, r *Root) *cobra.Command {
 		},
 	}
 
+	usersmCmd := &cobra.Command{
+		Use:   "usersm",
+		Short: "Get users in a chat/channel (from messages)",
+		Long:  `Parse a message history and get all users in a chat/channel.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
+				chatID, err := strconv.ParseInt(args[0], 10, 64)
+				if err != nil {
+					r.log.Error("failed to convert chatID", zap.Error(err))
+					return err
+				}
+
+				chat, err := c.FindChat(ctx, chatID)
+				if err != nil {
+					r.log.Error("failed to find chat", zap.Error(err))
+					return err
+				}
+
+				users, errors := c.GetUsersFromMessageHistory(ctx, chat)
+
+				g, ctx := errgroup.WithContext(ctx)
+				g.Go(func() error {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+
+					case err := <-errors:
+						r.log.Error("failed to get users from message history", zap.Error(err))
+
+					case user, ok := <-users:
+						if !ok {
+							return nil
+						}
+
+						fmt.Printf("%d %s %s %s\n", user.ID, user.Username, user.FirstName, user.LastName)
+					}
+
+					return nil
+				})
+
+				return g.Wait()
+			})
+		},
+	}
+
 	finduserCmd := &cobra.Command{
 		Use:   "finduser",
 		Short: "Find a user in a chat/channel",
@@ -185,6 +233,7 @@ func newChannelsCmd(ctx context.Context, r *Root) *cobra.Command {
 	cmd.AddCommand(listCmd)
 	cmd.AddCommand(findCmd)
 	cmd.AddCommand(usersCmd)
+	cmd.AddCommand(usersmCmd)
 	cmd.AddCommand(finduserCmd)
 	return cmd
 }
