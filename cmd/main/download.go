@@ -48,8 +48,6 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 		limit      int
 		user       int64
 		offsetDate string
-		minID      int
-		maxID      int
 	}
 
 	var opts downloadOptions
@@ -114,8 +112,6 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 
 				var getFileOptions []telegram.GetFileOption
 				getFileOptions = append(getFileOptions, telegram.GetFileWithUserID(opts.user))
-				getFileOptions = append(getFileOptions, telegram.GetFileWithMinID(opts.minID))
-				getFileOptions = append(getFileOptions, telegram.GetFileWithMaxID(opts.maxID))
 
 				if opts.limit > 0 {
 					getFileOptions = append(getFileOptions, telegram.GetFileWithLimit(opts.limit))
@@ -235,7 +231,5 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 	cmd.Flags().IntVarP(&opts.limit, "limit", "l", 0, "Limit of files to download")
 	cmd.Flags().Int64VarP(&opts.user, "user", "u", 0, "User ID to download from")
 	cmd.Flags().StringVarP(&opts.offsetDate, "offset-date", "d", "", "Offset date to download from, format: 2006-01-02 15:04:05")
-	cmd.Flags().IntVarP(&opts.minID, "minid", "m", 0, "Minimum message(not file!) ID to download from")
-	cmd.Flags().IntVarP(&opts.maxID, "maxid", "x", 0, "Maximum message(not file!) ID to download from")
 	return cmd
 }

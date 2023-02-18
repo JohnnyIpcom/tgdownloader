@@ -5,42 +5,45 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/fileid"
-	"github.com/gotd/td/telegram/query/hasher"
+	"github.com/gotd/td/telegram/query"
+	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
-type File struct {
+type FileInfo struct {
 	fileID fileid.FileID
 	fromID int64
 	date   time.Time
 	size   int64
 }
 
-func (f File) ID() int64 {
+func (f FileInfo) ID() int64 {
 	return f.fileID.ID
 }
 
-func (f File) Size() int64 {
+func (f FileInfo) Size() int64 {
 	return f.size
 }
 
-func (f File) String() string {
+func (f FileInfo) String() string {
 	return fmt.Sprintf("%v %d %s %d", f.fileID, f.fromID, f.date, f.size)
 }
 
-func (f File) FromID() int64 {
+func (f FileInfo) FromID() int64 {
 	return f.fromID
 }
 
-func (f File) Filename() string {
+func (f FileInfo) Filename() string {
 	return fmt.Sprintf("%d-%s", f.fileID.ID, f.date.Format("2006-01-02 15-04-05"))
 }
 
-func (f File) Extension() string {
+func (f FileInfo) Extension() string {
 	switch f.fileID.Type {
 	case fileid.Thumbnail, fileid.ProfilePhoto, fileid.Photo:
 		return ".jpg"
@@ -62,8 +65,8 @@ func (f File) Extension() string {
 }
 
 type FileClient interface {
-	GetFiles(ctx context.Context, chat Chat, opts ...GetFileOption) (<-chan File, <-chan error)
-	Download(ctx context.Context, file File, out io.Writer) error
+	GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOption) (<-chan FileInfo, <-chan error)
+	Download(ctx context.Context, file FileInfo, out io.Writer) error
 }
 
 var _ FileClient = (*client)(nil)
@@ -72,8 +75,6 @@ type getfileOptions struct {
 	userID     int64
 	limit      int
 	offsetDate int
-	minID      int
-	maxID      int
 }
 
 type GetFileOption interface {
@@ -119,40 +120,11 @@ func GetFileWithOffsetDate(offsetDate int) GetFileOption {
 	return getfileOffsetDateOption{offsetDate: offsetDate}
 }
 
-type getfileMinIDOption struct {
-	minID int
-}
-
-func (o getfileMinIDOption) apply(opts *getfileOptions) error {
-	opts.minID = o.minID
-	return nil
-}
-
-func GetFileWithMinID(minID int) GetFileOption {
-	return getfileMinIDOption{minID: minID}
-}
-
-type getfileMaxIDOption struct {
-	maxID int
-}
-
-func (o getfileMaxIDOption) apply(opts *getfileOptions) error {
-	opts.maxID = o.maxID
-	return nil
-}
-
-func GetFileWithMaxID(maxID int) GetFileOption {
-	return getfileMaxIDOption{maxID: maxID}
-}
-
 // GetFiles returns channel for file IDs and error channel.
-func (c *client) GetFiles(ctx context.Context, chat Chat, opts ...GetFileOption) (<-chan File, <-chan error) {
-	fileChan := make(chan File)
+func (c *client) GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOption) (<-chan FileInfo, <-chan error) {
+	fileChan := make(chan FileInfo)
 	errChan := make(chan error)
 
-	hasher := hasher.Hasher{}
-
-	var fileCounter int
 	go func() {
 		defer close(fileChan)
 		defer close(errChan)
@@ -167,140 +139,114 @@ func (c *client) GetFiles(ctx context.Context, chat Chat, opts ...GetFileOption)
 			}
 		}
 
-		hasher.Reset()
+		var fileCounter int64
 
-		var offsetID int
-		for {
-			history, err := c.client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-				Peer: &tg.InputPeerChannel{
-					ChannelID:  chat.ID,
-					AccessHash: chat.AccessHash,
-				},
-				OffsetID:   offsetID,
-				OffsetDate: options.offsetDate,
-				AddOffset:  0,
-				Limit:      100,
-				MaxID:      options.maxID,
-				MinID:      options.minID,
-				Hash:       hasher.Sum(),
-			})
+		var inputPeer tg.InputPeerClass
+		switch chat.Type {
+		case ChatTypeChat:
+			chat, err := c.peerMgr.GetChat(ctx, chat.ID)
 			if err != nil {
 				errChan <- err
 				return
 			}
 
-			messages, ok := history.AsModified()
-			if !ok {
-				errChan <- fmt.Errorf("unexpected response type: %T", history)
+			inputPeer = chat.InputPeer()
+
+		case ChatTypeChannel:
+			channel, err := c.peerMgr.GetChannel(ctx, &tg.InputChannel{ChannelID: chat.ID})
+			if err != nil {
+				errChan <- err
 				return
 			}
 
-			for _, message := range messages.GetMessages() {
-				switch message := message.(type) {
-				case *tg.Message:
-					offsetID = message.GetID()
+			inputPeer = channel.InputPeer()
 
-					var fromID int64
-					peer, ok := message.GetFromID()
-					if ok {
-						switch peer := peer.(type) {
-						case *tg.PeerUser:
-							fromID = peer.GetUserID()
+		default:
+			errChan <- errors.New("unsupported chat type")
+			return
+		}
 
-						case *tg.PeerChat:
-							fromID = peer.GetChatID()
+		queryBuilder := query.Messages(c.client.API()).GetHistory(inputPeer)
+		queryBuilder = queryBuilder.OffsetDate(options.offsetDate)
+		queryBuilder = queryBuilder.BatchSize(100)
 
-						case *tg.PeerChannel:
-							fromID = peer.GetChannelID()
+		err := queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
+			if atomic.LoadInt64(&fileCounter) >= int64(options.limit) {
+				return fmt.Errorf("limit reached: %d", options.limit)
+			}
 
-						default:
-							c.logger.Warn("unknown peer type", zap.Any("peer", peer))
-						}
-					}
-
-					if options.userID != 0 && fromID != options.userID {
-						continue
-					}
-
-					if message.Media != nil {
-						switch media := message.Media.(type) {
-						case *tg.MessageMediaPhoto:
-							photo, ok := media.GetPhoto()
-							if !ok {
-								continue
-							}
-
-							p, ok := photo.AsNotEmpty()
-							if !ok {
-								continue
-							}
-
-							file := File{
-								fileID: fileid.FromPhoto(p, 'x'),
-								fromID: fromID,
-								date:   time.Unix(int64(p.GetDate()), 0),
-								size:   0, // TODO: get size
-							}
-
-							select {
-							case <-ctx.Done():
-								return
-
-							case fileChan <- file:
-								hasher.Update64(uint64(p.GetID()))
-								if fileCounter++; fileCounter >= options.limit {
-									return
-								}
-							}
-
-						case *tg.MessageMediaDocument:
-							document, ok := media.GetDocument()
-							if !ok {
-								continue
-							}
-
-							d, ok := document.AsNotEmpty()
-							if !ok {
-								continue
-							}
-
-							file := File{
-								fileID: fileid.FromDocument(d),
-								fromID: fromID,
-								date:   time.Unix(int64(d.GetDate()), 0),
-								size:   d.GetSize(),
-							}
-
-							select {
-							case <-ctx.Done():
-								return
-
-							case fileChan <- file:
-								hasher.Update64(uint64(d.GetID()))
-								if fileCounter++; fileCounter >= options.limit {
-									return
-								}
-							}
-
-						default:
-							c.logger.Warn("unsupported media type", zap.Any("media", media))
-						}
-					}
-
-				case *tg.MessageService:
-					offsetID = message.GetID()
+			var fromID int64
+			peer, ok := elem.Msg.GetFromID()
+			if ok {
+				switch peer := peer.(type) {
+				case *tg.PeerUser:
+					fromID = peer.GetUserID()
 
 				default:
-					c.logger.Warn("unknown message type", zap.Any("message", message))
+					return nil
 				}
 			}
+
+			switch msg := elem.Msg.(type) {
+			case *tg.Message:
+				c.logger.Info("got message", zap.Int64("from_id", fromID), zap.String("msg", msg.Message))
+
+			default:
+				return nil
+			}
+
+			if options.userID != 0 && fromID != options.userID {
+				return nil
+			}
+
+			g := errgroup.Group{}
+			g.Go(func() error {
+				doc, ok := elem.Document()
+				if !ok {
+					return nil
+				}
+
+				atomic.AddInt64(&fileCounter, 1)
+				fileChan <- FileInfo{
+					fileID: fileid.FromDocument(doc),
+					fromID: fromID,
+					date:   time.Unix(int64(elem.Msg.GetDate()), 0),
+					size:   doc.Size,
+				}
+
+				return nil
+			})
+
+			g.Go(func() error {
+				photo, ok := elem.Photo()
+				if !ok {
+					return nil
+				}
+
+				atomic.AddInt64(&fileCounter, 1)
+				fileChan <- FileInfo{
+					fileID: fileid.FromPhoto(photo, 'x'),
+					fromID: fromID,
+					date:   time.Unix(int64(elem.Msg.GetDate()), 0),
+					size:   0, // TODO: get size
+				}
+
+				return nil
+			})
+
+			return g.Wait()
+		})
+
+		if err != nil {
+			errChan <- err
+			return
 		}
 	}()
 
 	return fileChan, errChan
 }
 
-func (c *client) Download(ctx context.Context, file File, out io.Writer) error {
+func (c *client) Download(ctx context.Context, file FileInfo, out io.Writer) error {
 	c.logger.Info(
 		"downloading file",
 		zap.Int64("file_id", file.fileID.ID),

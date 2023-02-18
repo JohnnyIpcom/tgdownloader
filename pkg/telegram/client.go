@@ -13,6 +13,7 @@ import (
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/downloader"
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/tg"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"go.uber.org/zap"
@@ -31,6 +32,7 @@ type client struct {
 	config     config.Config
 	logger     *zap.Logger
 	client     *tgclient.Client
+	peerMgr    *peers.Manager
 	downloader *downloader.Downloader
 }
 
@@ -42,7 +44,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 	}
 
 	c := tgclient.NewClient(cfg.GetInt("telegram.app.id"), cfg.GetString("telegram.app.hash"), tgclient.Options{
-		Logger:         log,
+		Logger:         log.Named("client"),
 		SessionStorage: storage,
 		Middlewares: []tgclient.Middleware{
 			ratelimit.New(
@@ -53,10 +55,15 @@ func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 		},
 	})
 
+	peerMgr := peers.Options{
+		Logger: log.Named("peers"),
+	}.Build(c.API())
+
 	return &client{
 		config:     cfg,
 		logger:     log,
 		client:     c,
+		peerMgr:    peerMgr,
 		downloader: downloader.NewDownloader(),
 	}, nil
 }

@@ -3,9 +3,6 @@ package telegram
 import (
 	"context"
 	"fmt"
-
-	"github.com/gotd/td/tg"
-	"go.uber.org/zap"
 )
 
 type ChatType int
@@ -13,77 +10,53 @@ type ChatType int
 const (
 	ChatTypeChat ChatType = iota
 	ChatTypeChannel
-	ChatTypeChatForbidden
-	ChatTypeChannelForbidden
 )
 
-type Chat struct {
-	Type       ChatType
-	ID         int64
-	AccessHash int64
-	Title      string
+type ChatInfo struct {
+	Type  ChatType
+	ID    int64
+	Title string
 }
 
 type ChatClient interface {
-	GetAllChats(ctx context.Context) ([]Chat, error)
-	FindChat(ctx context.Context, ID int64) (Chat, error)
+	GetAllChats(ctx context.Context) ([]ChatInfo, error)
+	FindChat(ctx context.Context, ID int64) (ChatInfo, error)
 }
 
 var _ ChatClient = (*client)(nil)
 
 // GetAllChats returns all chats.
-func (c *client) GetAllChats(ctx context.Context) ([]Chat, error) {
-	chats, err := c.client.API().MessagesGetAllChats(ctx, []int64{})
+func (c *client) GetAllChats(ctx context.Context) ([]ChatInfo, error) {
+	chats, err := c.peerMgr.GetAllChats(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	var result []Chat
-	for _, chatClass := range chats.GetChats() {
-		switch chat := chatClass.(type) {
-		case *tg.Chat:
-			result = append(result, Chat{
-				Type:  ChatTypeChat,
-				ID:    chat.ID,
-				Title: chat.Title,
-			})
+	var result []ChatInfo
+	for _, chat := range chats.Chats {
+		result = append(result, ChatInfo{
+			Type:  ChatTypeChat,
+			ID:    chat.ID(),
+			Title: chat.VisibleName(),
+		})
+	}
 
-		case *tg.Channel:
-			result = append(result, Chat{
-				Type:       ChatTypeChannel,
-				ID:         chat.ID,
-				AccessHash: chat.AccessHash,
-				Title:      chat.Title,
-			})
-
-		case *tg.ChatForbidden:
-			result = append(result, Chat{
-				Type:  ChatTypeChatForbidden,
-				ID:    chat.ID,
-				Title: chat.Title,
-			})
-
-		case *tg.ChannelForbidden:
-			result = append(result, Chat{
-				Type:       ChatTypeChannelForbidden,
-				ID:         chat.ID,
-				AccessHash: chat.AccessHash,
-				Title:      chat.Title,
-			})
-
-		default:
-			c.logger.Warn("unknown chat type", zap.Any("chat", chat))
-		}
+	for _, channel := range chats.Channels {
+		result = append(result, ChatInfo{
+			Type:  ChatTypeChannel,
+			ID:    channel.ID(),
+			Title: channel.VisibleName(),
+		})
 	}
 
 	return result, nil
 }
 
 // FindChat returns chat by ID.
-func (c *client) FindChat(ctx context.Context, ID int64) (Chat, error) {
+func (c *client) FindChat(ctx context.Context, ID int64) (ChatInfo, error) {
 	chats, err := c.GetAllChats(ctx)
 	if err != nil {
-		return Chat{}, err
+		return ChatInfo{}, err
 	}
 
 	for _, chat := range chats {
@@ -92,5 +65,5 @@ func (c *client) FindChat(ctx context.Context, ID int64) (Chat, error) {
 		}
 	}
 
-	return Chat{}, fmt.Errorf("chat %d not found", ID)
+	return ChatInfo{}, fmt.Errorf("chat %d not found", ID)
 }

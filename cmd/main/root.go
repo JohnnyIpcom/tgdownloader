@@ -96,7 +96,9 @@ func (r *Root) Execute(ctx context.Context) error {
 	}
 
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(newChannelsCmd(ctx, r))
+	rootCmd.AddCommand(newPeerCmd(ctx, r))
+	rootCmd.AddCommand(newChatCmd(ctx, r))
+	rootCmd.AddCommand(newChannelCmd(ctx, r))
 	rootCmd.AddCommand(newDownloadCmd(ctx, r))
 
 	return rootCmd.Execute()
