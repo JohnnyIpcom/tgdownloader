@@ -3,22 +3,25 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"strings"
 
-	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/peers/members"
+	"github.com/gotd/td/telegram/query"
+	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
 )
 
 type UserInfo struct {
-	ID          int64
-	Username    string
-	VisibleName string
+	ID        int64
+	Username  string
+	FirstName string
+	LastName  string
 }
 
 type UserClient interface {
-	GetUsersFromMessageHistory(ctx context.Context, ID int64) (<-chan UserInfo, <-chan error)
-	GetUsersFromChat(ctx context.Context, ID int64, query string) ([]UserInfo, error)
-	GetUsersFromChannel(ctx context.Context, ID int64, query string) ([]UserInfo, error)
+	GetUsersFromMessageHistory(ctx context.Context, ID int64, Q string) (<-chan UserInfo, <-chan error)
+	GetUsersFromChat(ctx context.Context, ID int64, Q string) ([]UserInfo, error)
+	GetUsersFromChannel(ctx context.Context, ID int64, Q string) ([]UserInfo, error)
 	GetAllUsersFromChat(ctx context.Context, ID int64) ([]UserInfo, int, error)
 	GetAllUsersFromChannel(ctx context.Context, ID int64) ([]UserInfo, int, error)
 }
@@ -27,38 +30,86 @@ var _ UserClient = (*client)(nil)
 
 // GetUsersFromMessageHistory returns chan with users from message history. Sometimes chat doesn't provide list of users.
 // This method is a workaround for this problem.
-func (c *client) GetUsersFromMessageHistory(ctx context.Context, ID int64) (<-chan UserInfo, <-chan error) {
+func (c *client) GetUsersFromMessageHistory(ctx context.Context, ID int64, Q string) (<-chan UserInfo, <-chan error) {
 	usersChan := make(chan UserInfo)
 	errChan := make(chan error)
 
 	go func() {
 		defer close(usersChan)
 		defer close(errChan)
+
+		channel, err := c.peerMgr.GetChannel(ctx, &tg.InputChannel{
+			ChannelID: ID,
+		})
+
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		uniqueIDs := make(map[int64]struct{})
+
+		queryBuilder := query.Messages(c.client.API()).GetHistory(channel.InputPeer())
+		queryBuilder = queryBuilder.BatchSize(100)
+
+		if err = queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
+			users := elem.Entities.Users()
+			for _, user := range users {
+				if _, ok := uniqueIDs[user.GetID()]; ok {
+					continue
+				}
+
+				uniqueIDs[user.GetID()] = struct{}{}
+
+				u := c.getInfoFromUser(user)
+				if Q != "" && !strings.Contains(u.FirstName, Q) && !strings.Contains(u.LastName, Q) && !strings.Contains(u.Username, Q) {
+					continue
+				}
+
+				usersChan <- u
+			}
+
+			return nil
+		}); err != nil {
+			errChan <- err
+			return
+		}
 	}()
 
 	return usersChan, errChan
 }
 
-func (c *client) getInfoFromUser(user peers.User) UserInfo {
+func (c *client) getInfoFromUser(user *tg.User) UserInfo {
 	username := "<empty>"
-	if uname, ok := user.Username(); ok {
+	if uname, ok := user.GetUsername(); ok {
 		username = uname
 	}
 
+	firstName := "<empty>"
+	if fname, ok := user.GetFirstName(); ok {
+		firstName = fname
+	}
+
+	lastName := "<empty>"
+	if lname, ok := user.GetLastName(); ok {
+		lastName = lname
+	}
+
 	return UserInfo{
-		ID:          user.ID(),
-		Username:    username,
-		VisibleName: user.VisibleName(),
+		ID:        user.GetID(),
+		Username:  username,
+		FirstName: firstName,
+		LastName:  lastName,
 	}
 }
 
 // GetUsersFromChat returns users from chat by query.
-func (c *client) GetUsersFromChat(ctx context.Context, ID int64, query string) ([]UserInfo, error) {
+func (c *client) GetUsersFromChat(ctx context.Context, ID int64, Q string) ([]UserInfo, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
 // GetUsersFromChannel returns users from channel by query.
-func (c *client) GetUsersFromChannel(ctx context.Context, ID int64, query string) ([]UserInfo, error) {
+func (c *client) GetUsersFromChannel(ctx context.Context, ID int64, Q string) ([]UserInfo, error) {
 	channel, err := c.peerMgr.GetChannel(ctx, &tg.InputChannel{
 		ChannelID: ID,
 	})
@@ -69,9 +120,9 @@ func (c *client) GetUsersFromChannel(ctx context.Context, ID int64, query string
 
 	var users []UserInfo
 
-	channelMembers := members.ChannelQuery{Channel: channel}.Search(query)
+	channelMembers := members.ChannelQuery{Channel: channel}.Search(Q)
 	channelMembers.ForEach(ctx, func(m members.Member) error {
-		users = append(users, c.getInfoFromUser(m.User()))
+		users = append(users, c.getInfoFromUser(m.User().Raw()))
 		return nil
 	})
 
@@ -89,7 +140,7 @@ func (c *client) GetAllUsersFromChat(ctx context.Context, ID int64) ([]UserInfo,
 
 	chatMembers := members.Chat(chat)
 	chatMembers.ForEach(ctx, func(m members.Member) error {
-		users = append(users, c.getInfoFromUser(m.User()))
+		users = append(users, c.getInfoFromUser(m.User().Raw()))
 		return nil
 	})
 
@@ -110,7 +161,7 @@ func (c *client) GetAllUsersFromChannel(ctx context.Context, ID int64) ([]UserIn
 
 	channelMembers := members.Channel(channel)
 	channelMembers.ForEach(ctx, func(m members.Member) error {
-		users = append(users, c.getInfoFromUser(m.User()))
+		users = append(users, c.getInfoFromUser(m.User().Raw()))
 		return nil
 	})
 
