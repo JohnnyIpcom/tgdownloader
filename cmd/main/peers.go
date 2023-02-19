@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 func getTypeTextByType(t telegram.ChatType) string {
@@ -41,16 +43,20 @@ func renderUserTable(users []telegram.UserInfo) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAutoIndex(true)
-	t.AppendHeader(table.Row{"ID", "Username", "Visible Name"})
+	t.AppendHeader(table.Row{"ID", "Username", "First Name", "Last Name"})
 	t.SortBy([]table.SortBy{
 		{Name: "ID", Mode: table.AscNumeric},
 	})
 
 	for _, user := range users {
-		t.AppendRow(table.Row{user.ID, user.Username, user.VisibleName})
+		t.AppendRow(table.Row{user.ID, user.Username, user.FirstName, user.LastName})
 	}
 
 	t.Render()
+}
+
+func renderUser(user telegram.UserInfo) {
+	fmt.Printf("ID: %d, Username: %s, First Name: %s, Last Name: %s\n", user.ID, user.Username, user.FirstName, user.LastName) // TODO: use text pretty
 }
 
 func newPeerCmd(ctx context.Context, r *Root) *cobra.Command {
@@ -105,6 +111,7 @@ func newChatCmd(ctx context.Context, r *Root) *cobra.Command {
 				r.log.Error("failed to convert chatID", zap.Error(err))
 				return err
 			}
+
 			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
 				users, _, err := c.GetAllUsersFromChat(ctx, chatID)
 				if err != nil {
@@ -168,8 +175,10 @@ func newChannelCmd(ctx context.Context, r *Root) *cobra.Command {
 	}
 
 	usersCmd := &cobra.Command{
-		Use:  "users",
-		Args: cobra.ExactArgs(1),
+		Use:   "users",
+		Short: "Get users in a channel",
+		Long:  `Get all users in a channel.`,
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
@@ -189,6 +198,56 @@ func newChannelCmd(ctx context.Context, r *Root) *cobra.Command {
 			})
 		},
 	}
+
+	usersmCmd := &cobra.Command{
+		Use:   "usersm",
+		Short: "Get users in a chat",
+		Long:  `Get all users in a chat.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			chatID, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				r.log.Error("failed to convert chatID", zap.Error(err))
+				return err
+			}
+
+			userQuery, err := cmd.Flags().GetString("user")
+			if err != nil {
+				r.log.Error("failed to get user flag", zap.Error(err))
+				return err
+			}
+
+			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
+				usersChan, errors := c.GetUsersFromMessageHistory(ctx, chatID, userQuery)
+				g, ctx := errgroup.WithContext(ctx)
+				g.Go(func() error {
+					for {
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+
+						case err, ok := <-errors:
+							if !ok {
+								return nil
+							}
+							r.log.Error("failed to get user", zap.Error(err))
+
+						case user, ok := <-usersChan:
+							if !ok {
+								return nil
+							}
+
+							renderUser(user)
+						}
+					}
+				})
+
+				return g.Wait()
+			})
+		},
+	}
+
+	usersmCmd.Flags().StringP("user", "u", "", "Username/first name/last name of the user to find")
 
 	finduserCmd := &cobra.Command{
 		Use:   "finduser",
@@ -225,6 +284,7 @@ func newChannelCmd(ctx context.Context, r *Root) *cobra.Command {
 	finduserCmd.MarkFlagRequired("user")
 
 	channel.AddCommand(usersCmd)
+	channel.AddCommand(usersmCmd)
 	channel.AddCommand(finduserCmd)
 	return channel
 }

@@ -10,12 +10,12 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // Root is the root command for the application.
 type Root struct {
 	cfgPath   string
-	logPath   string
 	version   string
 	verbosity string
 
@@ -59,13 +59,6 @@ func (r *Root) Execute(ctx context.Context) error {
 		"c",
 		"",
 		"config file (default \"$HOME/.tgdownloader\")",
-	)
-
-	rootCmd.PersistentFlags().StringVar(
-		&r.logPath,
-		"log",
-		"",
-		"log file (default \"stderr\")",
 	)
 
 	rootCmd.PersistentFlags().StringVarP(
@@ -129,11 +122,11 @@ func (r *Root) initLogger() {
 		os.Exit(1)
 	}
 
-	if r.logPath != "" {
-		zapConfig.OutputPaths = []string{r.logPath}
-	}
+	enc := zap.NewDevelopmentEncoderConfig()
+	enc.EncodeLevel = zapcore.CapitalColorLevelEncoder
 
 	zapConfig.Level = r.level
+	zapConfig.EncoderConfig = enc
 
 	log, err := zapConfig.Build()
 	if err != nil {

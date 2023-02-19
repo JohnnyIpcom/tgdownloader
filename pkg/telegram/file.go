@@ -6,25 +6,17 @@ import (
 	"fmt"
 	"io"
 	"sync/atomic"
-	"time"
 
-	"github.com/gotd/td/fileid"
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 )
 
 type FileInfo struct {
-	fileID fileid.FileID
+	file   messages.File
 	fromID int64
-	date   time.Time
 	size   int64
-}
-
-func (f FileInfo) ID() int64 {
-	return f.fileID.ID
 }
 
 func (f FileInfo) Size() int64 {
@@ -32,7 +24,7 @@ func (f FileInfo) Size() int64 {
 }
 
 func (f FileInfo) String() string {
-	return fmt.Sprintf("%v %d %s %d", f.fileID, f.fromID, f.date, f.size)
+	return fmt.Sprintf("%v %d %d", f.file, f.fromID, f.size)
 }
 
 func (f FileInfo) FromID() int64 {
@@ -40,28 +32,7 @@ func (f FileInfo) FromID() int64 {
 }
 
 func (f FileInfo) Filename() string {
-	return fmt.Sprintf("%d-%s", f.fileID.ID, f.date.Format("2006-01-02 15-04-05"))
-}
-
-func (f FileInfo) Extension() string {
-	switch f.fileID.Type {
-	case fileid.Thumbnail, fileid.ProfilePhoto, fileid.Photo:
-		return ".jpg"
-
-	case fileid.Video, fileid.Animation, fileid.VideoNote:
-		return ".mp4"
-
-	case fileid.Audio:
-		return ".mp3"
-
-	case fileid.Voice:
-		return ".ogg"
-
-	case fileid.Sticker:
-		return ".png"
-	}
-
-	return ".dat"
+	return f.file.Name
 }
 
 type FileClient interface {
@@ -170,7 +141,7 @@ func (c *client) GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOpt
 		queryBuilder = queryBuilder.OffsetDate(options.offsetDate)
 		queryBuilder = queryBuilder.BatchSize(100)
 
-		err := queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
+		if err := queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
 			if atomic.LoadInt64(&fileCounter) >= int64(options.limit) {
 				return fmt.Errorf("limit reached: %d", options.limit)
 			}
@@ -189,7 +160,7 @@ func (c *client) GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOpt
 
 			switch msg := elem.Msg.(type) {
 			case *tg.Message:
-				c.logger.Info("got message", zap.Int64("from_id", fromID), zap.String("msg", msg.Message))
+				c.logger.Debug("got message", zap.Int64("from_id", fromID), zap.String("msg", msg.Message))
 
 			default:
 				return nil
@@ -199,45 +170,30 @@ func (c *client) GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOpt
 				return nil
 			}
 
-			g := errgroup.Group{}
-			g.Go(func() error {
-				doc, ok := elem.Document()
-				if !ok {
-					return nil
-				}
-
-				atomic.AddInt64(&fileCounter, 1)
-				fileChan <- FileInfo{
-					fileID: fileid.FromDocument(doc),
-					fromID: fromID,
-					date:   time.Unix(int64(elem.Msg.GetDate()), 0),
-					size:   doc.Size,
-				}
-
+			file, ok := elem.File()
+			if !ok {
 				return nil
-			})
+			}
 
-			g.Go(func() error {
-				photo, ok := elem.Photo()
-				if !ok {
-					return nil
-				}
+			fileInfo := FileInfo{
+				file:   file,
+				fromID: fromID,
+			}
 
+			if doc, ok := elem.Document(); ok {
+				fileInfo.size = doc.Size
+			}
+
+			select {
+			case fileChan <- fileInfo:
 				atomic.AddInt64(&fileCounter, 1)
-				fileChan <- FileInfo{
-					fileID: fileid.FromPhoto(photo, 'x'),
-					fromID: fromID,
-					date:   time.Unix(int64(elem.Msg.GetDate()), 0),
-					size:   0, // TODO: get size
-				}
 
-				return nil
-			})
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 
-			return g.Wait()
-		})
-
-		if err != nil {
+			return nil
+		}); err != nil {
 			errChan <- err
 			return
 		}
@@ -247,24 +203,10 @@ func (c *client) GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOpt
 }
 
 func (c *client) Download(ctx context.Context, file FileInfo, out io.Writer) error {
-	c.logger.Info(
-		"downloading file",
-		zap.Int64("file_id", file.fileID.ID),
-		zap.Int64("access_hash", file.fileID.AccessHash),
-		zap.Int("dc_id", file.fileID.DC),
-	)
-
-	loc, ok := file.fileID.AsInputFileLocation()
-	if !ok {
-		c.logger.Error("failed to convert fileID to InputFileLocation", zap.Int64("file_id", file.fileID.ID))
-		return errors.New("failed to convert fileID to InputFileLocation")
-	}
-
-	builder := c.downloader.Download(c.client.API(), loc)
+	builder := c.downloader.Download(c.client.API(), file.file.Location)
 
 	_, err := builder.Stream(ctx, out)
 	if err != nil {
-		c.logger.Error("failed to download file", zap.Int64("file_id", file.fileID.ID), zap.Error(err))
 		return err
 	}
 

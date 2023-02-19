@@ -148,8 +148,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 
 								r.log.Info("found file", zap.Stringer("file", file))
 
-								filename := fmt.Sprintf("%s%s", file.Filename(), file.Extension())
-								tempPath := filepath.Join(opts.temp, filename)
+								tempPath := filepath.Join(opts.temp, file.Filename())
 								if _, err := os.Stat(tempPath); err == nil {
 									continue
 								}
@@ -161,7 +160,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 								}
 
 								tracker := &progress.Tracker{
-									Message: filename,
+									Message: file.Filename(),
 									Total:   file.Size(),
 									Units:   progress.UnitsBytes,
 								}
@@ -198,7 +197,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 
 								tracker.MarkAsDone()
 								f.Close()
-								r.log.Info("downloaded document", zap.Int64("id", file.ID()))
+								r.log.Info("downloaded document", zap.String("filename", file.Filename()))
 
 								userFolder := fmt.Sprintf("%d", file.FromID())
 								output := filepath.Join(opts.output, userFolder)
@@ -209,7 +208,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 									continue
 								}
 
-								dstPath := filepath.Join(output, filename)
+								dstPath := filepath.Join(output, file.Filename())
 								if err := moveFile(tempPath, dstPath); err != nil {
 									r.log.Error("failed to move file", zap.Error(err))
 									continue
