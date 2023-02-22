@@ -35,3 +35,6 @@ out/
 
 # Downloaded files
 downloads/
+
+# Keys
+*.pem

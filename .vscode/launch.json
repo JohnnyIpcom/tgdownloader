@@ -17,15 +17,14 @@
             ]
         },
         {
-            "name": "Channels",
+            "name": "Peer List",
             "type": "go",
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/main.go",
             "args": [
-                "channels",
-                "--config",
-                "${workspaceFolder}/tgdownloader.yaml"
+                "peer",
+                "list"
             ]
         },
         {
