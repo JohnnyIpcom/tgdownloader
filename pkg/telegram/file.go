@@ -54,8 +54,8 @@ func (f FileInfo) Filename() string {
 }
 
 type FileClient interface {
-	GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOption) (<-chan FileInfo, <-chan error)
-	GetFilesFromNewMessages(ctx context.Context, chat ChatInfo) (<-chan FileInfo, <-chan error)
+	GetFiles(ctx context.Context, ID int64, opts ...GetFileOption) (<-chan FileInfo, <-chan error)
+	GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan FileInfo, <-chan error)
 	Download(ctx context.Context, file FileInfo, out io.Writer) error
 }
 
@@ -143,12 +143,12 @@ func (c *client) getFileInfoFromElem(elem messages.Elem) (FileInfo, error) {
 }
 
 // GetFiles returns channel for file IDs and error channel.
-func (c *client) GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOption) (<-chan FileInfo, <-chan error) {
+func (c *client) GetFiles(ctx context.Context, ID int64, opts ...GetFileOption) (<-chan FileInfo, <-chan error) {
 	fileChan := make(chan FileInfo)
 	errChan := make(chan error)
 
 	go func() {
-		c.logger.Info("getting files from chat", zap.Int64("chat_id", chat.ID))
+		c.logger.Info("getting files from chat", zap.Int64("chat_id", ID))
 
 		defer close(fileChan)
 		defer close(errChan)
@@ -165,28 +165,9 @@ func (c *client) GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOpt
 
 		var fileCounter int64
 
-		var inputPeer tg.InputPeerClass
-		switch chat.Type {
-		case ChatTypeChat:
-			chat, err := c.peerMgr.GetChat(ctx, chat.ID)
-			if err != nil {
-				errChan <- err
-				return
-			}
-
-			inputPeer = chat.InputPeer()
-
-		case ChatTypeChannel:
-			channel, err := c.peerMgr.GetChannel(ctx, &tg.InputChannel{ChannelID: chat.ID})
-			if err != nil {
-				errChan <- err
-				return
-			}
-
-			inputPeer = channel.InputPeer()
-
-		default:
-			errChan <- fmt.Errorf("unsupported chat type: %d", chat.Type)
+		inputPeer, err := c.getInputPeer(ctx, ID)
+		if err != nil {
+			errChan <- err
 			return
 		}
 
@@ -231,12 +212,12 @@ func (c *client) GetFiles(ctx context.Context, chat ChatInfo, opts ...GetFileOpt
 	return fileChan, errChan
 }
 
-func (c *client) GetFilesFromNewMessages(ctx context.Context, chat ChatInfo) (<-chan FileInfo, <-chan error) {
+func (c *client) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan FileInfo, <-chan error) {
 	fileChan := make(chan FileInfo)
 	errChan := make(chan error)
 
 	go func() {
-		c.logger.Info("getting files from new messages", zap.Int64("chat_id", chat.ID))
+		c.logger.Info("getting files from new messages", zap.Int64("chat_id", ID))
 
 		var fileCounter int64
 		c.dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewChannelMessage) error {
@@ -259,7 +240,7 @@ func (c *client) GetFilesFromNewMessages(ctx context.Context, chat ChatInfo) (<-
 				return nil
 			}
 
-			if peerID != chat.ID {
+			if peerID != ID {
 				return nil
 			}
 

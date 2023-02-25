@@ -66,7 +66,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 		Long:  `Download files from a chat, channel or user.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			chatID, err := strconv.ParseInt(args[0], 10, 64)
+			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
 				r.log.Error("failed to convert chatID", zap.Error(err))
 				return err
@@ -132,21 +132,13 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 
 				defer pw.Stop()
 
-				chat, err := c.FindChat(ctx, chatID)
-				if err != nil {
-					r.log.Error("failed to find chat", zap.Error(err))
-					return err
-				}
-
-				r.log.Info("found chat", zap.String("title", chat.Title))
-
 				var files <-chan telegram.FileInfo
 				var errors <-chan error
 
 				if opts.observer {
-					files, errors = c.GetFilesFromNewMessages(ctx, chat)
+					files, errors = c.GetFilesFromNewMessages(ctx, ID)
 				} else {
-					files, errors = c.GetFiles(ctx, chat, getFileOptions...)
+					files, errors = c.GetFiles(ctx, ID, getFileOptions...)
 				}
 
 				g, ctx := errgroup.WithContext(ctx)

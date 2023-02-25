@@ -38,10 +38,7 @@ func (c *client) GetUsersFromMessageHistory(ctx context.Context, ID int64, Q str
 		defer close(usersChan)
 		defer close(errChan)
 
-		channel, err := c.peerMgr.GetChannel(ctx, &tg.InputChannel{
-			ChannelID: ID,
-		})
-
+		peer, err := c.getInputPeer(ctx, ID)
 		if err != nil {
 			errChan <- err
 			return
@@ -49,7 +46,7 @@ func (c *client) GetUsersFromMessageHistory(ctx context.Context, ID int64, Q str
 
 		uniqueIDs := make(map[int64]struct{})
 
-		queryBuilder := query.Messages(c.client.API()).GetHistory(channel.InputPeer())
+		queryBuilder := query.Messages(c.client.API()).GetHistory(peer)
 		queryBuilder = queryBuilder.BatchSize(100)
 
 		if err = queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
@@ -110,10 +107,7 @@ func (c *client) GetUsersFromChat(ctx context.Context, ID int64, Q string) ([]Us
 
 // GetUsersFromChannel returns users from channel by query.
 func (c *client) GetUsersFromChannel(ctx context.Context, ID int64, Q string) ([]UserInfo, error) {
-	channel, err := c.peerMgr.GetChannel(ctx, &tg.InputChannel{
-		ChannelID: ID,
-	})
-
+	channel, err := c.getChannel(ctx, ID)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +125,7 @@ func (c *client) GetUsersFromChannel(ctx context.Context, ID int64, Q string) ([
 
 // GetAllUsersFromChat returns all users from chat.
 func (c *client) GetAllUsersFromChat(ctx context.Context, ID int64) ([]UserInfo, int, error) {
-	chat, err := c.peerMgr.GetChat(ctx, ID)
+	chat, err := c.getChat(ctx, ID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -149,10 +143,7 @@ func (c *client) GetAllUsersFromChat(ctx context.Context, ID int64) ([]UserInfo,
 
 // GetAllUsersFromChannel returns all users from channel.
 func (c *client) GetAllUsersFromChannel(ctx context.Context, ID int64) ([]UserInfo, int, error) {
-	channel, err := c.peerMgr.GetChannel(ctx, &tg.InputChannel{
-		ChannelID: ID,
-	})
-
+	channel, err := c.getChannel(ctx, ID)
 	if err != nil {
 		return nil, 0, err
 	}

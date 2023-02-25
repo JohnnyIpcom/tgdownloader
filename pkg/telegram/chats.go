@@ -3,6 +3,9 @@ package telegram
 import (
 	"context"
 	"fmt"
+
+	"github.com/gotd/td/telegram/peers"
+	"github.com/gotd/td/tg"
 )
 
 type ChatType int
@@ -66,4 +69,56 @@ func (c *client) FindChat(ctx context.Context, ID int64) (ChatInfo, error) {
 	}
 
 	return ChatInfo{}, fmt.Errorf("chat %d not found", ID)
+}
+
+func (c *client) getChat(ctx context.Context, ID int64) (peers.Chat, error) {
+	chat, err := c.peerMgr.GetChat(ctx, ID)
+	if err != nil {
+		return peers.Chat{}, err
+	}
+
+	return chat, nil
+}
+
+func (c *client) getChannel(ctx context.Context, ID int64) (peers.Channel, error) {
+	channel, err := c.peerMgr.GetChannel(ctx, &tg.InputChannel{
+		ChannelID: ID,
+	})
+
+	if err != nil {
+		return peers.Channel{}, err
+	}
+
+	return channel, nil
+}
+
+func (c *client) getInputPeer(ctx context.Context, ID int64) (tg.InputPeerClass, error) {
+	info, err := c.FindChat(ctx, ID)
+	if err != nil {
+		return nil, err
+	}
+
+	var inputPeer tg.InputPeerClass
+	switch info.Type {
+	case ChatTypeChat:
+		chat, err := c.getChat(ctx, info.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		inputPeer = chat.InputPeer()
+
+	case ChatTypeChannel:
+		channel, err := c.getChannel(ctx, info.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		inputPeer = channel.InputPeer()
+
+	default:
+		return nil, fmt.Errorf("unknown chat type %d", info.Type)
+	}
+
+	return inputPeer, nil
 }
