@@ -29,8 +29,7 @@ type Client interface {
 	FileClient
 	UserClient
 
-	Run(ctx context.Context, f func(context.Context, Client) error) error
-	RunAndWait(ctx context.Context, f func(context.Context, Client) error) error
+	Run(ctx context.Context, f func(context.Context, Client) error, opts ...RunOption) error
 }
 
 type client struct {
@@ -125,27 +124,34 @@ func (c *codeAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode)
 	return strings.TrimSpace(code), nil
 }
 
-// Run starts client session.
-func (c *client) Run(ctx context.Context, f func(context.Context, Client) error) error {
-	return c.client.Run(ctx, func(ctx context.Context) error {
-		c.logger.Info("auth start")
-		flow := auth.NewFlow(
-			auth.Constant(
-				c.config.GetString("telegram.phone"),
-				c.config.GetString("telegram.password"),
-				&codeAuthenticator{}),
-			auth.SendCodeOptions{},
-		)
-
-		if err := c.client.Auth().IfNecessary(ctx, flow); err != nil {
-			return fmt.Errorf("auth: %w", err)
-		}
-
-		return f(ctx, c)
-	})
+type runOptions struct {
+	infinite bool
 }
 
-func (c *client) RunAndWait(ctx context.Context, f func(context.Context, Client) error) error {
+type RunOption interface {
+	apply(*runOptions) error
+}
+
+type runInfiniteOption struct{}
+
+func (runInfiniteOption) apply(o *runOptions) error {
+	o.infinite = true
+	return nil
+}
+
+func RunInfinite() RunOption {
+	return runInfiniteOption{}
+}
+
+// Run starts client session.
+func (c *client) Run(ctx context.Context, f func(context.Context, Client) error, opts ...RunOption) error {
+	options := runOptions{}
+	for _, opt := range opts {
+		if err := opt.apply(&options); err != nil {
+			return err
+		}
+	}
+
 	return c.client.Run(ctx, func(ctx context.Context) error {
 		c.logger.Info("auth start")
 		flow := auth.NewFlow(
@@ -162,14 +168,17 @@ func (c *client) RunAndWait(ctx context.Context, f func(context.Context, Client)
 
 		c.logger.Info("auth success")
 
-		// Fetch user info.
 		user, err := c.client.Self(ctx)
 		if err != nil {
 			return fmt.Errorf("fetch self: %w", err)
 		}
 
 		c.logger.Info("self", zap.Stringer("user", user))
+		if !options.infinite {
+			return f(ctx, c)
+		}
 
+		c.logger.Info("updates start")
 		if err := c.updMgr.Auth(ctx, c.client.API(), user.GetID(), false, true); err != nil {
 			return fmt.Errorf("auth updates: %w", err)
 		}
