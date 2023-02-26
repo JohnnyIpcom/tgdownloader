@@ -7,6 +7,7 @@ import (
 
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/config/viper"
+	"github.com/johnnyipcom/tgdownloader/pkg/downloader"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -19,10 +20,11 @@ type Root struct {
 	version   string
 	verbosity string
 
-	cfg    config.Config
-	client telegram.Client
-	log    *zap.Logger
-	level  zap.AtomicLevel
+	cfg        config.Config
+	client     telegram.Client
+	downloader downloader.Downloader
+	log        *zap.Logger
+	level      zap.AtomicLevel
 }
 
 // NewRoot creates a new root command.
@@ -37,6 +39,7 @@ func NewRoot(version string) (*Root, error) {
 		root.loadConfig,
 		root.initLogger,
 		root.initClient,
+		root.initDownloader,
 	)
 
 	return root, nil
@@ -105,13 +108,23 @@ func (r *Root) loadConfig() {
 }
 
 func (r *Root) initClient() {
-	client, err := telegram.NewClient(r.cfg, r.log)
+	client, err := telegram.NewClient(r.cfg.Sub("telegram"), r.log)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	r.client = client
+}
+
+func (r *Root) initDownloader() {
+	downloader, err := downloader.NewDownloader(r.cfg.Sub("downloader"), r.log)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	r.downloader = downloader
 }
 
 func (r *Root) initLogger() {

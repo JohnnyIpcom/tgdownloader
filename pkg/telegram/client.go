@@ -54,12 +54,12 @@ func NewPublicKey(key *rsa.PublicKey) tgclient.PublicKey {
 
 func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 	storage := &session.FileStorage{
-		Path: cfg.GetString("telegram.session.path"),
+		Path: cfg.GetString("session.path"),
 	}
 
 	var keys []tgclient.PublicKey
 
-	publicKeys := cfg.GetStringSlice("telegram.mtproto.public_keys")
+	publicKeys := cfg.GetStringSlice("mtproto.public_keys")
 	for _, publicKey := range publicKeys {
 		publicKeyData, err := os.ReadFile(publicKey)
 		if err != nil {
@@ -80,15 +80,15 @@ func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 		Logger:  log.Named("gaps"),
 	})
 
-	c := tgclient.NewClient(cfg.GetInt("telegram.app.id"), cfg.GetString("telegram.app.hash"), tgclient.Options{
+	c := tgclient.NewClient(cfg.GetInt("app.id"), cfg.GetString("app.hash"), tgclient.Options{
 		Logger:         log.Named("client"),
 		SessionStorage: storage,
 		PublicKeys:     keys,
 		UpdateHandler:  gaps,
 		Middlewares: []tgclient.Middleware{
 			ratelimit.New(
-				rate.Every(cfg.GetDuration("telegram.rate.limit")),
-				cfg.GetInt("telegram.rate.burst"),
+				rate.Every(cfg.GetDuration("rate.limit")),
+				cfg.GetInt("rate.burst"),
 			),
 			floodwait.NewSimpleWaiter(),
 			hook.UpdateHook(gaps.Handle),
