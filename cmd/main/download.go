@@ -99,14 +99,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 				runOptions = append(runOptions, telegram.RunInfinite())
 			}
 
-			if err := r.downloader.Prepare(); err != nil {
-				r.log.Error("failed to prepare downloader", zap.Error(err))
-				return err
-			}
-
 			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				defer r.downloader.Cleanup()
-
 				pw := newProgressWriter()
 				defer pw.Stop()
 
@@ -119,6 +112,8 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 					files, errors = c.GetFiles(ctx, ID, getFileOptions...)
 				}
 
+				d := r.getDownloader(ctx)
+
 				g, ctx := errgroup.WithContext(ctx)
 				for i := 0; i < 5; i++ {
 					g.Go(func() error {
@@ -128,7 +123,9 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 								return ctx.Err()
 
 							case err := <-errors:
-								r.log.Error("failed to get file", zap.Error(err))
+								if err != nil {
+									r.log.Error("failed to get file", zap.Error(err))
+								}
 
 							case file, ok := <-files:
 								if !ok {
@@ -138,7 +135,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 
 								r.log.Debug("found file", zap.Stringer("file", file))
 
-								f, err := r.downloader.Create(ctx, &fileWrapper{
+								f, err := d.Create(ctx, &fileWrapper{
 									f: file,
 								})
 								if err != nil {
@@ -174,19 +171,12 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 									tracker.MarkAsErrored()
 
 									r.log.Error("failed to download document", zap.Error(err))
-									if err := f.Abort(); err != nil {
-										r.log.Error("failed to abort file", zap.Error(err))
-									}
-
+									f.Close()
+									f.Remove()
 									continue
 								}
 
-								if err := f.Commit(); err != nil {
-									r.log.Error("failed to commit file", zap.Error(err))
-									tracker.MarkAsErrored()
-									continue
-								}
-
+								f.Close()
 								tracker.MarkAsDone()
 								r.log.Debug("downloaded document", zap.String("filename", file.Filename()))
 							}

@@ -2,7 +2,6 @@ package downloader
 
 import (
 	"io"
-	"path/filepath"
 
 	"github.com/spf13/afero"
 )
@@ -13,43 +12,26 @@ type FileInfo interface {
 }
 
 type File interface {
-	io.Writer
+	io.WriteCloser
 
-	Abort() error
-	Commit() error
+	Remove() error
 }
 
 type file struct {
-	d       *downloader
-	subdir  string
-	tmpFile afero.File
+	fs   afero.Fs
+	file afero.File
 }
 
 var _ File = (*file)(nil)
 
 func (f *file) Write(p []byte) (n int, err error) {
-	return f.tmpFile.Write(p)
+	return f.file.Write(p)
 }
 
-func (f *file) Abort() error {
-	f.tmpFile.Close()
-
-	return f.d.fs.Remove(f.tmpFile.Name())
+func (f *file) Close() error {
+	return f.file.Close()
 }
 
-func (f *file) Commit() error {
-	f.tmpFile.Close()
-
-	output := filepath.Join(f.d.outputDir, f.subdir)
-	if err := f.d.createDirectoryIfNotExists(output); err != nil {
-		return err
-	}
-
-	newFilename, err := getUniqueFilename(f.d.fs, output, filepath.Base(f.tmpFile.Name()))
-	if err != nil {
-		return err
-	}
-
-	newFile := filepath.Join(output, newFilename)
-	return f.d.fs.Rename(f.tmpFile.Name(), newFile)
+func (f *file) Remove() error {
+	return f.fs.Remove(f.file.Name())
 }

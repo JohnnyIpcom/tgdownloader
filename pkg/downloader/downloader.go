@@ -3,88 +3,87 @@ package downloader
 import (
 	"context"
 	"fmt"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
+	"github.com/johnnyipcom/tgdownloader/pkg/dropbox"
 	"github.com/spf13/afero"
 	"go.uber.org/zap"
 )
 
 type Downloader interface {
-	Prepare() error
-	Cleanup()
-
 	Create(ctx context.Context, file FileInfo) (File, error)
 }
 
 type downloader struct {
 	outputDir string
-	tmpDir    string
 	log       *zap.Logger
 	fs        afero.Fs
 }
 
 var _ Downloader = (*downloader)(nil)
 
-func NewDownloader(cfg config.Config, log *zap.Logger) (Downloader, error) {
-	return &downloader{
-		outputDir: cfg.GetString("dir.output"),
-		tmpDir:    cfg.GetString("dir.temp"),
-		log:       log,
-		fs:        afero.NewOsFs(),
-	}, nil
+func getFS(ctx context.Context, cfg config.Config, log *zap.Logger) (afero.Fs, error) {
+	switch strings.ToLower(cfg.GetString("type")) {
+	case "local":
+		return afero.NewOsFs(), nil
+
+	case "dropbox":
+		return dropbox.NewFs(ctx, cfg.Sub("dropbox"), log.Named("dropbox"))
+
+	default:
+		return nil, fmt.Errorf("unknown file system type: %s", cfg.GetString("type"))
+	}
 }
 
-func (d *downloader) Prepare() error {
-	d.log.Info("creating output directory", zap.String("dir", d.outputDir))
-	if err := d.createDirectoryIfNotExists(d.outputDir); err != nil {
-		return err
+func NewDownloader(ctx context.Context, cfg config.Config, log *zap.Logger) (Downloader, error) {
+	fs, err := getFS(ctx, cfg, log)
+	if err != nil {
+		return nil, err
 	}
 
-	d.log.Info("creating tmp directory", zap.String("dir", d.tmpDir))
-	if err := d.createDirectoryIfNotExists(d.tmpDir); err != nil {
-		return err
-	}
-
-	return nil
+	return &downloader{
+		outputDir: cfg.GetString("dir.output"),
+		log:       log,
+		fs:        fs,
+	}, nil
 }
 
 func (d *downloader) Create(ctx context.Context, info FileInfo) (File, error) {
 	d.log.Info("creating file", zap.String("filename", info.Filename()), zap.String("subdir", info.Subdir()))
 
-	filename, err := getUniqueFilename(d.fs, d.tmpDir, info.Filename())
+	outputDir := path.Join(d.outputDir, info.Subdir())
+	d.log.Info("output directory", zap.String("outputDir", outputDir))
+	if err := createDirectoryIfNotExists(d.fs, outputDir); err != nil {
+		return nil, fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	filename, err := getUniqueFilename(d.fs, outputDir, info.Filename())
 	if err != nil {
 		return nil, err
 	}
 
-	f, err := d.fs.Create(filepath.Clean(filepath.Join(d.tmpDir, filename)))
+	f, err := d.fs.Create(path.Join(outputDir, filename))
 	if err != nil {
 		return nil, err
 	}
 
 	return &file{
-		d:       d,
-		subdir:  info.Subdir(),
-		tmpFile: f,
+		fs:   d.fs,
+		file: f,
 	}, nil
 }
 
-func (d *downloader) Cleanup() {
-	d.log.Info("removing tmp directory", zap.String("dir", d.tmpDir))
-	if err := d.removeDirectoryIfExists(d.tmpDir); err != nil {
-		d.log.Error("failed to remove tmp directory", zap.Error(err))
-	}
-}
-
-func (d *downloader) createDirectoryIfNotExists(dir string) error {
-	ok, err := afero.DirExists(d.fs, dir)
+// createDirectoryIfNotExists creates a directory and all parent directories if it does not exist
+func createDirectoryIfNotExists(fs afero.Fs, dir string) error {
+	ok, err := afero.DirExists(fs, dir)
 	if err != nil {
 		return err
 	}
 
 	if !ok {
-		err = d.fs.MkdirAll(dir, 0755)
+		err = fs.MkdirAll(dir, 0755)
 		if err != nil {
 			return err
 		}
@@ -93,25 +92,10 @@ func (d *downloader) createDirectoryIfNotExists(dir string) error {
 	return nil
 }
 
-func (d *downloader) removeDirectoryIfExists(dir string) error {
-	ok, err := afero.DirExists(d.fs, dir)
-	if err != nil {
-		return err
-	}
-
-	if ok {
-		err = d.fs.RemoveAll(dir)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func getUniqueFilename(fs afero.Fs, path string, filename string) (string, error) {
-	fullPath := filepath.Join(path, filename)
-	fileExt := filepath.Ext(filename)
+// getUniqueFilename returns a unique filename by appending a number to the end of the filename if it already exists
+func getUniqueFilename(fs afero.Fs, dir string, filename string) (string, error) {
+	fullPath := path.Join(dir, filename)
+	fileExt := path.Ext(filename)
 	fileNameOnly := strings.TrimSuffix(filename, fileExt)
 
 	ok, err := afero.Exists(fs, fullPath)
@@ -124,7 +108,7 @@ func getUniqueFilename(fs afero.Fs, path string, filename string) (string, error
 		i := 1
 		for {
 			newFilename := fmt.Sprintf("%s_%d%s", fileNameOnly, i, fileExt)
-			newFullPath := filepath.Join(path, newFilename)
+			newFullPath := path.Join(dir, newFilename)
 
 			ok, err := afero.Exists(fs, newFullPath)
 			if err != nil {
