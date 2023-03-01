@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/config/viper"
+	"github.com/johnnyipcom/tgdownloader/pkg/downloader"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -23,6 +25,9 @@ type Root struct {
 	client telegram.Client
 	log    *zap.Logger
 	level  zap.AtomicLevel
+
+	downloader downloader.Downloader
+	downOnce   sync.Once
 }
 
 // NewRoot creates a new root command.
@@ -105,7 +110,7 @@ func (r *Root) loadConfig() {
 }
 
 func (r *Root) initClient() {
-	client, err := telegram.NewClient(r.cfg, r.log)
+	client, err := telegram.NewClient(r.cfg.Sub("telegram"), r.log.Named("telegram"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -114,10 +119,19 @@ func (r *Root) initClient() {
 	r.client = client
 }
 
+func (r *Root) initDownloader(ctx context.Context) {
+	downloader, err := downloader.NewDownloader(ctx, r.cfg.Sub("downloader"), r.log.Named("downloader"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	r.downloader = downloader
+}
+
 func (r *Root) initLogger() {
 	zapConfig := zap.NewDevelopmentConfig()
-	logCfg := r.cfg.Sub("logger")
-	if err := logCfg.Unmarshal(&zapConfig); err != nil {
+	if err := r.cfg.Sub("logger").Unmarshal(&zapConfig); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -135,4 +149,12 @@ func (r *Root) initLogger() {
 	}
 
 	r.log = log
+}
+
+func (r *Root) getDownloader(ctx context.Context) downloader.Downloader {
+	r.downOnce.Do(func() {
+		r.initDownloader(ctx)
+	})
+
+	return r.downloader
 }

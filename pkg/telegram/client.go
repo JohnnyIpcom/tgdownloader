@@ -3,6 +3,7 @@ package telegram
 import (
 	"bufio"
 	"context"
+	"crypto/rsa"
 	"fmt"
 	"os"
 	"strings"
@@ -14,8 +15,11 @@ import (
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/peers"
+	"github.com/gotd/td/telegram/updates"
+	"github.com/gotd/td/telegram/updates/hook"
 	"github.com/gotd/td/tg"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
+	"github.com/johnnyipcom/tgdownloader/pkg/key"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
@@ -25,33 +29,69 @@ type Client interface {
 	FileClient
 	UserClient
 
-	Run(ctx context.Context, f func(context.Context, Client) error) error
+	Run(ctx context.Context, f func(context.Context, Client) error, opts ...RunOption) error
 }
 
 type client struct {
 	config     config.Config
 	logger     *zap.Logger
 	client     *tgclient.Client
+	keys       []tgclient.PublicKey
 	peerMgr    *peers.Manager
+	updMgr     *updates.Manager
+	session    session.Loader
 	downloader *downloader.Downloader
+	dispatcher tg.UpdateDispatcher
 }
 
 var _ Client = (*client)(nil)
 
+func NewPublicKey(key *rsa.PublicKey) tgclient.PublicKey {
+	return tgclient.PublicKey{
+		RSA: key,
+	}
+}
+
 func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 	storage := &session.FileStorage{
-		Path: cfg.GetString("telegram.session.path"),
+		Path: cfg.GetString("session.path"),
 	}
 
-	c := tgclient.NewClient(cfg.GetInt("telegram.app.id"), cfg.GetString("telegram.app.hash"), tgclient.Options{
+	var keys []tgclient.PublicKey
+
+	publicKeys := cfg.GetStringSlice("mtproto.public_keys")
+	for _, publicKey := range publicKeys {
+		publicKeyData, err := os.ReadFile(publicKey)
+		if err != nil {
+			return nil, err
+		}
+
+		k, err := key.ParsePublicKey(publicKeyData)
+		if err != nil {
+			return nil, err
+		}
+
+		keys = append(keys, NewPublicKey(k))
+	}
+
+	d := tg.NewUpdateDispatcher()
+	gaps := updates.New(updates.Config{
+		Handler: d,
+		Logger:  log.Named("gaps"),
+	})
+
+	c := tgclient.NewClient(cfg.GetInt("app.id"), cfg.GetString("app.hash"), tgclient.Options{
 		Logger:         log.Named("client"),
 		SessionStorage: storage,
+		PublicKeys:     keys,
+		UpdateHandler:  gaps,
 		Middlewares: []tgclient.Middleware{
 			ratelimit.New(
-				rate.Every(cfg.GetDuration("telegram.rate.limit")),
-				cfg.GetInt("telegram.rate.burst"),
+				rate.Every(cfg.GetDuration("rate.limit")),
+				cfg.GetInt("rate.burst"),
 			),
 			floodwait.NewSimpleWaiter(),
+			hook.UpdateHook(gaps.Handle),
 		},
 	})
 
@@ -63,8 +103,12 @@ func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 		config:     cfg,
 		logger:     log,
 		client:     c,
+		keys:       keys,
 		peerMgr:    peerMgr,
+		updMgr:     gaps,
+		session:    session.Loader{Storage: storage},
 		downloader: downloader.NewDownloader(),
+		dispatcher: d,
 	}, nil
 }
 
@@ -80,7 +124,34 @@ func (c *codeAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode)
 	return strings.TrimSpace(code), nil
 }
 
-func (c *client) Run(ctx context.Context, f func(context.Context, Client) error) error {
+type runOptions struct {
+	infinite bool
+}
+
+type RunOption interface {
+	apply(*runOptions) error
+}
+
+type runInfiniteOption struct{}
+
+func (runInfiniteOption) apply(o *runOptions) error {
+	o.infinite = true
+	return nil
+}
+
+func RunInfinite() RunOption {
+	return runInfiniteOption{}
+}
+
+// Run starts client session.
+func (c *client) Run(ctx context.Context, f func(context.Context, Client) error, opts ...RunOption) error {
+	options := runOptions{}
+	for _, opt := range opts {
+		if err := opt.apply(&options); err != nil {
+			return err
+		}
+	}
+
 	return c.client.Run(ctx, func(ctx context.Context) error {
 		c.logger.Info("auth start")
 		flow := auth.NewFlow(
@@ -96,6 +167,35 @@ func (c *client) Run(ctx context.Context, f func(context.Context, Client) error)
 		}
 
 		c.logger.Info("auth success")
-		return f(ctx, c)
+
+		user, err := c.client.Self(ctx)
+		if err != nil {
+			return fmt.Errorf("fetch self: %w", err)
+		}
+
+		c.logger.Info("self", zap.Stringer("user", user))
+		if !options.infinite {
+			return f(ctx, c)
+		}
+
+		c.logger.Info("updates start")
+		if err := c.updMgr.Auth(ctx, c.client.API(), user.GetID(), false, true); err != nil {
+			return fmt.Errorf("auth updates: %w", err)
+		}
+
+		defer func() {
+			if err := c.updMgr.Logout(); err != nil {
+				c.logger.Error("logout", zap.Error(err))
+			}
+
+			c.logger.Info("logout success")
+		}()
+
+		if err := f(ctx, c); err != nil {
+			return fmt.Errorf("run: %w", err)
+		}
+
+		<-ctx.Done()
+		return ctx.Err()
 	})
 }
