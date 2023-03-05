@@ -8,8 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gotd/contrib/middleware/floodwait"
-	"github.com/gotd/contrib/middleware/ratelimit"
 	"github.com/gotd/td/session"
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
@@ -18,16 +16,23 @@ import (
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/telegram/updates/hook"
 	"github.com/gotd/td/tg"
+	"github.com/johnnyipcom/gotd-contrib/bbolt"
+	"github.com/johnnyipcom/gotd-contrib/middleware/floodwait"
+	"github.com/johnnyipcom/gotd-contrib/middleware/ratelimit"
+	"github.com/johnnyipcom/gotd-contrib/storage"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/key"
+	bboltdb "go.etcd.io/bbolt"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
 
 type Client interface {
-	ChatClient
+	PeerClient
 	FileClient
 	UserClient
+	DialogClient
+	CacheClient
 
 	Run(ctx context.Context, f func(context.Context, Client) error, opts ...RunOption) error
 }
@@ -36,12 +41,11 @@ type client struct {
 	config     config.Config
 	logger     *zap.Logger
 	client     *tgclient.Client
-	keys       []tgclient.PublicKey
 	peerMgr    *peers.Manager
 	updMgr     *updates.Manager
-	session    session.Loader
 	downloader *downloader.Downloader
 	dispatcher tg.UpdateDispatcher
+	peerStore  storage.PeerStorage
 }
 
 var _ Client = (*client)(nil)
@@ -53,38 +57,15 @@ func NewPublicKey(key *rsa.PublicKey) tgclient.PublicKey {
 }
 
 func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
-	storage := &session.FileStorage{
-		Path: cfg.GetString("session.path"),
-	}
-
-	var keys []tgclient.PublicKey
-
-	publicKeys := cfg.GetStringSlice("mtproto.public_keys")
-	for _, publicKey := range publicKeys {
-		publicKeyData, err := os.ReadFile(publicKey)
-		if err != nil {
-			return nil, err
-		}
-
-		k, err := key.ParsePublicKey(publicKeyData)
-		if err != nil {
-			return nil, err
-		}
-
-		keys = append(keys, NewPublicKey(k))
-	}
-
-	d := tg.NewUpdateDispatcher()
+	dispatcher := tg.NewUpdateDispatcher()
 	gaps := updates.New(updates.Config{
-		Handler: d,
+		Handler: dispatcher,
 		Logger:  log.Named("gaps"),
 	})
 
-	c := tgclient.NewClient(cfg.GetInt("app.id"), cfg.GetString("app.hash"), tgclient.Options{
-		Logger:         log.Named("client"),
-		SessionStorage: storage,
-		PublicKeys:     keys,
-		UpdateHandler:  gaps,
+	options := tgclient.Options{
+		Logger:        log.Named("client"),
+		UpdateHandler: gaps,
 		Middlewares: []tgclient.Middleware{
 			ratelimit.New(
 				rate.Every(cfg.GetDuration("rate.limit")),
@@ -93,7 +74,46 @@ func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 			floodwait.NewSimpleWaiter(),
 			hook.UpdateHook(gaps.Handle),
 		},
-	})
+	}
+
+	var peerStorage storage.PeerStorage
+	if cfg.IsSet("storage.path") {
+		db, err := bboltdb.Open(cfg.GetString("storage.path"), 0600, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		peerStorage = bbolt.NewPeerStorage(db, []byte("peers"))
+	}
+
+	if cfg.IsSet("session.path") {
+		options.SessionStorage = &session.FileStorage{
+			Path: cfg.GetString("session.path"),
+		}
+	}
+
+	if cfg.IsSet("mtproto.public_keys") {
+		var keys []tgclient.PublicKey
+
+		publicKeys := cfg.GetStringSlice("mtproto.public_keys")
+		for _, publicKey := range publicKeys {
+			publicKeyData, err := os.ReadFile(publicKey)
+			if err != nil {
+				return nil, err
+			}
+
+			k, err := key.ParsePublicKey(publicKeyData)
+			if err != nil {
+				return nil, err
+			}
+
+			keys = append(keys, NewPublicKey(k))
+		}
+
+		options.PublicKeys = keys
+	}
+
+	c := tgclient.NewClient(cfg.GetInt("app.id"), cfg.GetString("app.hash"), options)
 
 	peerMgr := peers.Options{
 		Logger: log.Named("peers"),
@@ -103,12 +123,11 @@ func NewClient(cfg config.Config, log *zap.Logger) (Client, error) {
 		config:     cfg,
 		logger:     log,
 		client:     c,
-		keys:       keys,
 		peerMgr:    peerMgr,
 		updMgr:     gaps,
-		session:    session.Loader{Storage: storage},
 		downloader: downloader.NewDownloader(),
-		dispatcher: d,
+		dispatcher: dispatcher,
+		peerStore:  peerStorage,
 	}, nil
 }
 

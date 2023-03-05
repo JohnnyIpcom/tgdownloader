@@ -148,7 +148,7 @@ func (c *client) GetFiles(ctx context.Context, ID int64, opts ...GetFileOption) 
 	errChan := make(chan error)
 
 	go func() {
-		c.logger.Info("getting files from chat", zap.Int64("chat_id", ID))
+		c.logger.Info("getting files", zap.Int64("id", ID))
 
 		defer close(fileChan)
 		defer close(errChan)
@@ -217,7 +217,7 @@ func (c *client) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan 
 	errChan := make(chan error)
 
 	go func() {
-		c.logger.Info("getting files from new messages", zap.Int64("chat_id", ID))
+		c.logger.Info("getting files from new messages", zap.Int64("id", ID))
 
 		var fileCounter int64
 		c.dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewChannelMessage) error {

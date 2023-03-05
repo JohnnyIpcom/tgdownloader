@@ -19,7 +19,7 @@ func (f writerFunc) Write(p []byte) (int, error) {
 	return f(p)
 }
 
-func newProgressWriter() progress.Writer {
+func newDownloadProgressWriter() progress.Writer {
 	pw := progress.NewWriter()
 	pw.SetAutoStop(false)
 	pw.SetTrackerLength(25)
@@ -100,7 +100,7 @@ func newDownloadCmd(ctx context.Context, r *Root) *cobra.Command {
 			}
 
 			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				pw := newProgressWriter()
+				pw := newDownloadProgressWriter()
 				defer pw.Stop()
 
 				var files <-chan telegram.FileInfo
