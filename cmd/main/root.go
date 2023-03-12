@@ -63,8 +63,8 @@ func NewRoot(version string) (*Root, error) {
 func (r *Root) newVersionCmd() *cobra.Command {
 	versionCmd := &cobra.Command{
 		Use:   "version",
-		Short: "print version info",
-		Long:  "print version info",
+		Short: "Print version info",
+		Long:  "Print version info",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("Telegram CLI Downloader v%s\n", r.version)
 		},
@@ -73,8 +73,8 @@ func (r *Root) newVersionCmd() *cobra.Command {
 	return versionCmd
 }
 
-// getRootCmd returns the root command.
-func (r *Root) getRootCmd() *cobra.Command {
+// newRootCmd returns the root command.
+func (r *Root) newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "tgdownloader",
 		Short: "Telegram CLI Downloader",
@@ -124,7 +124,7 @@ func (r *Root) getRootCmd() *cobra.Command {
 
 // ExecuteContext executes the root command with the given context.
 func (r *Root) ExecuteContext(ctx context.Context) error {
-	rootCmd := r.getRootCmd()
+	rootCmd := r.newRootCmd()
 
 	cc.Init(&cc.Config{
 		RootCmd:  rootCmd,

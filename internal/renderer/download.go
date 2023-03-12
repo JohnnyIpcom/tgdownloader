@@ -22,13 +22,13 @@ func WithNumTrackersExpected(n int) DownloadRendererOption {
 // NewDownloadRenderer creates a new download renderer.
 func NewDownloadRenderer(opts ...DownloadRendererOption) *DownloadRenderer {
 	pw := progress.NewWriter()
-	pw.SetAutoStop(true)
+	pw.SetAutoStop(false)
 	pw.SetTrackerLength(25)
 	pw.SetTrackerPosition(progress.PositionRight)
-	pw.SetSortBy(progress.SortByPercentDsc)
+	pw.SetSortBy(progress.SortByNone)
 	pw.SetStyle(progress.StyleDefault)
 	pw.SetUpdateFrequency(time.Millisecond * 100)
-	pw.SetNumTrackersExpected(1)
+	pw.SetNumTrackersExpected(5)
 	pw.Style().Colors = progress.StyleColorsExample
 	pw.Style().Options.PercentFormat = "%4.1f%%"
 	pw.Style().Visibility.ETA = true

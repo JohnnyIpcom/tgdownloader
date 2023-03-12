@@ -11,9 +11,9 @@ import (
 
 func (r *Root) newCacheCmd() *cobra.Command {
 	cacheCmd := &cobra.Command{
-		Use:   "cache",
-		Short: "refresh dialog cache",
-		Long:  "refresh dialog cache",
+		Use:   "сache",
+		Short: "Manage cache",
+		Long:  "Manage cache",
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.HelpFunc()(cmd, []string{})
 		},
@@ -21,8 +21,8 @@ func (r *Root) newCacheCmd() *cobra.Command {
 
 	cacheViewCmd := &cobra.Command{
 		Use:   "view",
-		Short: "view dialog cache",
-		Long:  "view dialog cache",
+		Short: "view cache",
+		Long:  "view cache",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return r.client.Run(cmd.Context(), func(ctx context.Context, client *telegram.Client) error {
 				cachedPeers, err := r.client.CacheService.GetPeersFromCache(ctx)
@@ -37,8 +37,8 @@ func (r *Root) newCacheCmd() *cobra.Command {
 
 	cacheUpdateCmd := &cobra.Command{
 		Use:   "update",
-		Short: "update dialog cache",
-		Long:  "update dialog cache",
+		Short: "update cache",
+		Long:  "update cache",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return r.client.Run(cmd.Context(), func(ctx context.Context, client *telegram.Client) error {
 				return r.client.CacheService.UpdateDialogCache(ctx)
