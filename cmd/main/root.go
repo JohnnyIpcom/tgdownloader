@@ -59,6 +59,7 @@ func NewRoot(version string) (*Root, error) {
 	return root, nil
 }
 
+// newVersionCmd creates a command to print the version.
 func (r *Root) newVersionCmd() *cobra.Command {
 	versionCmd := &cobra.Command{
 		Use:   "version",
@@ -72,8 +73,8 @@ func (r *Root) newVersionCmd() *cobra.Command {
 	return versionCmd
 }
 
-// Execute executes the root command.
-func (r *Root) Execute(ctx context.Context) error {
+// getRootCmd returns the root command.
+func (r *Root) getRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "tgdownloader",
 		Short: "Telegram CLI Downloader",
@@ -117,6 +118,13 @@ func (r *Root) Execute(ctx context.Context) error {
 	rootCmd.AddCommand(r.newUserCmd())
 	rootCmd.AddCommand(r.newDialogsCmd())
 	rootCmd.AddCommand(r.newCacheCmd())
+
+	return rootCmd
+}
+
+// ExecuteContext executes the root command with the given context.
+func (r *Root) ExecuteContext(ctx context.Context) error {
+	rootCmd := r.getRootCmd()
 
 	cc.Init(&cc.Config{
 		RootCmd:  rootCmd,
