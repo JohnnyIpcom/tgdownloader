@@ -6,15 +6,12 @@ import (
 	"os"
 	"os/signal"
 
-	cmd "github.com/johnnyipcom/tgdownloader/cmd/main"
+	"github.com/johnnyipcom/tgdownloader/cmd/cmd"
+	"github.com/johnnyipcom/tgdownloader/cmd/version"
 )
 
-func version() string {
-	return "0.3.0"
-}
-
 func main() {
-	root, err := cmd.NewRoot(version())
+	root, err := cmd.NewRoot(version.Version)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
