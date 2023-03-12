@@ -16,14 +16,16 @@ func (d DialogInfo) Err() error {
 	return d.err
 }
 
-type DialogClient interface {
+type DialogService interface {
 	GetAllDialogs(ctx context.Context) (<-chan DialogInfo, int, error)
 }
 
-var _ DialogClient = (*client)(nil)
+type dialogService service
 
-func (c *client) GetAllDialogs(ctx context.Context) (<-chan DialogInfo, int, error) {
-	queryBuilder := query.GetDialogs(c.client.API())
+var _ DialogService = (*dialogService)(nil)
+
+func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan DialogInfo, int, error) {
+	queryBuilder := query.GetDialogs(s.client.API())
 	queryBuilder.BatchSize(100)
 
 	dialogsChan := make(chan DialogInfo)
@@ -37,17 +39,17 @@ func (c *client) GetAllDialogs(ctx context.Context) (<-chan DialogInfo, int, err
 		defer close(dialogsChan)
 
 		queryBuilder.ForEach(ctx, func(ctx context.Context, elem dialogs.Elem) error {
-			if err := c.storeDialog(ctx, elem); err != nil {
+			if err := s.client.storeDialog(ctx, elem); err != nil {
 				return err
 			}
 
-			peer, err := c.peerMgr.FromInputPeer(ctx, elem.Peer)
+			peer, err := s.client.peerMgr.FromInputPeer(ctx, elem.Peer)
 			if err != nil {
 				dialogsChan <- DialogInfo{err: err}
 				return nil
 			}
 
-			dialogsChan <- DialogInfo{Peer: c.getInfoFromPeer(peer)}
+			dialogsChan <- DialogInfo{Peer: getInfoFromPeer(peer)}
 			return nil
 		})
 	}()

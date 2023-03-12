@@ -4,15 +4,23 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
+	"github.com/johnnyipcom/tgdownloader/internal/dwpool"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/config/viper"
-	"github.com/johnnyipcom/tgdownloader/pkg/downloader"
+	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
+	"github.com/johnnyipcom/tgdownloader/pkg/dropbox"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
+
+	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	cc "github.com/ivanpirog/coloredcobra"
 )
 
 // Root is the root command for the application.
@@ -22,12 +30,12 @@ type Root struct {
 	verbosity string
 
 	cfg    config.Config
-	client telegram.Client
+	client *telegram.Client
 	log    *zap.Logger
 	level  zap.AtomicLevel
 
-	downloader downloader.Downloader
-	downOnce   sync.Once
+	loader *dwpool.Downloader
+	ldOnce sync.Once
 }
 
 // NewRoot creates a new root command.
@@ -44,7 +52,24 @@ func NewRoot(version string) (*Root, error) {
 		root.initClient,
 	)
 
+	cobra.OnFinalize(
+		root.syncLogger,
+	)
+
 	return root, nil
+}
+
+func (r *Root) newVersionCmd() *cobra.Command {
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "print version info",
+		Long:  "print version info",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("Telegram CLI Downloader v%s\n", r.version)
+		},
+	}
+
+	return versionCmd
 }
 
 // Execute executes the root command.
@@ -75,6 +100,7 @@ func (r *Root) Execute(ctx context.Context) error {
 	)
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		cmd.SetContext(ctxlogger.WithLogger(cmd.Context(), r.log))
 		level, err := zap.ParseAtomicLevel(r.verbosity)
 		if err != nil {
 			return err
@@ -84,24 +110,24 @@ func (r *Root) Execute(ctx context.Context) error {
 		return nil
 	}
 
-	versionCmd := &cobra.Command{
-		Use:   "version",
-		Short: "print version info",
-		Long:  "print version info",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("Telegram CLI Downloader v%s\n", r.version)
-		},
-	}
+	rootCmd.AddCommand(r.newVersionCmd())
+	rootCmd.AddCommand(r.newPeerCmd())
+	rootCmd.AddCommand(r.newChatCmd())
+	rootCmd.AddCommand(r.newChannelCmd())
+	rootCmd.AddCommand(r.newUserCmd())
+	rootCmd.AddCommand(r.newDialogsCmd())
+	rootCmd.AddCommand(r.newCacheCmd())
 
-	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(newPeerCmd(ctx, r))
-	rootCmd.AddCommand(newChatCmd(ctx, r))
-	rootCmd.AddCommand(newChannelCmd(ctx, r))
-	rootCmd.AddCommand(newDialogsCmd(ctx, r))
-	rootCmd.AddCommand(newDownloadCmd(ctx, r))
-	rootCmd.AddCommand(newCacheCmd(ctx, r))
+	cc.Init(&cc.Config{
+		RootCmd:  rootCmd,
+		Headings: cc.HiCyan + cc.Bold + cc.Underline,
+		Commands: cc.HiYellow + cc.Bold,
+		Example:  cc.Italic,
+		ExecName: cc.Bold,
+		Flags:    cc.Bold,
+	})
 
-	return rootCmd.Execute()
+	return rootCmd.ExecuteContext(ctx)
 }
 
 func (r *Root) loadConfig() {
@@ -119,16 +145,6 @@ func (r *Root) initClient() {
 	}
 
 	r.client = client
-}
-
-func (r *Root) initDownloader(ctx context.Context) {
-	downloader, err := downloader.NewDownloader(ctx, r.cfg.Sub("downloader"), r.log.Named("downloader"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	r.downloader = downloader
 }
 
 func (r *Root) initLogger() {
@@ -153,10 +169,35 @@ func (r *Root) initLogger() {
 	r.log = log
 }
 
-func (r *Root) getDownloader(ctx context.Context) downloader.Downloader {
-	r.downOnce.Do(func() {
-		r.initDownloader(ctx)
+func (r *Root) syncLogger() {
+	_ = r.log.Sync()
+	fmt.Println("Logger synced")
+}
+
+func (r *Root) getDownloader(ctx context.Context) *dwpool.Downloader {
+	r.ldOnce.Do(func() {
+		var fs afero.Fs
+		switch strings.ToLower(r.cfg.GetString("downloader.type")) {
+		case "local":
+			fs = afero.NewOsFs()
+
+		case "dropbox":
+			dropbox, err := dropbox.NewFs(ctx, r.cfg.Sub("downloader.dropbox"), r.log.Named("dropbox"))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+
+			fs = dropbox
+
+		default:
+			fmt.Fprintln(os.Stderr, "Unknown file system type")
+			os.Exit(1)
+		}
+
+		r.loader = dwpool.NewDownloader(fs, r.client.FileService, 5)
+		r.loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
 	})
 
-	return r.downloader
+	return r.loader
 }

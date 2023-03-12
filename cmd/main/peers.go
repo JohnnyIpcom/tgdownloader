@@ -2,162 +2,17 @@ package cmd
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"time"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
-	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
+
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 )
 
-func renderPeerTable(chats []telegram.PeerInfo) {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.SetAutoIndex(true)
-	t.AppendHeader(
-		table.Row{
-			"Name",
-			"ID",
-			"Type",
-		},
-	)
-
-	t.SortBy([]table.SortBy{
-		{Name: "Name", Mode: table.Asc},
-	})
-
-	for _, chat := range chats {
-		t.AppendRow(
-			table.Row{
-				chat.Name,
-				chat.ID,
-				chat.Type.String(),
-			},
-		)
-	}
-
-	t.Render()
-}
-
-func renderUserTable(users []telegram.UserInfo) {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.SetAutoIndex(true)
-	t.AppendHeader(
-		table.Row{
-			"ID",
-			"Username",
-			"First Name",
-			"Last Name",
-		},
-	)
-
-	t.SortBy([]table.SortBy{
-		{Name: "ID", Mode: table.AscNumeric},
-	})
-
-	for _, user := range users {
-		t.AppendRow(
-			table.Row{
-				user.ID,
-				user.Username,
-				user.FirstName,
-				user.LastName,
-			},
-		)
-	}
-
-	t.Render()
-}
-
-func renderUser(user telegram.UserInfo) {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.AppendHeader(
-		table.Row{
-			"ID",
-			"Username",
-			"First Name",
-			"Last Name",
-		},
-	)
-
-	t.AppendRow(
-		table.Row{
-			user.ID,
-			user.Username,
-			user.FirstName,
-			user.LastName,
-		},
-	)
-
-	t.Render()
-}
-
-func renderUserTableAsync(ctx context.Context, u <-chan telegram.UserInfo, total int) error {
-	pw := progress.NewWriter()
-	pw.SetAutoStop(true)
-	pw.SetTrackerLength(25)
-	pw.SetTrackerPosition(progress.PositionRight)
-	pw.SetSortBy(progress.SortByPercentDsc)
-	pw.SetStyle(progress.StyleDefault)
-	pw.SetUpdateFrequency(time.Millisecond * 100)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.PercentFormat = "%4.1f%%"
-	pw.Style().Visibility.ETA = true
-	pw.Style().Visibility.ETAOverall = true
-
-	go pw.Render()
-
-	tracker := &progress.Tracker{
-		Total:   int64(total),
-		Message: "Fetching users",
-		Units:   progress.UnitsDefault,
-	}
-
-	pw.AppendTracker(tracker)
-	var users []telegram.UserInfo
-
-	defer func() {
-		for pw.IsRenderInProgress() {
-			time.Sleep(time.Millisecond)
-		}
-
-		renderUserTable(users)
-	}()
-
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-
-			case user, ok := <-u:
-				if !ok {
-					return nil
-				}
-
-				tracker.Increment(1)
-				users = append(users, user)
-			}
-		}
-	})
-
-	if err := g.Wait(); err != nil {
-		tracker.MarkAsErrored()
-		return err
-	}
-
-	tracker.MarkAsDone()
-	return nil
-}
-
-func newPeerCmd(ctx context.Context, r *Root) *cobra.Command {
+func (r *Root) newPeerCmd() *cobra.Command {
 	peer := &cobra.Command{
 		Use:   "peer",
 		Short: "Manage peers(chats/channels/users)",
@@ -172,13 +27,13 @@ func newPeerCmd(ctx context.Context, r *Root) *cobra.Command {
 		Short: "List all chats/channels",
 		Long:  `List all chats and channels that the user is a member of.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				peers, err := c.GetAllPeers(ctx)
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				peers, err := c.PeerService.GetAllPeers(ctx)
 				if err != nil {
 					return err
 				}
 
-				renderPeerTable(peers)
+				renderer.RenderPeerTable(peers)
 				return nil
 			})
 		},
@@ -190,25 +45,25 @@ func newPeerCmd(ctx context.Context, r *Root) *cobra.Command {
 		Long:  `Find a peer by its data.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				peer, err := c.FindPeer(ctx, args[0])
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				peer, err := c.PeerService.ResolvePeer(ctx, args[0])
 				if err != nil {
 					return err
 				}
 
 				switch peer.Type {
 				case telegram.PeerTypeUser:
-					user, err := c.GetUser(ctx, peer.ID)
+					user, err := c.UserService.GetUser(ctx, peer.ID)
 					if err != nil {
 						return err
 					}
 
-					renderUser(user)
+					renderer.RenderUser(user)
 
 				case telegram.PeerTypeChat:
 					fallthrough
 				case telegram.PeerTypeChannel:
-					renderPeerTable([]telegram.PeerInfo{peer})
+					renderer.RenderPeerTable([]telegram.PeerInfo{peer})
 				}
 				return nil
 			})
@@ -220,7 +75,7 @@ func newPeerCmd(ctx context.Context, r *Root) *cobra.Command {
 	return peer
 }
 
-func newChatCmd(ctx context.Context, r *Root) *cobra.Command {
+func (r *Root) newChatCmd() *cobra.Command {
 	chat := &cobra.Command{
 		Use:   "chat",
 		Short: "Manage chats",
@@ -251,14 +106,14 @@ func newChatCmd(ctx context.Context, r *Root) *cobra.Command {
 				return err
 			}
 
-			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				users, total, err := c.GetAllUsersFromChat(ctx, chatID)
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				users, total, err := c.UserService.GetAllUsersFromChat(ctx, chatID)
 				if err != nil {
 					r.log.Error("failed to get users", zap.Error(err))
 					return err
 				}
 
-				return renderUserTableAsync(ctx, users, total)
+				return renderer.RenderUserTableAsync(ctx, users, total)
 			})
 		},
 	}
@@ -281,18 +136,119 @@ func newChatCmd(ctx context.Context, r *Root) *cobra.Command {
 				return err
 			}
 
-			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				users, err := c.GetUsersFromChat(ctx, chatID, userQuery)
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				users, err := c.UserService.GetUsersFromChat(ctx, chatID, userQuery)
 				if err != nil {
 					r.log.Error("failed to get users", zap.Error(err))
 					return err
 				}
 
-				renderUserTable(users)
+				renderer.RenderUserTable(users)
 				return nil
 			})
 		},
 	}
+
+	downloadCmd := &cobra.Command{
+		Use:   "download",
+		Short: "Download files from a chat",
+		Long:  `Download files from a chat.`,
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.HelpFunc()(cmd, args)
+		},
+	}
+
+	type downloadOptions struct {
+		limit      int
+		user       int64
+		offsetDate string
+	}
+
+	var opts downloadOptions
+
+	downloadHistoryCmd := &cobra.Command{
+		Use:   "history",
+		Short: "Download files from a chat history",
+		Long:  `Download files from a chat history.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ID, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				r.log.Error("failed to convert chatID", zap.Error(err))
+				return err
+			}
+
+			var getFileOptions []telegram.GetFileOption
+			getFileOptions = append(getFileOptions, telegram.GetFileWithUserID(opts.user))
+
+			if opts.limit > 0 {
+				getFileOptions = append(getFileOptions, telegram.GetFileWithLimit(opts.limit))
+			}
+
+			if opts.offsetDate != "" {
+				offsetDate, err := time.Parse("2006-01-02 15:04:05", opts.offsetDate)
+				if err != nil {
+					r.log.Error("failed to parse offset date", zap.Error(err))
+					return err
+				}
+
+				getFileOptions = append(getFileOptions, telegram.GetFileWithOffsetDate(int(offsetDate.Unix())))
+			}
+
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				files, err := c.FileService.GetFiles(
+					ctx,
+					telegram.PeerInfo{
+						ID:   ID,
+						Type: telegram.PeerTypeChat,
+					},
+					getFileOptions...,
+				)
+				if err != nil {
+					return err
+				}
+
+				downloader := r.getDownloader(ctx)
+				downloader.Start(ctx)
+				downloader.RunAsyncDownloader(ctx, files)
+				return downloader.Stop(ctx)
+			})
+		},
+	}
+
+	downloadHistoryCmd.Flags().IntVarP(&opts.limit, "limit", "l", 0, "Limit of files to download")
+	downloadHistoryCmd.Flags().Int64VarP(&opts.user, "user", "u", 0, "User ID to download from")
+	downloadHistoryCmd.Flags().StringVarP(&opts.offsetDate, "offset-date", "d", "", "Offset date to download from, format: 2006-01-02 15:04:05")
+
+	downloadWatcherCmd := &cobra.Command{
+		Use:   "watcher",
+		Short: "Watch a chat for new files",
+		Long:  `Watch a chat for new files.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ID, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				r.log.Error("failed to convert chatID", zap.Error(err))
+				return err
+			}
+
+			return r.client.Run(cmd.Context(), r.client.WithUpdates(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				files, err := c.FileService.GetFilesFromNewMessages(ctx, ID)
+				if err != nil {
+					return err
+				}
+
+				downloader := r.getDownloader(ctx)
+				downloader.Start(ctx)
+				downloader.RunAsyncDownloader(ctx, files)
+				return downloader.Stop(ctx)
+			}))
+		},
+	}
+
+	downloadCmd.AddCommand(downloadHistoryCmd)
+	downloadCmd.AddCommand(downloadWatcherCmd)
 
 	userFindCmd.Flags().StringP("user", "u", "", "Username/first name/last name of the user to find")
 	userFindCmd.MarkFlagRequired("user")
@@ -301,10 +257,11 @@ func newChatCmd(ctx context.Context, r *Root) *cobra.Command {
 	userCmd.AddCommand(userFindCmd)
 
 	chat.AddCommand(userCmd)
+	chat.AddCommand(downloadCmd)
 	return chat
 }
 
-func newChannelCmd(ctx context.Context, r *Root) *cobra.Command {
+func (r *Root) newChannelCmd() *cobra.Command {
 	channel := &cobra.Command{
 		Use:   "channel",
 		Short: "Manage channels",
@@ -335,14 +292,14 @@ func newChannelCmd(ctx context.Context, r *Root) *cobra.Command {
 				return err
 			}
 
-			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				u, total, err := c.GetAllUsersFromChannel(ctx, channelID)
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				u, total, err := c.UserService.GetAllUsersFromChannel(ctx, channelID)
 				if err != nil {
 					r.log.Error("failed to get users", zap.Error(err))
 					return err
 				}
 
-				return renderUserTableAsync(ctx, u, total)
+				return renderer.RenderUserTableAsync(ctx, u, total)
 			})
 		},
 	}
@@ -353,7 +310,7 @@ func newChannelCmd(ctx context.Context, r *Root) *cobra.Command {
 		Long:  `List all users in a channel from its message history.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			chatID, err := strconv.ParseInt(args[0], 10, 64)
+			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
 				r.log.Error("failed to convert chatID", zap.Error(err))
 				return err
@@ -365,32 +322,23 @@ func newChannelCmd(ctx context.Context, r *Root) *cobra.Command {
 				return err
 			}
 
-			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				usersChan, errors := c.GetUsersFromMessageHistory(ctx, chatID, userQuery)
-				g, ctx := errgroup.WithContext(ctx)
-				g.Go(func() error {
-					for {
-						select {
-						case <-ctx.Done():
-							return ctx.Err()
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				usersChan, err := c.UserService.GetUsersFromMessageHistory(
+					ctx,
+					telegram.PeerInfo{
+						ID:   channelID,
+						Type: telegram.PeerTypeChannel,
+					},
+					userQuery,
+				)
 
-						case err, ok := <-errors:
-							if !ok {
-								return nil
-							}
-							r.log.Error("failed to get user", zap.Error(err))
+				if err != nil {
+					r.log.Error("failed to get users", zap.Error(err))
+					return err
+				}
 
-						case user, ok := <-usersChan:
-							if !ok {
-								return nil
-							}
-
-							renderUser(user)
-						}
-					}
-				})
-
-				return g.Wait()
+				renderer.RenderUserAsync(ctx, usersChan)
+				return nil
 			})
 		},
 	}
@@ -415,14 +363,14 @@ func newChannelCmd(ctx context.Context, r *Root) *cobra.Command {
 				return err
 			}
 
-			return r.client.Run(ctx, func(ctx context.Context, c telegram.Client) error {
-				users, err := c.GetUsersFromChannel(ctx, channelID, userQuery)
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				users, err := c.UserService.GetUsersFromChannel(ctx, channelID, userQuery)
 				if err != nil {
 					r.log.Error("failed to get users", zap.Error(err))
 					return err
 				}
 
-				renderUserTable(users)
+				renderer.RenderUserTable(users)
 				return nil
 			})
 		},
@@ -431,10 +379,227 @@ func newChannelCmd(ctx context.Context, r *Root) *cobra.Command {
 	userFindCmd.Flags().StringP("user", "u", "", "Username/first name/last name of the user to find")
 	userFindCmd.MarkFlagRequired("user")
 
+	downloadCmd := &cobra.Command{
+		Use:   "download",
+		Short: "Download files from a channel",
+		Long:  `Download files from a channel.`,
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.HelpFunc()(cmd, args)
+		},
+	}
+
+	type downloadOptions struct {
+		limit      int
+		user       int64
+		offsetDate string
+	}
+
+	var opts downloadOptions
+
+	downloadHistoryCmd := &cobra.Command{
+		Use:   "history",
+		Short: "Download files from a channel history",
+		Long:  `Download files from a channel history.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ID, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				r.log.Error("failed to convert chatID", zap.Error(err))
+				return err
+			}
+
+			var getFileOptions []telegram.GetFileOption
+			getFileOptions = append(getFileOptions, telegram.GetFileWithUserID(opts.user))
+
+			if opts.limit > 0 {
+				getFileOptions = append(getFileOptions, telegram.GetFileWithLimit(opts.limit))
+			}
+
+			if opts.offsetDate != "" {
+				offsetDate, err := time.Parse("2006-01-02 15:04:05", opts.offsetDate)
+				if err != nil {
+					r.log.Error("failed to parse offset date", zap.Error(err))
+					return err
+				}
+
+				getFileOptions = append(getFileOptions, telegram.GetFileWithOffsetDate(int(offsetDate.Unix())))
+			}
+
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				files, err := c.FileService.GetFiles(
+					ctx,
+					telegram.PeerInfo{
+						ID:   ID,
+						Type: telegram.PeerTypeChannel,
+					},
+					getFileOptions...,
+				)
+				if err != nil {
+					return err
+				}
+
+				downloader := r.getDownloader(ctx)
+				downloader.Start(ctx)
+				downloader.RunAsyncDownloader(ctx, files)
+				return downloader.Stop(ctx)
+			})
+		},
+	}
+
+	downloadHistoryCmd.Flags().IntVarP(&opts.limit, "limit", "l", 0, "Limit of files to download")
+	downloadHistoryCmd.Flags().Int64VarP(&opts.user, "user", "u", 0, "User ID to download from")
+	downloadHistoryCmd.Flags().StringVarP(&opts.offsetDate, "offset-date", "d", "", "Offset date to download from, format: 2006-01-02 15:04:05")
+
+	downloadWatcherCmd := &cobra.Command{
+		Use:   "watcher",
+		Short: "Watch a channel for new files",
+		Long:  `Watch a channel for new files.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ID, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				r.log.Error("failed to convert chatID", zap.Error(err))
+				return err
+			}
+
+			return r.client.Run(cmd.Context(), r.client.WithUpdates(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				files, err := c.FileService.GetFilesFromNewMessages(ctx, ID)
+				if err != nil {
+					return err
+				}
+
+				downloader := r.getDownloader(ctx)
+				downloader.Start(ctx)
+				downloader.RunAsyncDownloader(ctx, files)
+				return downloader.Stop(ctx)
+			}))
+		},
+	}
+
+	downloadCmd.AddCommand(downloadHistoryCmd)
+	downloadCmd.AddCommand(downloadWatcherCmd)
+
 	userCmd.AddCommand(userListCmd)
 	userCmd.AddCommand(userFindCmd)
 	userCmd.AddCommand(userFromHistoryCmd)
 
 	channel.AddCommand(userCmd)
+	channel.AddCommand(downloadCmd)
 	return channel
+}
+
+func (r *Root) newUserCmd() *cobra.Command {
+	userCmd := &cobra.Command{
+		Use:   "user",
+		Short: "Manage users",
+		Long:  `Manage users`,
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.HelpFunc()(cmd, []string{})
+		},
+	}
+
+	downloadCmd := &cobra.Command{
+		Use:   "download",
+		Short: "Download files from a user",
+		Long:  `Download files from a user.`,
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.HelpFunc()(cmd, args)
+		},
+	}
+
+	type downloadOptions struct {
+		limit      int
+		user       int64
+		offsetDate string
+	}
+
+	var opts downloadOptions
+
+	downloadHistoryCmd := &cobra.Command{
+		Use:   "history",
+		Short: "Download files from a user history",
+		Long:  `Download files from a user history.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ID, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				r.log.Error("failed to convert chatID", zap.Error(err))
+				return err
+			}
+
+			var getFileOptions []telegram.GetFileOption
+			getFileOptions = append(getFileOptions, telegram.GetFileWithUserID(opts.user))
+
+			if opts.limit > 0 {
+				getFileOptions = append(getFileOptions, telegram.GetFileWithLimit(opts.limit))
+			}
+
+			if opts.offsetDate != "" {
+				offsetDate, err := time.Parse("2006-01-02 15:04:05", opts.offsetDate)
+				if err != nil {
+					r.log.Error("failed to parse offset date", zap.Error(err))
+					return err
+				}
+
+				getFileOptions = append(getFileOptions, telegram.GetFileWithOffsetDate(int(offsetDate.Unix())))
+			}
+
+			return r.client.Run(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				files, err := c.FileService.GetFiles(
+					ctx,
+					telegram.PeerInfo{
+						ID:   ID,
+						Type: telegram.PeerTypeUser,
+					},
+					getFileOptions...,
+				)
+				if err != nil {
+					return err
+				}
+
+				downloader := r.getDownloader(ctx)
+				downloader.Start(ctx)
+				downloader.RunAsyncDownloader(ctx, files)
+				return downloader.Stop(ctx)
+			})
+		},
+	}
+
+	downloadHistoryCmd.Flags().IntVarP(&opts.limit, "limit", "l", 0, "Limit of files to download")
+	downloadHistoryCmd.Flags().Int64VarP(&opts.user, "user", "u", 0, "User ID to download from")
+	downloadHistoryCmd.Flags().StringVarP(&opts.offsetDate, "offset-date", "d", "", "Offset date to download from, format: 2006-01-02 15:04:05")
+
+	downloadWatcherCmd := &cobra.Command{
+		Use:   "watcher",
+		Short: "Watch a user for new files",
+		Long:  `Watch a user for new files.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ID, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				r.log.Error("failed to convert chatID", zap.Error(err))
+				return err
+			}
+
+			return r.client.Run(cmd.Context(), r.client.WithUpdates(cmd.Context(), func(ctx context.Context, c *telegram.Client) error {
+				files, err := c.FileService.GetFilesFromNewMessages(ctx, ID)
+				if err != nil {
+					return err
+				}
+
+				downloader := r.getDownloader(ctx)
+				downloader.Start(ctx)
+				downloader.RunAsyncDownloader(ctx, files)
+				return downloader.Stop(ctx)
+			}))
+		},
+	}
+
+	downloadCmd.AddCommand(downloadHistoryCmd)
+	downloadCmd.AddCommand(downloadWatcherCmd)
+
+	userCmd.AddCommand(downloadCmd)
+	return userCmd
 }

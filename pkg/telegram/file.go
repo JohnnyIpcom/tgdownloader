@@ -10,6 +10,7 @@ import (
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
+	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 )
@@ -53,13 +54,15 @@ func (f FileInfo) Filename() string {
 	return f.file.Name
 }
 
-type FileClient interface {
-	GetFiles(ctx context.Context, ID int64, opts ...GetFileOption) (<-chan FileInfo, <-chan error)
-	GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan FileInfo, <-chan error)
+type FileService interface {
+	GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFileOption) (<-chan FileInfo, error)
+	GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan FileInfo, error)
 	Download(ctx context.Context, file FileInfo, out io.Writer) error
 }
 
-var _ FileClient = (*client)(nil)
+type fileService service
+
+var _ FileService = (*fileService)(nil)
 
 type getfileOptions struct {
 	userID     int64
@@ -110,80 +113,44 @@ func GetFileWithOffsetDate(offsetDate int) GetFileOption {
 	return getfileOffsetDateOption{offsetDate: offsetDate}
 }
 
-var ErrNoFiles = errors.New("no files in message")
-
-func (c *client) getFileInfoFromElem(elem messages.Elem) (FileInfo, error) {
-	var from *tg.User
-	peer, ok := elem.Msg.GetFromID()
-	if ok {
-		switch p := peer.(type) {
-		case *tg.PeerUser:
-			from = elem.Entities.Users()[p.UserID]
-
-		default:
-			return FileInfo{}, errors.Errorf("unsupported peer type %T", peer)
-		}
-	}
-
-	file, ok := elem.File()
-	if !ok {
-		return FileInfo{}, ErrNoFiles
-	}
-
-	var size int64
-	if doc, ok := elem.Document(); ok {
-		size = doc.Size
-	}
-
-	return FileInfo{
-		file: file,
-		from: from,
-		size: size,
-	}, nil
-}
-
 // GetFiles returns channel for file IDs and error channel.
-func (c *client) GetFiles(ctx context.Context, ID int64, opts ...GetFileOption) (<-chan FileInfo, <-chan error) {
+func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFileOption) (<-chan FileInfo, error) {
+	options := getfileOptions{
+		limit: int(^uint(0) >> 1), // MaxInt
+	}
+	for _, opt := range opts {
+		if err := opt.apply(&options); err != nil {
+			return nil, err
+		}
+	}
+
+	var fileCounter int64
+
+	inputPeer, err := s.client.getInputPeer(ctx, peer.TDLibPeerID())
+	if err != nil {
+		return nil, err
+	}
+
 	fileChan := make(chan FileInfo)
-	errChan := make(chan error)
-
 	go func() {
-		c.logger.Info("getting files", zap.Int64("id", ID))
-
 		defer close(fileChan)
-		defer close(errChan)
 
-		options := getfileOptions{
-			limit: int(^uint(0) >> 1), // MaxInt
-		}
-		for _, opt := range opts {
-			if err := opt.apply(&options); err != nil {
-				errChan <- err
-				return
-			}
-		}
+		logger := ctxlogger.FromContext(ctx)
 
-		var fileCounter int64
-
-		inputPeer, err := c.getInputPeer(ctx, ID)
-		if err != nil {
-			errChan <- err
-			return
-		}
-
-		queryBuilder := query.Messages(c.client.API()).GetHistory(inputPeer)
+		queryBuilder := query.Messages(s.client.API()).GetHistory(inputPeer)
 		queryBuilder = queryBuilder.OffsetDate(options.offsetDate)
 		queryBuilder = queryBuilder.BatchSize(100)
 
 		if err := queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
 			if atomic.LoadInt64(&fileCounter) >= int64(options.limit) {
-				return fmt.Errorf("limit reached: %d", options.limit)
+				logger.Info("limit reached", zap.Int64("limit", int64(options.limit)))
+				return ErrorLimitReached
 			}
 
-			file, err := c.getFileInfoFromElem(elem)
+			file, err := getFileInfoFromElem(elem)
 			if err != nil {
-				if !errors.Is(err, ErrNoFiles) {
-					errChan <- err
+				if !errors.Is(err, errNoFilesInMessage) {
+					logger.Error("failed to get file info from elem", zap.Error(err))
 					return nil
 				}
 
@@ -204,93 +171,85 @@ func (c *client) GetFiles(ctx context.Context, ID int64, opts ...GetFileOption) 
 
 			return nil
 		}); err != nil {
-			errChan <- err
+			if !errors.Is(err, ErrorLimitReached) {
+				logger.Error("failed to get files", zap.Error(err))
+				return
+			}
+
 			return
 		}
 	}()
 
-	return fileChan, errChan
+	return fileChan, nil
 }
 
-func (c *client) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan FileInfo, <-chan error) {
+// GetFilesFromNewChannelMessages returns files from new messages.
+func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan FileInfo, error) {
 	fileChan := make(chan FileInfo)
-	errChan := make(chan error)
 
-	go func() {
-		c.logger.Info("getting files from new messages", zap.Int64("id", ID))
+	s.client.dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
+		logger := ctxlogger.FromContext(ctx)
 
-		var fileCounter int64
-		c.dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewChannelMessage) error {
-			nonEmpty, ok := update.Message.AsNotEmpty()
-			if !ok {
-				errChan <- fmt.Errorf("empty message")
+		nonEmpty, ok := update.Message.AsNotEmpty()
+		if !ok {
+			logger.Debug("empty message")
+			return nil
+		}
+
+		var peerID int64
+		switch peer := nonEmpty.GetPeerID().(type) {
+		case *tg.PeerChat:
+			peerID = peer.GetChatID()
+
+		case *tg.PeerChannel:
+			peerID = peer.GetChannelID()
+
+		default:
+			logger.Debug("unsupported peer type", zap.Any("peer", peer))
+			return nil
+		}
+
+		if peerID != ID {
+			return nil
+		}
+
+		entities := peer.EntitiesFromUpdate(e)
+
+		msgPeer, err := entities.ExtractPeer(nonEmpty.GetPeerID())
+		if err != nil {
+			msgPeer = &tg.InputPeerEmpty{}
+		}
+
+		file, err := getFileInfoFromElem(messages.Elem{
+			Msg:      nonEmpty,
+			Peer:     msgPeer,
+			Entities: entities,
+		})
+		if err != nil {
+			if !errors.Is(err, errNoFilesInMessage) {
+				logger.Error("failed to get file info from elem", zap.Error(err))
 				return nil
-			}
-
-			var peerID int64
-			switch peer := nonEmpty.GetPeerID().(type) {
-			case *tg.PeerChat:
-				peerID = peer.GetChatID()
-
-			case *tg.PeerChannel:
-				peerID = peer.GetChannelID()
-
-			default:
-				errChan <- fmt.Errorf("unsupported peer type %T", peer)
-				return nil
-			}
-
-			if peerID != ID {
-				return nil
-			}
-
-			switch msg := nonEmpty.(type) {
-			case *tg.Message:
-				c.logger.Debug("got message", zap.Int("id", msg.ID), zap.String("message", msg.Message))
-
-			default:
-				errChan <- fmt.Errorf("unsupported message type %T", msg)
-				return nil
-			}
-
-			entities := peer.EntitiesFromUpdate(e)
-
-			msgPeer, err := entities.ExtractPeer(nonEmpty.GetPeerID())
-			if err != nil {
-				msgPeer = &tg.InputPeerEmpty{}
-			}
-
-			file, err := c.getFileInfoFromElem(messages.Elem{
-				Msg:      nonEmpty,
-				Peer:     msgPeer,
-				Entities: entities,
-			})
-			if err != nil {
-				if !errors.Is(err, ErrNoFiles) {
-					errChan <- err
-					return nil
-				}
-
-				return nil
-			}
-
-			select {
-			case fileChan <- file:
-				atomic.AddInt64(&fileCounter, 1)
-
-			case <-ctx.Done():
-				return ctx.Err()
 			}
 
 			return nil
-		})
-	}()
+		}
 
-	return fileChan, errChan
+		select {
+		case fileChan <- file:
+			// pass
+
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		return nil
+	})
+
+	return fileChan, nil
 }
 
-func (c *client) Download(ctx context.Context, file FileInfo, out io.Writer) error {
-	builder := c.downloader.Download(c.client.API(), file.file.Location)
+func (s *fileService) Download(ctx context.Context, file FileInfo, out io.Writer) error {
+	builder := s.client.downloader.Download(s.client.API(), file.file.Location)
 
 	_, err := builder.Stream(ctx, out)
 	if err != nil {
