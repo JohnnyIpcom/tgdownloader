@@ -30,8 +30,11 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// RunnerFunc is a function that runs on client.
-type RunnerFunc func(context.Context, *Client) error
+// StopFunc is a function that stops service.
+type StopFunc func() error
+
+// LogoutFunc is a function that logs out from Telegram.
+type LogoutFunc func() error
 
 // Client is a Telegram client.
 type Client struct {
@@ -161,49 +164,111 @@ func (c *codeAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode)
 	return strings.TrimSpace(code), nil
 }
 
-// Run starts client session.
-func (c *Client) Run(ctx context.Context, f RunnerFunc) error {
-	return c.client.Run(ctx, func(ctx context.Context) error {
-		fmt.Println("Authenticating...")
-		flow := auth.NewFlow(
-			auth.Constant(
-				c.config.GetString("phone"),
-				c.config.GetString("password"),
-				&codeAuthenticator{}),
-			auth.SendCodeOptions{},
-		)
+func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
+	fmt.Println("Authenticating...")
+	flow := auth.NewFlow(
+		auth.Constant(
+			c.config.GetString("phone"),
+			c.config.GetString("password"),
+			&codeAuthenticator{}),
+		auth.SendCodeOptions{},
+	)
 
-		if err := c.client.Auth().IfNecessary(ctx, flow); err != nil {
-			return fmt.Errorf("auth: %w", err)
+	if err := c.client.Auth().IfNecessary(ctx, flow); err != nil {
+		return func() error { return nil }, fmt.Errorf("auth: %w", err)
+	}
+
+	user, err := c.client.Self(ctx)
+	if err != nil {
+		return func() error { return nil }, fmt.Errorf("fetch self: %w", err)
+	}
+
+	username, _ := user.GetUsername()
+	fmt.Printf("Authenticated as '%s'\n", username)
+
+	fmt.Println("Notifying updates manager...")
+	if err := c.updMgr.Auth(ctx, c.client.API(), user.GetID(), false, true); err != nil {
+		return func() error { return nil }, fmt.Errorf("auth updates: %w", err)
+	}
+
+	fmt.Println("Done")
+	return func() error {
+		fmt.Println("\nLogging out...")
+		if err := c.updMgr.Logout(); err != nil {
+			return err
 		}
 
-		fmt.Println("Authenticated")
-		return f(ctx, c)
-	})
+		fmt.Println("Done")
+		return nil
+	}, nil
 }
 
-func (c *Client) WithUpdates(ctx context.Context, f RunnerFunc) RunnerFunc {
-	return func(ctx context.Context, client *Client) error {
-		user, err := c.client.Self(ctx)
-		if err != nil {
-			return fmt.Errorf("fetch self: %w", err)
-		}
+// Connect connects to Telegram.
+func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
+	ctx, cancel := context.WithCancel(ctx)
 
-		fmt.Println("Authenticating with updates...")
-		if err := c.updMgr.Auth(ctx, c.client.API(), user.GetID(), false, true); err != nil {
-			return fmt.Errorf("auth updates: %w", err)
+	errC := make(chan error, 1)
+	initDone := make(chan struct{})
+	go func() {
+		defer close(errC)
+		errC <- c.client.Run(ctx, func(ctx context.Context) error {
+			logout, err := c.Auth(ctx)
+			if err != nil {
+				return err
+			}
+
+			defer func() {
+				if err := logout(); err != nil {
+					c.logger.Error("logout", zap.Error(err))
+				}
+			}()
+			close(initDone)
+
+			<-ctx.Done()
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return nil
+			}
+
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case <-ctx.Done():
+		cancel()
+		return func() error { return nil }, ctx.Err()
+
+	case err := <-errC:
+		cancel()
+		return func() error { return nil }, err
+
+	case <-initDone:
+	}
+
+	stopFn := func() error {
+		cancel()
+		return <-errC
+	}
+
+	return stopFn, nil
+}
+
+// Run runs the function f with the client.
+func (c *Client) Run(ctx context.Context, f func(context.Context, *Client) error) error {
+	return c.client.Run(ctx, func(ctx context.Context) error {
+		logout, err := c.Auth(ctx)
+		if err != nil {
+			return err
 		}
 
 		defer func() {
-			if err := c.updMgr.Logout(); err != nil {
+			if err := logout(); err != nil {
 				c.logger.Error("logout", zap.Error(err))
 			}
-
-			c.logger.Info("logout success")
 		}()
 
 		return f(ctx, c)
-	}
+	})
 }
 
 func (c *Client) API() *tg.Client {

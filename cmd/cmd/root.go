@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/c-bata/go-prompt"
 	"github.com/johnnyipcom/tgdownloader/internal/dwpool"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/config/viper"
@@ -14,18 +15,18 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/dropbox"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 
+	cc "github.com/ivanpirog/coloredcobra"
+	cp "github.com/stromland/cobra-prompt"
+
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-
-	cc "github.com/ivanpirog/coloredcobra"
 )
 
 // Root is the root command for the application.
 type Root struct {
-	cfgPath   string
 	version   string
 	verbosity string
 
@@ -36,26 +37,48 @@ type Root struct {
 
 	loader *dwpool.Downloader
 	ldOnce sync.Once
+
+	cmdRoot *cobra.Command
 }
 
 // NewRoot creates a new root command.
 func NewRoot(version string) (*Root, error) {
+	cfg := viper.NewConfig()
+	if err := cfg.Load("tgdownloader", ""); err != nil {
+		return nil, err
+	}
+
+	zapConfig := zap.NewDevelopmentConfig()
+	if err := cfg.Sub("logger").Unmarshal(&zapConfig); err != nil {
+		return nil, err
+	}
+
+	enc := zap.NewDevelopmentEncoderConfig()
+	enc.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	zapConfig.EncoderConfig = enc
+
+	level := zap.NewAtomicLevelAt(zapcore.InfoLevel)
+	zapConfig.Level = level
+
+	log, err := zapConfig.Build(zap.AddStacktrace(zapcore.ErrorLevel))
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := telegram.NewClient(cfg.Sub("telegram"), log.Named("telegram"))
+	if err != nil {
+		return nil, err
+	}
+
 	root := &Root{
 		version: version,
 		cfg:     viper.NewConfig(),
-		level:   zap.NewAtomicLevelAt(zap.ErrorLevel),
+		client:  client,
+		log:     log,
+		level:   level,
 	}
 
-	cobra.OnInitialize(
-		root.loadConfig,
-		root.initLogger,
-		root.initClient,
-	)
-
-	cobra.OnFinalize(
-		root.syncLogger,
-	)
-
+	root.cmdRoot = root.newRootCmd()
 	return root, nil
 }
 
@@ -66,7 +89,7 @@ func (r *Root) newVersionCmd() *cobra.Command {
 		Short: "Print version info",
 		Long:  "Print version info",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("Telegram CLI Downloader v%s\n", r.version)
+			fmt.Printf("Telegram CLI Downloader %s\n", r.version)
 		},
 	}
 
@@ -83,14 +106,6 @@ func (r *Root) newRootCmd() *cobra.Command {
 			cmd.HelpFunc()(cmd, []string{})
 		},
 	}
-
-	rootCmd.PersistentFlags().StringVarP(
-		&r.cfgPath,
-		"config",
-		"c",
-		"",
-		"config file (default \"$HOME/.tgdownloader\")",
-	)
 
 	rootCmd.PersistentFlags().StringVarP(
 		&r.verbosity,
@@ -111,6 +126,11 @@ func (r *Root) newRootCmd() *cobra.Command {
 		return nil
 	}
 
+	rootCmd.PersistentPostRun = func(cmd *cobra.Command, args []string) {
+		r.log.Sync()
+		fmt.Println("Bye! :)")
+	}
+
 	rootCmd.AddCommand(r.newVersionCmd())
 	rootCmd.AddCommand(r.newPeerCmd())
 	rootCmd.AddCommand(r.newChatCmd())
@@ -118,16 +138,12 @@ func (r *Root) newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(r.newUserCmd())
 	rootCmd.AddCommand(r.newDialogsCmd())
 	rootCmd.AddCommand(r.newCacheCmd())
-
 	return rootCmd
 }
 
-// ExecuteContext executes the root command with the given context.
 func (r *Root) ExecuteContext(ctx context.Context) error {
-	rootCmd := r.newRootCmd()
-
 	cc.Init(&cc.Config{
-		RootCmd:  rootCmd,
+		RootCmd:  r.cmdRoot,
 		Headings: cc.HiCyan + cc.Bold + cc.Underline,
 		Commands: cc.HiYellow + cc.Bold,
 		Example:  cc.Italic,
@@ -135,51 +151,51 @@ func (r *Root) ExecuteContext(ctx context.Context) error {
 		Flags:    cc.Bold,
 	})
 
-	return rootCmd.ExecuteContext(ctx)
+	return r.client.Run(ctx, func(ctx context.Context, c *telegram.Client) error {
+		return r.cmdRoot.ExecuteContext(ctx)
+	})
 }
 
-func (r *Root) loadConfig() {
-	if err := r.cfg.Load("tgdownloader", r.cfgPath); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-}
-
-func (r *Root) initClient() {
-	client, err := telegram.NewClient(r.cfg.Sub("telegram"), r.log.Named("telegram"))
+func (r *Root) RunPrompt(ctx context.Context) error {
+	stop, err := r.client.Connect(ctx)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 
-	r.client = client
-}
+	defer stop()
 
-func (r *Root) initLogger() {
-	zapConfig := zap.NewDevelopmentConfig()
-	if err := r.cfg.Sub("logger").Unmarshal(&zapConfig); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	r.cmdRoot.AddCommand(&cobra.Command{
+		Use:   "exit",
+		Short: "Exit the application",
+		Long:  "Exit the application",
+		Run: func(cmd *cobra.Command, args []string) {
+			stop()
+			os.Exit(0)
+		},
+	})
+
+	prompt := cp.CobraPrompt{
+		RootCmd:                  r.cmdRoot,
+		PersistFlagValues:        true,
+		ShowHelpCommandAndFlags:  true,
+		DisableCompletionCommand: true,
+		GoPromptOptions: []prompt.Option{
+			prompt.OptionTitle("tgdownloader"),
+			prompt.OptionPrefix(">> "),
+		},
+		OnErrorFunc: func(err error) {
+			if strings.Contains(err.Error(), "unknown command") {
+				r.cmdRoot.PrintErrln(err)
+				return
+			}
+
+			r.cmdRoot.PrintErr(err)
+			os.Exit(1)
+		},
 	}
 
-	enc := zap.NewDevelopmentEncoderConfig()
-	enc.EncodeLevel = zapcore.CapitalColorLevelEncoder
-
-	zapConfig.Level = r.level
-	zapConfig.EncoderConfig = enc
-
-	log, err := zapConfig.Build()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	r.log = log
-}
-
-func (r *Root) syncLogger() {
-	_ = r.log.Sync()
-	fmt.Println("Logger synced")
+	prompt.RunContext(ctx)
+	return nil
 }
 
 func (r *Root) getDownloader(ctx context.Context) *dwpool.Downloader {

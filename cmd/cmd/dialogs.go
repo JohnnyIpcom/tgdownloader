@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"strings"
 
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
@@ -30,21 +29,19 @@ func (r *Root) newDialogsCmd() *cobra.Command {
 				return err
 			}
 
-			return r.client.Run(cmd.Context(), func(ctx context.Context, client *telegram.Client) error {
-				dialogs, total, err := client.DialogService.GetAllDialogs(ctx)
-				if err != nil {
-					return err
-				}
+			dialogs, total, err := r.client.DialogService.GetAllDialogs(cmd.Context())
+			if err != nil {
+				return err
+			}
 
-				filterFuncs := []renderer.FilterDialogFunc{}
-				if filter != "" {
-					filterFuncs = append(filterFuncs, func(dialog telegram.DialogInfo) bool {
-						return strings.EqualFold(dialog.Peer.Type.String(), filter)
-					})
-				}
+			filterFuncs := []renderer.FilterDialogFunc{}
+			if filter != "" {
+				filterFuncs = append(filterFuncs, func(dialog telegram.DialogInfo) bool {
+					return strings.EqualFold(dialog.Peer.Type.String(), filter)
+				})
+			}
 
-				return renderer.RenderDialogsTableAsync(ctx, dialogs, total, filterFuncs...)
-			})
+			return renderer.RenderDialogsTableAsync(cmd.Context(), dialogs, total, filterFuncs...)
 		},
 	}
 

@@ -51,6 +51,15 @@
                 "cache",
                 "view",
             ]
+        },
+        {
+            "name": "Prompt",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/main.go",
+            "args": [
+            ]
         }
     ]
 }
