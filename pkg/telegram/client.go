@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/gotd/td/constant"
@@ -24,6 +25,7 @@ import (
 	"github.com/johnnyipcom/gotd-contrib/middleware/ratelimit"
 	"github.com/johnnyipcom/gotd-contrib/storage"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
+	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
 	"github.com/johnnyipcom/tgdownloader/pkg/key"
 	bboltdb "go.etcd.io/bbolt"
 	"go.uber.org/zap"
@@ -39,7 +41,6 @@ type LogoutFunc func() error
 // Client is a Telegram client.
 type Client struct {
 	config     config.Config
-	logger     *zap.Logger
 	client     *tgclient.Client
 	peerMgr    *peers.Manager
 	updMgr     *updates.Manager
@@ -133,7 +134,6 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 
 	cli := &Client{
 		config:     cfg,
-		logger:     log,
 		client:     c,
 		peerMgr:    peerMgr,
 		updMgr:     gaps,
@@ -218,8 +218,9 @@ func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 			}
 
 			defer func() {
+				logger := ctxlogger.FromContext(ctx)
 				if err := logout(); err != nil {
-					c.logger.Error("logout", zap.Error(err))
+					logger.Error("logout", zap.Error(err))
 				}
 			}()
 			close(initDone)
@@ -262,8 +263,9 @@ func (c *Client) Run(ctx context.Context, f func(context.Context, *Client) error
 		}
 
 		defer func() {
+			logger := ctxlogger.FromContext(ctx)
 			if err := logout(); err != nil {
-				c.logger.Error("logout", zap.Error(err))
+				logger.Error("logout", zap.Error(err))
 			}
 		}()
 
@@ -277,22 +279,7 @@ func (c *Client) API() *tg.Client {
 
 func (c *Client) getInputPeer(ctx context.Context, ID constant.TDLibPeerID) (tg.InputPeerClass, error) {
 	if c.storage != nil {
-		var peerClass tg.PeerClass
-		switch {
-		case ID.IsUser():
-			peerClass = &tg.PeerUser{UserID: ID.ToPlain()}
-
-		case ID.IsChat():
-			peerClass = &tg.PeerChat{ChatID: ID.ToPlain()}
-
-		case ID.IsChannel():
-			peerClass = &tg.PeerChannel{ChannelID: ID.ToPlain()}
-
-		default:
-			return nil, errors.New("unknown peer type")
-		}
-
-		if peer, err := storage.FindPeer(ctx, c.storage, peerClass); err == nil {
+		if peer, err := c.storage.Resolve(ctx, strconv.FormatInt(ID.ToPlain(), 10)); err == nil {
 			return peer.AsInputPeer(), nil
 		} else {
 			if !errors.Is(err, storage.ErrPeerNotFound) {
@@ -314,26 +301,36 @@ func (c *Client) storeDialog(ctx context.Context, elem dialogs.Elem) error {
 		return nil
 	}
 
+	var key string
+
 	var p storage.Peer
 	switch dlg := elem.Dialog.GetPeer().(type) {
 	case *tg.PeerUser:
+		key = strconv.FormatInt(dlg.UserID, 10)
 		user, ok := elem.Entities.User(dlg.UserID)
 		if !ok || !p.FromUser(user) {
 			return fmt.Errorf("user not found: %d", dlg.UserID)
 		}
 
 	case *tg.PeerChat:
+		key = strconv.FormatInt(dlg.ChatID, 10)
 		chat, ok := elem.Entities.Chat(dlg.ChatID)
 		if !ok || !p.FromChat(chat) {
 			return fmt.Errorf("chat not found: %d", dlg.ChatID)
 		}
 
 	case *tg.PeerChannel:
+		key = strconv.FormatInt(dlg.ChannelID, 10)
 		channel, ok := elem.Entities.Channel(dlg.ChannelID)
 		if !ok || !p.FromChat(channel) {
 			return fmt.Errorf("channel not found: %d", dlg.ChannelID)
 		}
 	}
 
-	return c.storage.Add(ctx, p)
+	// Don't store any information except ID, access hash and type.
+	p.User = nil
+	p.Chat = nil
+	p.Channel = nil
+
+	return c.storage.Assign(ctx, key, p)
 }

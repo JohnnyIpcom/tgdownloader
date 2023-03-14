@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -72,7 +73,7 @@ func NewRoot(version string) (*Root, error) {
 
 	root := &Root{
 		version: version,
-		cfg:     viper.NewConfig(),
+		cfg:     cfg,
 		client:  client,
 		log:     log,
 		level:   level,
@@ -198,28 +199,38 @@ func (r *Root) RunPrompt(ctx context.Context) error {
 	return nil
 }
 
+func (r *Root) getDownloaderFS(ctx context.Context) (afero.Fs, error) {
+	switch strings.ToLower(r.cfg.GetString("downloader.type")) {
+	case "local":
+		return afero.NewOsFs(), nil
+
+	case "dropbox":
+		logger, err := zap.NewStdLogAt(r.log, zap.InfoLevel)
+		if err != nil {
+			return nil, err
+		}
+
+		client := <-dropbox.RunOauth2Server(ctx, r.cfg.Sub("downloader.dropbox"), r.log)
+		return dropbox.NewFs(ctx, client, logger)
+	}
+
+	return nil, fmt.Errorf("invalid downloader type: %s", r.cfg.GetString("downloader.type"))
+}
+
 func (r *Root) getDownloader(ctx context.Context) *dwpool.Downloader {
 	r.ldOnce.Do(func() {
-		var fs afero.Fs
-		switch strings.ToLower(r.cfg.GetString("downloader.type")) {
-		case "local":
-			fs = afero.NewOsFs()
-
-		case "dropbox":
-			dropbox, err := dropbox.NewFs(ctx, r.cfg.Sub("downloader.dropbox"), r.log.Named("dropbox"))
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-
-			fs = dropbox
-
-		default:
-			fmt.Fprintln(os.Stderr, "Unknown file system type")
+		fs, err := r.getDownloaderFS(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %s", err)
 			os.Exit(1)
 		}
 
-		r.loader = dwpool.NewDownloader(fs, r.client.FileService, 5)
+		threads := r.cfg.GetInt("downloader.threads")
+		if threads <= 0 {
+			threads = runtime.NumCPU()
+		}
+
+		r.loader = dwpool.NewDownloader(fs, r.client.FileService, threads)
 		r.loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
 	})
 

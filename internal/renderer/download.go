@@ -23,6 +23,7 @@ func WithNumTrackersExpected(n int) DownloadRendererOption {
 func NewDownloadRenderer(opts ...DownloadRendererOption) *DownloadRenderer {
 	pw := progress.NewWriter()
 	pw.SetAutoStop(false)
+	pw.SetMessageWidth(50)
 	pw.SetTrackerLength(25)
 	pw.SetTrackerPosition(progress.PositionRight)
 	pw.SetSortBy(progress.SortByNone)

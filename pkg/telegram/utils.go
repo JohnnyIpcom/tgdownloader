@@ -51,14 +51,25 @@ func getInfoFromPeer(peer peers.Peer) PeerInfo {
 
 func getFileInfoFromElem(elem messages.Elem) (FileInfo, error) {
 	var from *tg.User
-	peer, ok := elem.Msg.GetFromID()
+	fromID, ok := elem.Msg.GetFromID()
 	if ok {
+		switch f := fromID.(type) {
+		case *tg.PeerUser:
+			from = elem.Entities.Users()[f.UserID]
+
+		default:
+			return FileInfo{}, errors.Errorf("unsupported peer type %T", f)
+		}
+	}
+
+	if from == nil {
+		peer := elem.Msg.GetPeerID()
 		switch p := peer.(type) {
 		case *tg.PeerUser:
 			from = elem.Entities.Users()[p.UserID]
 
 		default:
-			return FileInfo{}, errors.Errorf("unsupported peer type %T", peer)
+			return FileInfo{}, errors.Errorf("unsupported peer type %T", p)
 		}
 	}
 

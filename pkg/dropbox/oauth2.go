@@ -18,10 +18,14 @@ func RunOauth2Server(ctx context.Context, cfg config.Config, log *zap.Logger) <-
 
 	go func() {
 		defer close(client)
+
+		port := cfg.GetInt("port")
+
+		fmt.Printf("Go to http://localhost:%d to authorize the dropbox client\n", port)
 		conf := oauth2.Config{
 			ClientID:     cfg.GetString("oauth2.id"),
 			ClientSecret: cfg.GetString("oauth2.secret"),
-			RedirectURL:  fmt.Sprintf("http://localhost:%d/oauth2/callback", cfg.GetInt("port")),
+			RedirectURL:  fmt.Sprintf("http://localhost:%d/oauth2/callback", port),
 			Endpoint: oauth2.Endpoint{
 				AuthURL:  "https://www.dropbox.com/oauth2/authorize",
 				TokenURL: "https://api.dropboxapi.com/oauth2/token",
@@ -47,10 +51,12 @@ func RunOauth2Server(ctx context.Context, cfg config.Config, log *zap.Logger) <-
 
 			client <- conf.Client(c, token)
 			c.String(http.StatusOK, "Success")
+
+			fmt.Println("Dropbox client authorized")
 		})
 
 		srv := &http.Server{
-			Addr:    fmt.Sprintf(":%d", cfg.GetInt("port")),
+			Addr:    fmt.Sprintf(":%d", port),
 			Handler: r,
 		}
 
