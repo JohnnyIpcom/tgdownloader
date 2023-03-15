@@ -7,6 +7,7 @@ require (
 	github.com/dropbox/dropbox-sdk-go-unofficial/v6 v6.0.5
 	github.com/gin-contrib/zap v0.1.0
 	github.com/gin-gonic/gin v1.8.1
+	github.com/google/uuid v1.3.0
 	github.com/gotd/td v0.75.0
 	github.com/ivanpirog/coloredcobra v1.0.1
 	github.com/jedib0t/go-pretty/v6 v6.4.4

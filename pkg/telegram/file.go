@@ -204,6 +204,9 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 		case *tg.PeerChannel:
 			peerID = peer.GetChannelID()
 
+		case *tg.PeerUser:
+			peerID = peer.GetUserID()
+
 		default:
 			logger.Debug("unsupported peer type", zap.Any("peer", peer))
 			return nil

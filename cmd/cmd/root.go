@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/c-bata/go-prompt"
 	"github.com/johnnyipcom/tgdownloader/internal/dwpool"
+	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/config/viper"
 	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
@@ -100,9 +102,11 @@ func (r *Root) newVersionCmd() *cobra.Command {
 // newRootCmd returns the root command.
 func (r *Root) newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "tgdownloader",
-		Short: "Telegram CLI Downloader",
-		Long:  "Telegram CLI Downloader is a CLI tool to download Telegram files from a chat, channel or user, even if this chat, channel or user is not in private mode.",
+		Use:           "tgdownloader",
+		Short:         "Telegram CLI Downloader",
+		Long:          "Telegram CLI Downloader is a CLI tool to download Telegram files from a chat, channel or user, even if this chat, channel or user is not in private mode.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.HelpFunc()(cmd, []string{})
 		},
@@ -129,7 +133,6 @@ func (r *Root) newRootCmd() *cobra.Command {
 
 	rootCmd.PersistentPostRun = func(cmd *cobra.Command, args []string) {
 		r.log.Sync()
-		fmt.Println("Bye! :)")
 	}
 
 	rootCmd.AddCommand(r.newVersionCmd())
@@ -153,7 +156,18 @@ func (r *Root) ExecuteContext(ctx context.Context) error {
 	})
 
 	return r.client.Run(ctx, func(ctx context.Context, c *telegram.Client) error {
-		return r.cmdRoot.ExecuteContext(ctx)
+		err := r.cmdRoot.ExecuteContext(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				renderBye()
+				return nil
+			}
+
+			return err
+		}
+
+		renderBye()
+		return nil
 	})
 }
 
@@ -185,6 +199,11 @@ func (r *Root) RunPrompt(ctx context.Context) error {
 			prompt.OptionPrefix(">> "),
 		},
 		OnErrorFunc: func(err error) {
+			if errors.Is(err, context.Canceled) {
+				renderBye()
+				return
+			}
+
 			if strings.Contains(err.Error(), "unknown command") {
 				r.cmdRoot.PrintErrln(err)
 				return
@@ -235,4 +254,8 @@ func (r *Root) getDownloader(ctx context.Context) *dwpool.Downloader {
 	})
 
 	return r.loader
+}
+
+func renderBye() {
+	renderer.Println(renderer.Colors{renderer.FgCyan}, "Bye! ^_^")
 }
