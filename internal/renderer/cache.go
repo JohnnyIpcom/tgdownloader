@@ -18,8 +18,8 @@ func RenderCachedPeerTable(cacheInfos []telegram.PeerCacheInfo) {
 	t.AppendHeader(
 		table.Row{
 			"ID",
+			"Name",
 			"Access Hash",
-			"Created At",
 		},
 	)
 
@@ -30,8 +30,8 @@ func RenderCachedPeerTable(cacheInfos []telegram.PeerCacheInfo) {
 	for _, cacheInfo := range cacheInfos {
 		t.AppendRow(table.Row{
 			cacheInfo.ID,
+			ReplaceAllEmojis(cacheInfo.Peer.Name),
 			cacheInfo.AccessHash,
-			cacheInfo.CreatedAt.Format(time.RFC3339),
 		})
 	}
 

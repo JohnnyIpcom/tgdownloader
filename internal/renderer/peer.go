@@ -27,7 +27,7 @@ func RenderPeerTable(chats []telegram.PeerInfo) string {
 	for _, chat := range chats {
 		t.AppendRow(
 			table.Row{
-				chat.Name,
+				ReplaceAllEmojis(chat.Name),
 				chat.ID,
 				chat.Type.String(),
 			},

@@ -34,6 +34,9 @@ func (r *Root) newChatCmd() *cobra.Command {
 		Short: "List all users in a chat",
 		Long:  `List all users in a chat that the user is a member of.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "chat",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			chatID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
@@ -56,6 +59,9 @@ func (r *Root) newChatCmd() *cobra.Command {
 		Short: "Find a user in a chat",
 		Long:  `Find a user in a chat by its data.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "chat",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			chatID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
@@ -84,7 +90,6 @@ func (r *Root) newChatCmd() *cobra.Command {
 		Use:   "download",
 		Short: "Download files from a chat",
 		Long:  `Download files from a chat.`,
-		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.HelpFunc()(cmd, args)
 		},
@@ -103,6 +108,9 @@ func (r *Root) newChatCmd() *cobra.Command {
 		Short: "Download files from a chat history",
 		Long:  `Download files from a chat history.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "chat",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
@@ -155,6 +163,9 @@ func (r *Root) newChatCmd() *cobra.Command {
 		Short: "Watch a chat for new files",
 		Long:  `Watch a chat for new files.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "chat",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {

@@ -66,7 +66,7 @@ func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer PeerI
 					continue
 				}
 
-				u := getInfoFromUser(peerUser)
+				u := getUserInfoFromUser(peerUser)
 				if Q != "" && !strings.Contains(u.FirstName, Q) && !strings.Contains(u.LastName, Q) && !strings.Contains(u.Username, Q) {
 					continue
 				}
@@ -90,7 +90,7 @@ func (s *userService) GetUser(ctx context.Context, ID int64) (UserInfo, error) {
 		return UserInfo{}, err
 	}
 
-	return getInfoFromUser(user), nil
+	return getUserInfoFromUser(user), nil
 }
 
 // GetUsersFromChat returns users from chat by query.
@@ -109,7 +109,7 @@ func (s *userService) GetUsersFromChannel(ctx context.Context, ID int64, query s
 
 	channelMembers := members.ChannelQuery{Channel: channel}.Search(query)
 	channelMembers.ForEach(ctx, func(m members.Member) error {
-		users = append(users, getInfoFromUser(m.User()))
+		users = append(users, getUserInfoFromUser(m.User()))
 		return nil
 	})
 
@@ -135,7 +135,7 @@ func (s *userService) GetAllUsersFromChat(ctx context.Context, ID int64) (<-chan
 		defer close(usersChan)
 
 		chatMembers.ForEach(ctx, func(m members.Member) error {
-			usersChan <- getInfoFromUser(m.User())
+			usersChan <- getUserInfoFromUser(m.User())
 			return nil
 		})
 	}()
@@ -162,7 +162,7 @@ func (s *userService) GetAllUsersFromChannel(ctx context.Context, ID int64) (<-c
 		defer close(usersChan)
 
 		channelMembers.ForEach(ctx, func(m members.Member) error {
-			usersChan <- getInfoFromUser(m.User())
+			usersChan <- getUserInfoFromUser(m.User())
 			return nil
 		})
 	}()

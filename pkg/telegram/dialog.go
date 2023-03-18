@@ -49,7 +49,7 @@ func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan DialogInfo, i
 				return nil
 			}
 
-			dialogsChan <- DialogInfo{Peer: getInfoFromPeer(peer)}
+			dialogsChan <- DialogInfo{Peer: getPeerInfoFromPeer(peer)}
 			return nil
 		})
 	}()

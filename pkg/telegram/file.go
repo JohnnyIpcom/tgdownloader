@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/gotd/td/telegram/message/peer"
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
@@ -17,7 +18,7 @@ import (
 
 type FileInfo struct {
 	file messages.File
-	from *tg.User
+	peer peers.Peer
 	size int64
 }
 
@@ -26,28 +27,28 @@ func (f FileInfo) Size() int64 {
 }
 
 func (f FileInfo) String() string {
-	return fmt.Sprintf("%v %d %d", f.file, f.FromID(), f.size)
+	return fmt.Sprintf("%v %d %d", f.file, f.PeerID(), f.size)
 }
 
-func (f FileInfo) FromID() int64 {
-	if f.from == nil {
+func (f FileInfo) PeerID() int64 {
+	if f.peer == nil {
 		return 0
 	}
 
-	return f.from.GetID()
+	return f.peer.ID()
 }
 
-func (f FileInfo) Username() string {
-	if f.from == nil {
+func (f FileInfo) Name() string {
+	if f.peer == nil {
 		return ""
 	}
 
-	username, ok := f.from.GetUsername()
-	if !ok {
-		return ""
+	username, ok := f.peer.Username()
+	if ok {
+		return username
 	}
 
-	return username
+	return f.peer.VisibleName()
 }
 
 func (f FileInfo) Filename() string {
@@ -147,7 +148,7 @@ func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFi
 				return ErrorLimitReached
 			}
 
-			file, err := getFileInfoFromElem(elem)
+			file, err := getFileInfoFromElem(ctx, s.client.peerMgr, elem)
 			if err != nil {
 				if !errors.Is(err, errNoFilesInMessage) {
 					logger.Error("failed to get file info from elem", zap.Error(err))
@@ -157,7 +158,7 @@ func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFi
 				return nil
 			}
 
-			if options.userID != 0 && file.FromID() != options.userID {
+			if options.userID != 0 && file.PeerID() != options.userID {
 				return nil
 			}
 
@@ -223,7 +224,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 			msgPeer = &tg.InputPeerEmpty{}
 		}
 
-		file, err := getFileInfoFromElem(messages.Elem{
+		file, err := getFileInfoFromElem(ctx, s.client.peerMgr, messages.Elem{
 			Msg:      nonEmpty,
 			Peer:     msgPeer,
 			Entities: entities,

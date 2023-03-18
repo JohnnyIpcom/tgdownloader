@@ -1,13 +1,19 @@
 package telegram
 
 import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/gotd/td/telegram/message/peer"
 	"github.com/gotd/td/telegram/peers"
+	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
-	"github.com/pkg/errors"
+	"github.com/johnnyipcom/gotd-contrib/storage"
 )
 
-func getInfoFromUser(user peers.User) UserInfo {
+func getUserInfoFromUser(user peers.User) UserInfo {
 	username := "<empty>"
 	if uname, ok := user.Username(); ok {
 		username = uname
@@ -31,7 +37,7 @@ func getInfoFromUser(user peers.User) UserInfo {
 	}
 }
 
-func getInfoFromPeer(peer peers.Peer) PeerInfo {
+func getPeerInfoFromPeer(peer peers.Peer) PeerInfo {
 	var peerType PeerType
 	switch peer.(type) {
 	case peers.User:
@@ -49,28 +55,34 @@ func getInfoFromPeer(peer peers.Peer) PeerInfo {
 	}
 }
 
-func getFileInfoFromElem(elem messages.Elem) (FileInfo, error) {
-	var from *tg.User
-	fromID, ok := elem.Msg.GetFromID()
-	if ok {
-		switch f := fromID.(type) {
-		case *tg.PeerUser:
-			from = elem.Entities.Users()[f.UserID]
-
-		default:
-			return FileInfo{}, errors.Errorf("unsupported peer type %T", f)
-		}
+func extractPeer(ctx context.Context, mgr *peers.Manager, ent peer.Entities, peerID tg.PeerClass) (peers.Peer, error) {
+	peer, err := ent.ExtractPeer(peerID)
+	if err != nil {
+		return nil, fmt.Errorf("extract peer: %w", err)
 	}
 
-	if from == nil {
-		peer := elem.Msg.GetPeerID()
-		switch p := peer.(type) {
-		case *tg.PeerUser:
-			from = elem.Entities.Users()[p.UserID]
+	return mgr.FromInputPeer(ctx, peer)
+}
 
-		default:
-			return FileInfo{}, errors.Errorf("unsupported peer type %T", p)
+func getFileInfoFromElem(ctx context.Context, mgr *peers.Manager, elem messages.Elem) (FileInfo, error) {
+	var peer peers.Peer
+	fromID, ok := elem.Msg.GetFromID()
+	if ok {
+		from, err := extractPeer(ctx, mgr, elem.Entities, fromID)
+		if err != nil {
+			return FileInfo{}, fmt.Errorf("extract fromID: %w", err)
 		}
+
+		peer = from
+	}
+
+	if peer == nil {
+		p, err := extractPeer(ctx, mgr, elem.Entities, elem.Msg.GetPeerID())
+		if err != nil {
+			return FileInfo{}, fmt.Errorf("extract peerID: %w", err)
+		}
+
+		peer = p
 	}
 
 	file, ok := elem.File()
@@ -85,7 +97,35 @@ func getFileInfoFromElem(elem messages.Elem) (FileInfo, error) {
 
 	return FileInfo{
 		file: file,
-		from: from,
+		peer: peer,
 		size: size,
 	}, nil
+}
+
+func getPeerCacheInfoFromStoragePeer(p storage.Peer) PeerCacheInfo {
+	var peer PeerInfo
+
+	switch p.Key.Kind {
+	case dialogs.User:
+		peer.ID = p.User.GetID()
+		peer.Name = p.User.Username
+		peer.Type = PeerTypeUser
+
+	case dialogs.Chat:
+		peer.ID = p.Chat.GetID()
+		peer.Name = p.Chat.GetTitle()
+		peer.Type = PeerTypeChat
+
+	case dialogs.Channel:
+		peer.ID = p.Channel.GetID()
+		peer.Name = p.Channel.GetTitle()
+		peer.Type = PeerTypeChannel
+	}
+
+	return PeerCacheInfo{
+		ID:         p.Key.ID,
+		AccessHash: p.Key.AccessHash,
+		Peer:       peer,
+		CreatedAt:  time.Unix(p.CreatedAt, 0),
+	}
 }

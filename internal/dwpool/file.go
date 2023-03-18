@@ -16,11 +16,11 @@ func (f *fileInfo) Filename() string {
 }
 
 func (f *fileInfo) Subdir() string {
-	if f.f.Username() != "" {
-		return f.f.Username()
+	if f.f.Name() != "" {
+		return f.f.Name()
 	}
 
-	return strconv.FormatInt(f.f.FromID(), 10)
+	return strconv.FormatInt(f.f.PeerID(), 10)
 }
 
 type file struct {

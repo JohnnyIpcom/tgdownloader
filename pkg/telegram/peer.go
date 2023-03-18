@@ -71,11 +71,11 @@ func (s *peerService) GetAllPeers(ctx context.Context) ([]PeerInfo, error) {
 
 	var result []PeerInfo
 	for _, chat := range chats.Chats {
-		result = append(result, getInfoFromPeer(chat))
+		result = append(result, getPeerInfoFromPeer(chat))
 	}
 
 	for _, channel := range chats.Channels {
-		result = append(result, getInfoFromPeer(channel))
+		result = append(result, getPeerInfoFromPeer(channel))
 	}
 
 	return result, nil
@@ -87,7 +87,7 @@ func (s *peerService) PeerSelf(ctx context.Context) (PeerInfo, error) {
 		return PeerInfo{}, err
 	}
 
-	return getInfoFromPeer(user), nil
+	return getPeerInfoFromPeer(user), nil
 }
 
 func (s *peerService) ResolvePeer(ctx context.Context, from string) (PeerInfo, error) {
@@ -96,5 +96,5 @@ func (s *peerService) ResolvePeer(ctx context.Context, from string) (PeerInfo, e
 		return PeerInfo{}, err
 	}
 
-	return getInfoFromPeer(peer), nil
+	return getPeerInfoFromPeer(peer), nil
 }

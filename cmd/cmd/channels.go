@@ -34,6 +34,9 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		Short: "List all users in a channel",
 		Long:  `List all users in a channel that the user is a member of.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "channel",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
@@ -56,6 +59,9 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		Short: "List all users in a channel from its message history",
 		Long:  `List all users in a channel from its message history.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "channel",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
@@ -95,6 +101,9 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		Short: "Find a user in a channel",
 		Long:  `Find a user in a channel by its data.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "channel",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
@@ -126,7 +135,6 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		Use:   "download",
 		Short: "Download files from a channel",
 		Long:  `Download files from a channel.`,
-		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.HelpFunc()(cmd, args)
 		},
@@ -145,6 +153,9 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		Short: "Download files from a channel history",
 		Long:  `Download files from a channel history.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "channel",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
@@ -197,6 +208,9 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		Short: "Watch a channel for new files",
 		Long:  `Watch a channel for new files.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "channel",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {

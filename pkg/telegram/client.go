@@ -327,10 +327,5 @@ func (c *Client) storeDialog(ctx context.Context, elem dialogs.Elem) error {
 		}
 	}
 
-	// Don't store any information except ID, access hash and type.
-	p.User = nil
-	p.Chat = nil
-	p.Channel = nil
-
 	return c.storage.Assign(ctx, key, p)
 }

@@ -23,7 +23,6 @@ func (r *Root) newUserCmd() *cobra.Command {
 		Use:   "download",
 		Short: "Download files from a user",
 		Long:  `Download files from a user.`,
-		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.HelpFunc()(cmd, args)
 		},
@@ -42,6 +41,9 @@ func (r *Root) newUserCmd() *cobra.Command {
 		Short: "Download files from a user history",
 		Long:  `Download files from a user history.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "user",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
@@ -94,6 +96,9 @@ func (r *Root) newUserCmd() *cobra.Command {
 		Short: "Watch a user for new files",
 		Long:  `Watch a user for new files.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "watcher",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {

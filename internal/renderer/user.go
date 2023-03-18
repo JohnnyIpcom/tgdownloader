@@ -28,8 +28,8 @@ func RenderUser(user telegram.UserInfo) string {
 		table.Row{
 			user.ID,
 			user.Username,
-			user.FirstName,
-			user.LastName,
+			ReplaceAllEmojis(user.FirstName),
+			ReplaceAllEmojis(user.LastName),
 		},
 	)
 
@@ -81,8 +81,8 @@ func RenderUserTable(users []telegram.UserInfo) string {
 			table.Row{
 				user.ID,
 				user.Username,
-				user.FirstName,
-				user.LastName,
+				ReplaceAllEmojis(user.FirstName),
+				ReplaceAllEmojis(user.LastName),
 			},
 		)
 	}

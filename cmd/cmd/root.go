@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
 
-	"github.com/c-bata/go-prompt"
 	"github.com/johnnyipcom/tgdownloader/internal/dwpool"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
@@ -19,7 +17,6 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 
 	cc "github.com/ivanpirog/coloredcobra"
-	cp "github.com/stromland/cobra-prompt"
 
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
@@ -142,6 +139,9 @@ func (r *Root) newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(r.newUserCmd())
 	rootCmd.AddCommand(r.newDialogsCmd())
 	rootCmd.AddCommand(r.newCacheCmd())
+
+	// Prompt command must be the last one to initialize all other commands first.
+	rootCmd.AddCommand(r.newPromptCmd(rootCmd))
 	return rootCmd
 }
 
@@ -155,66 +155,22 @@ func (r *Root) ExecuteContext(ctx context.Context) error {
 		Flags:    cc.Bold,
 	})
 
-	return r.client.Run(ctx, func(ctx context.Context, c *telegram.Client) error {
-		err := r.cmdRoot.ExecuteContext(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				renderBye()
-				return nil
-			}
-
-			return err
-		}
-
-		renderBye()
-		return nil
-	})
-}
-
-func (r *Root) RunPrompt(ctx context.Context) error {
 	stop, err := r.client.Connect(ctx)
 	if err != nil {
 		return err
 	}
 
 	defer stop()
+	if err := r.cmdRoot.ExecuteContext(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			r.renderBye()
+			return nil
+		}
 
-	r.cmdRoot.AddCommand(&cobra.Command{
-		Use:   "exit",
-		Short: "Exit the application",
-		Long:  "Exit the application",
-		Run: func(cmd *cobra.Command, args []string) {
-			stop()
-			os.Exit(0)
-		},
-	})
-
-	prompt := cp.CobraPrompt{
-		RootCmd:                  r.cmdRoot,
-		PersistFlagValues:        true,
-		ShowHelpCommandAndFlags:  true,
-		DisableCompletionCommand: true,
-		GoPromptOptions: []prompt.Option{
-			prompt.OptionTitle("tgdownloader"),
-			prompt.OptionPrefix(">> "),
-		},
-		OnErrorFunc: func(err error) {
-			if errors.Is(err, context.Canceled) {
-				renderBye()
-				return
-			}
-
-			if strings.Contains(err.Error(), "unknown command") {
-				r.cmdRoot.PrintErrln(err)
-				return
-			}
-
-			r.cmdRoot.PrintErr(err)
-			os.Exit(1)
-		},
+		return err
 	}
 
-	prompt.RunContext(ctx)
+	r.renderBye()
 	return nil
 }
 
@@ -240,8 +196,7 @@ func (r *Root) getDownloader(ctx context.Context) *dwpool.Downloader {
 	r.ldOnce.Do(func() {
 		fs, err := r.getDownloaderFS(ctx)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %s", err)
-			os.Exit(1)
+			panic(err)
 		}
 
 		threads := r.cfg.GetInt("downloader.threads")
@@ -256,6 +211,6 @@ func (r *Root) getDownloader(ctx context.Context) *dwpool.Downloader {
 	return r.loader
 }
 
-func renderBye() {
+func (r *Root) renderBye() {
 	renderer.Println(renderer.Colors{renderer.FgCyan}, "Bye! ^_^")
 }

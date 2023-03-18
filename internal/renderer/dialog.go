@@ -47,7 +47,7 @@ func RenderDialogsTable(dialogs []telegram.DialogInfo, filterFuncs ...FilterDial
 		if !skip {
 			t.AppendRow(
 				table.Row{
-					dialog.Peer.Name,
+					ReplaceAllEmojis(dialog.Peer.Name),
 					dialog.Peer.ID,
 					dialog.Peer.Type.String(),
 				},
