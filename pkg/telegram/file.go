@@ -188,10 +188,10 @@ func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFi
 func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan FileInfo, error) {
 	fileChan := make(chan FileInfo)
 
-	s.client.dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
+	onNewMessage := func(ctx context.Context, e tg.Entities, msg tg.MessageClass) error {
 		logger := ctxlogger.FromContext(ctx)
 
-		nonEmpty, ok := update.Message.AsNotEmpty()
+		nonEmpty, ok := msg.AsNotEmpty()
 		if !ok {
 			logger.Debug("empty message")
 			return nil
@@ -247,6 +247,14 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 		}
 
 		return nil
+	}
+
+	s.client.dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
+		return onNewMessage(ctx, e, update.Message)
+	})
+
+	s.client.dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewChannelMessage) error {
+		return onNewMessage(ctx, e, update.Message)
 	})
 
 	return fileChan, nil
