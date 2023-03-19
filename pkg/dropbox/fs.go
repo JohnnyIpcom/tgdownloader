@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"path"
 	"strings"
@@ -12,9 +14,7 @@ import (
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
-	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/spf13/afero"
-	"go.uber.org/zap"
 )
 
 // Fs is the dropbox filesystem.
@@ -26,21 +26,12 @@ type Fs struct {
 }
 
 // NewFs creates new dropbox FS instance.
-func NewFs(ctx context.Context, cfg config.Config, log *zap.Logger) (*Fs, error) {
+func NewFs(ctx context.Context, c *http.Client, log *log.Logger) (*Fs, error) {
 	fs := &Fs{}
-
-	logger, err := zap.NewStdLogAt(log, zap.InfoLevel)
-	if err != nil {
-		return nil, err
-	}
-
-	fmt.Printf("Go to http://localhost:%d to authorize the dropbox client\n", cfg.GetInt("port"))
-	client := <-RunOauth2Server(ctx, cfg, log)
-	fmt.Println("Dropbox client authorized")
 	fs.conf = dropbox.Config{
 		LogLevel: dropbox.LogInfo,
-		Logger:   logger,
-		Client:   client,
+		Logger:   log,
+		Client:   c,
 	}
 
 	fs.files = files.New(fs.conf)

@@ -38,3 +38,6 @@ downloads/
 
 # Keys
 *.pem
+
+# Database
+*.db
