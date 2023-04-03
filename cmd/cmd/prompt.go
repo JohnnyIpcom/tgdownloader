@@ -64,13 +64,26 @@ func (r *Root) getTypeSuggestions(word string) []prompt.Suggest {
 	return prompt.FilterHasPrefix(types, word, true)
 }
 
-func (r *Root) promptCompleter(d prompt.Document) []prompt.Suggest {
+func (r *Root) promptExecutor(cmdRoot *cobra.Command, in string) {
+	in = strings.TrimSpace(in)
+	if in == "" {
+		return
+	}
+
+	promptArgs := strings.Fields(in)
+	os.Args = append([]string{os.Args[0]}, promptArgs...)
+
+	if err := cmdRoot.ExecuteContext(context.Background()); err != nil {
+		r.renderError(err)
+	}
+}
+
+func (r *Root) promptCompleter(cmdRoot *cobra.Command, d prompt.Document) []prompt.Suggest {
 	args := strings.Fields(d.CurrentLine())
 	word := d.GetWordBeforeCursor()
 
-	cmd := r.cmdRoot
-	if found, _, err := cmd.Find(args); err == nil {
-		cmd = found
+	if found, _, err := cmdRoot.Find(args); err == nil {
+		cmdRoot = found
 	}
 
 	lastArg := ""
@@ -89,7 +102,7 @@ func (r *Root) promptCompleter(d prompt.Document) []prompt.Suggest {
 
 	if strings.HasPrefix(word, "-") {
 		var flagSuggestions []prompt.Suggest
-		cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		cmdRoot.Flags().VisitAll(func(flag *pflag.Flag) {
 			flagSuggestions = append(flagSuggestions, prompt.Suggest{
 				//Adding the -- to allow auto-complete to work on the flags flawlessly
 				Text:        "--" + flag.Name,
@@ -100,19 +113,19 @@ func (r *Root) promptCompleter(d prompt.Document) []prompt.Suggest {
 		return prompt.FilterHasPrefix(flagSuggestions, word, true)
 	}
 
-	suggest, ok := cmd.Annotations["prompt_suggest"]
+	suggest, ok := cmdRoot.Annotations["prompt_suggest"]
 	if ok {
 		switch suggest {
 		case "user", "chat", "channel":
-			return r.getPeerSuggestions(cmd.Context(), word, suggest)
+			return r.getPeerSuggestions(cmdRoot.Context(), word, suggest)
 
 		default:
 		}
 	}
 
 	var promptSuggestions []prompt.Suggest
-	if cmd.HasAvailableSubCommands() {
-		for _, subCmd := range cmd.Commands() {
+	if cmdRoot.HasAvailableSubCommands() {
+		for _, subCmd := range cmdRoot.Commands() {
 			promptSuggestions = append(promptSuggestions, prompt.Suggest{
 				Text:        subCmd.Name(),
 				Description: subCmd.Short,
@@ -125,13 +138,17 @@ func (r *Root) promptCompleter(d prompt.Document) []prompt.Suggest {
 
 func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 	rootCmd.InitDefaultHelpCmd()
+	rootCmd.DisableSuggestions = true
+
 	rootCmd.AddCommand(&cobra.Command{
 		Use:     "exit",
 		Aliases: []string{"quit"},
 		Short:   "Exit the prompt",
 		Long:    `Exit the prompt`,
 		Run: func(cmd *cobra.Command, args []string) {
+			r.stop()
 			r.renderBye()
+
 			os.Exit(0)
 		},
 	})
@@ -144,12 +161,11 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 			fmt.Println("Open prompt with autocompletion")
 			p := prompt.New(
 				func(in string) {
-					promptArgs := strings.Fields(in)
-					os.Args = append([]string{os.Args[0]}, promptArgs...)
-
-					r.cmdRoot.ExecuteContext(cmd.Context())
+					r.promptExecutor(rootCmd, in)
 				},
-				r.promptCompleter,
+				func(d prompt.Document) []prompt.Suggest {
+					return r.promptCompleter(rootCmd, d)
+				},
 				prompt.OptionPrefix(">> "),
 				prompt.OptionTitle("tgdownloader"),
 			)
