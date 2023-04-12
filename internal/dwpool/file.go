@@ -4,38 +4,17 @@ import (
 	"strconv"
 
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
-	"github.com/spf13/afero"
 )
 
-type fileInfo struct {
-	f telegram.FileInfo
+type FileInfo struct {
+	telegram.FileInfo
 }
 
-func (f *fileInfo) Filename() string {
-	return f.f.Filename()
-}
-
-func (f *fileInfo) Subdir() string {
-	if f.f.Name() != "" {
-		return f.f.Name()
+func (f *FileInfo) Subdir() string {
+	username, ok := f.Username()
+	if ok && username != "" {
+		return username
 	}
 
-	return strconv.FormatInt(f.f.PeerID(), 10)
-}
-
-type file struct {
-	fs   afero.Fs
-	file afero.File
-}
-
-func (f *file) Write(p []byte) (n int, err error) {
-	return f.file.Write(p)
-}
-
-func (f *file) Close() error {
-	return f.file.Close()
-}
-
-func (f *file) Remove() error {
-	return f.fs.Remove(f.file.Name())
+	return strconv.FormatInt(f.PeerID(), 10)
 }

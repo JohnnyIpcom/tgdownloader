@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
@@ -18,10 +19,11 @@ import (
 type Downloader struct {
 	outputDir string
 	fs        afero.Fs
-	files     chan fileInfo
+	files     chan FileInfo
 	renderer  *renderer.DownloadRenderer
 	service   telegram.FileService
-	g         *errgroup.Group
+	queueWG   sync.WaitGroup
+	workerG   *errgroup.Group
 	workers   int
 }
 
@@ -29,7 +31,7 @@ type Downloader struct {
 func NewDownloader(fs afero.Fs, service telegram.FileService, workers int) *Downloader {
 	return &Downloader{
 		fs:       fs,
-		files:    make(chan fileInfo),
+		files:    make(chan FileInfo),
 		renderer: renderer.NewDownloadRenderer(renderer.WithNumTrackersExpected(workers)),
 		service:  service,
 		workers:  workers,
@@ -46,9 +48,9 @@ func (d *Downloader) Start(ctx context.Context) {
 	logger := ctxlogger.FromContext(ctx)
 	logger.Info("Downloader started", zap.Int("workers", d.workers))
 
-	d.g, ctx = errgroup.WithContext(ctx)
+	d.workerG, ctx = errgroup.WithContext(ctx)
 	for i := 0; i < d.workers; i++ {
-		d.g.Go(func() error {
+		d.workerG.Go(func() error {
 			return d.worker(ctx)
 		})
 	}
@@ -76,17 +78,15 @@ func (d *Downloader) worker(ctx context.Context) error {
 				return nil
 			}
 
-			logger.Debug("found job", zap.Stringer("file", f.f))
-			file, err := d.createFile(ctx, fileInfo{
-				f: f.f,
-			})
+			logger.Debug("found job", zap.Stringer("file", f))
+			file, err := d.createFile(ctx, f)
 			if err != nil {
 				logger.Error("failed to create file", zap.Error(err))
 				continue
 			}
 
-			writer := d.renderer.TrackedWriter(f.f.Filename(), f.f.Size(), file)
-			if err := d.service.Download(ctx, f.f, writerFunc(func(p []byte) (int, error) {
+			writer := d.renderer.TrackedWriter(f.Filename(), f.Size(), file)
+			if err := d.service.Download(ctx, f.FileInfo, writerFunc(func(p []byte) (int, error) {
 				select {
 				case <-ctx.Done():
 					writer.Fail()
@@ -101,80 +101,67 @@ func (d *Downloader) worker(ctx context.Context) error {
 
 				logger.Error("failed to download document", zap.Error(err))
 				file.Close()
-				file.Remove()
+				d.fs.Remove(file.Name())
 				continue
 			}
 
 			file.Close()
 			writer.Done()
-			logger.Debug("downloaded document", zap.String("filename", f.f.Filename()))
+			logger.Debug("downloaded document", zap.String("filename", f.Filename()))
 		}
 	}
 }
 
 // Stop stops the pool of workers and waits for them to finish.
-func (p *Downloader) Stop(ctx context.Context) error {
-	defer func() {
-		logger := ctxlogger.FromContext(ctx)
-		logger.Info("Downloader stopped")
-		p.renderer.Stop()
-	}()
+func (p *Downloader) Stop() error {
+	defer p.renderer.Stop()
+
+	p.queueWG.Wait()
 
 	close(p.files)
-	return p.g.Wait()
+	return p.workerG.Wait()
 }
 
-// DownloadFile adds a single file to the download queue.
-func (p *Downloader) DownloadFile(file telegram.FileInfo) {
-	p.files <- fileInfo{
-		f: file,
-	}
+// AddSingleDownload adds a single file to the download queue.
+func (p *Downloader) AddSingleDownload(file telegram.FileInfo) {
+	p.files <- FileInfo{FileInfo: file}
 }
 
-func (p *Downloader) RunAsyncDownloader(ctx context.Context, files <-chan telegram.FileInfo) {
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
+// AddDownloadQueue adds a channel of files to the download queue.
+func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan telegram.FileInfo) {
+	p.queueWG.Add(1)
+	go func() {
+		defer p.queueWG.Done()
+
 		for {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return
 
 			case file, ok := <-files:
 				if !ok {
-					return nil
+					return
 				}
 
-				p.files <- fileInfo{
-					f: file,
-				}
+				p.AddSingleDownload(file)
 			}
 		}
-	})
-
-	g.Wait()
+	}()
 }
 
 // createFile creates a file with a unique filename in the output directory
-func (p *Downloader) createFile(ctx context.Context, info fileInfo) (*file, error) {
-	outputDir := path.Join(p.outputDir, info.Subdir())
+func (p *Downloader) createFile(ctx context.Context, f FileInfo) (afero.File, error) {
+	outputDir := path.Join(p.outputDir, f.Subdir())
 	if err := p.createDirectoryIfNotExists(outputDir); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	filename, err := p.getUniqueFilename(outputDir, info.Filename())
+	filename, err := p.getUniqueFilename(outputDir, f.Filename())
 	if err != nil {
 		return nil, err
 	}
 
-	f, err := p.fs.Create(path.Join(outputDir, filename))
-	if err != nil {
-		return nil, err
-	}
-
-	return &file{
-		fs:   p.fs,
-		file: f,
-	}, nil
+	return p.fs.Create(path.Join(outputDir, filename))
 }
 
 // createDirectoryIfNotExists creates a directory and all parent directories if it does not exist

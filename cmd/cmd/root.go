@@ -182,7 +182,7 @@ func (r *Root) Execute() error {
 	return rootCmd.ExecuteContext(ctx)
 }
 
-func (r *Root) getDownloaderFS(ctx context.Context) (afero.Fs, error) {
+func (r *Root) getDownloaderFS() (afero.Fs, error) {
 	switch strings.ToLower(r.cfg.GetString("downloader.type")) {
 	case "local":
 		return afero.NewOsFs(), nil
@@ -193,16 +193,16 @@ func (r *Root) getDownloaderFS(ctx context.Context) (afero.Fs, error) {
 			return nil, err
 		}
 
-		client := <-dropbox.RunOauth2Server(ctx, r.cfg.Sub("downloader.dropbox"), r.log)
-		return dropbox.NewFs(ctx, client, logger)
+		client := <-dropbox.RunOauth2Server(r.cfg.Sub("downloader.dropbox"), r.log)
+		return dropbox.NewFs(client, logger)
 	}
 
 	return nil, fmt.Errorf("invalid downloader type: %s", r.cfg.GetString("downloader.type"))
 }
 
-func (r *Root) getDownloader(ctx context.Context) *dwpool.Downloader {
+func (r *Root) getDownloader() *dwpool.Downloader {
 	r.ldOnce.Do(func() {
-		fs, err := r.getDownloaderFS(ctx)
+		fs, err := r.getDownloaderFS()
 		if err != nil {
 			r.log.Fatal("failed to create downloader fs", zap.Error(err))
 		}

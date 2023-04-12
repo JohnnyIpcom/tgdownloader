@@ -2,7 +2,6 @@
 package dropbox
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -26,7 +25,7 @@ type Fs struct {
 }
 
 // NewFs creates new dropbox FS instance.
-func NewFs(ctx context.Context, c *http.Client, log *log.Logger) (*Fs, error) {
+func NewFs(c *http.Client, log *log.Logger) (*Fs, error) {
 	fs := &Fs{}
 	fs.conf = dropbox.Config{
 		LogLevel: dropbox.LogInfo,

@@ -192,10 +192,10 @@ func (r *Root) newChannelCmd() *cobra.Command {
 				return err
 			}
 
-			downloader := r.getDownloader(cmd.Context())
+			downloader := r.getDownloader()
 			downloader.Start(cmd.Context())
-			downloader.RunAsyncDownloader(cmd.Context(), files)
-			return downloader.Stop(cmd.Context())
+			downloader.AddDownloadQueue(cmd.Context(), files)
+			return downloader.Stop()
 		},
 	}
 
@@ -223,10 +223,10 @@ func (r *Root) newChannelCmd() *cobra.Command {
 				return err
 			}
 
-			downloader := r.getDownloader(cmd.Context())
+			downloader := r.getDownloader()
 			downloader.Start(cmd.Context())
-			downloader.RunAsyncDownloader(cmd.Context(), files)
-			return downloader.Stop(cmd.Context())
+			downloader.AddDownloadQueue(cmd.Context(), files)
+			return downloader.Stop()
 		},
 	}
 

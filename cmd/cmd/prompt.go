@@ -6,8 +6,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	prompt "github.com/c-bata/go-prompt"
+	"github.com/go-andiamo/splitter"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
@@ -64,76 +66,114 @@ func (r *Root) getTypeSuggestions(word string) []prompt.Suggest {
 	return prompt.FilterHasPrefix(types, word, true)
 }
 
-func (r *Root) promptExecutor(cmdRoot *cobra.Command, in string) {
-	in = strings.TrimSpace(in)
-	if in == "" {
-		return
+func (r *Root) getDateSuggestions(word string, format string) []prompt.Suggest {
+	dateNow := time.Now()
+	dates := []prompt.Suggest{
+		{Text: fmt.Sprintf("\"%s\"", dateNow.Format(format))},
+		{Text: fmt.Sprintf("\"%s\"", dateNow.AddDate(0, 0, -1).Format(format))},
+		{Text: fmt.Sprintf("\"%s\"", dateNow.AddDate(0, 0, -7).Format(format))},
+		{Text: fmt.Sprintf("\"%s\"", dateNow.AddDate(0, 0, -30).Format(format))},
+		{Text: fmt.Sprintf("\"%s\"", dateNow.AddDate(0, 0, -365).Format(format))},
 	}
 
-	promptArgs := strings.Fields(in)
-	os.Args = append([]string{os.Args[0]}, promptArgs...)
+	return prompt.FilterHasPrefix(dates, word, true)
+}
 
-	if err := cmdRoot.ExecuteContext(context.Background()); err != nil {
-		r.renderError(err)
+func (r *Root) newExecutor(rootCmd *cobra.Command) prompt.Executor {
+	s := splitter.MustCreateSplitter(' ', splitter.DoubleQuotesDoubleEscaped)
+	s.AddDefaultOptions(splitter.Trim(`/"`))
+
+	return func(in string) {
+		args, err := s.Split(in)
+		if err != nil {
+			r.renderError(err)
+			return
+		}
+
+		for _, arg := range args {
+			fmt.Println(arg)
+		}
+
+		rootCmd.SetArgs(args)
+		if err := rootCmd.ExecuteContext(rootCmd.Context()); err != nil {
+			r.renderError(err)
+		}
 	}
 }
 
-func (r *Root) promptCompleter(cmdRoot *cobra.Command, d prompt.Document) []prompt.Suggest {
-	args := strings.Fields(d.CurrentLine())
-	word := d.GetWordBeforeCursor()
+func (r *Root) newCompleter(rootCmd *cobra.Command) prompt.Completer {
+	return func(d prompt.Document) []prompt.Suggest {
+		args := strings.Fields(d.CurrentLine())
+		word := d.GetWordBeforeCursor()
 
-	if found, _, err := cmdRoot.Find(args); err == nil {
-		cmdRoot = found
-	}
+		if found, _, err := rootCmd.Find(args); err == nil {
+			rootCmd = found
+		}
 
-	lastArg := ""
-	if len(args) > 0 {
-		lastArg = args[len(args)-1]
-	}
-
-	switch lastArg {
-	case "--verbosity":
-		return r.getVerbositySuggestions(word)
-
-	case "--type":
-		return r.getTypeSuggestions(word)
-	default:
-	}
-
-	if strings.HasPrefix(word, "-") {
-		var flagSuggestions []prompt.Suggest
-		cmdRoot.Flags().VisitAll(func(flag *pflag.Flag) {
-			flagSuggestions = append(flagSuggestions, prompt.Suggest{
-				//Adding the -- to allow auto-complete to work on the flags flawlessly
-				Text:        "--" + flag.Name,
-				Description: flag.Usage,
+		if strings.HasPrefix(word, "-") {
+			var flagSuggestions []prompt.Suggest
+			rootCmd.Flags().VisitAll(func(flag *pflag.Flag) {
+				flagSuggestions = append(flagSuggestions, prompt.Suggest{
+					//Adding the -- to allow auto-complete to work on the flags flawlessly
+					Text:        "--" + flag.Name,
+					Description: flag.Usage,
+				})
 			})
-		})
 
-		return prompt.FilterHasPrefix(flagSuggestions, word, true)
-	}
+			return prompt.FilterHasPrefix(flagSuggestions, word, true)
+		}
 
-	suggest, ok := cmdRoot.Annotations["prompt_suggest"]
-	if ok {
-		switch suggest {
-		case "user", "chat", "channel":
-			return r.getPeerSuggestions(cmdRoot.Context(), word, suggest)
+		lastArg := ""
+		if len(args) > 0 {
+			lastArg = args[len(args)-1]
+		}
+
+		switch lastArg {
+		case "--verbosity":
+			return r.getVerbositySuggestions(word)
+
+		case "--type":
+			return r.getTypeSuggestions(word)
+
+		case "--limit":
+			return prompt.FilterHasPrefix([]prompt.Suggest{
+				{Text: "10"},
+				{Text: "20"},
+				{Text: "50"},
+				{Text: "100"},
+			}, word, true)
+
+		case "--offset-date":
+			return r.getDateSuggestions(word, "2006-01-02 15:04:05")
 
 		default:
+			if strings.HasPrefix(lastArg, "--") {
+				return []prompt.Suggest{}
+			}
 		}
-	}
 
-	var promptSuggestions []prompt.Suggest
-	if cmdRoot.HasAvailableSubCommands() {
-		for _, subCmd := range cmdRoot.Commands() {
-			promptSuggestions = append(promptSuggestions, prompt.Suggest{
-				Text:        subCmd.Name(),
-				Description: subCmd.Short,
-			})
+		suggest, ok := rootCmd.Annotations["prompt_suggest"]
+		if ok {
+			switch suggest {
+			case "user", "chat", "channel":
+				return r.getPeerSuggestions(rootCmd.Context(), word, suggest)
+
+			default:
+			}
 		}
-	}
 
-	return prompt.FilterHasPrefix(promptSuggestions, word, true)
+		var promptSuggestions []prompt.Suggest
+		if rootCmd.HasAvailableSubCommands() {
+			for _, subCmd := range rootCmd.Commands() {
+				promptSuggestions = append(promptSuggestions, prompt.Suggest{
+					Text:        subCmd.Name(),
+					Description: subCmd.Short,
+				})
+			}
+		}
+
+		return prompt.FilterHasPrefix(promptSuggestions, word, true)
+	}
 }
 
 func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
@@ -160,12 +200,8 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println("Open prompt with autocompletion")
 			p := prompt.New(
-				func(in string) {
-					r.promptExecutor(rootCmd, in)
-				},
-				func(d prompt.Document) []prompt.Suggest {
-					return r.promptCompleter(rootCmd, d)
-				},
+				r.newExecutor(rootCmd),
+				r.newCompleter(rootCmd),
 				prompt.OptionPrefix(">> "),
 				prompt.OptionTitle("tgdownloader"),
 			)

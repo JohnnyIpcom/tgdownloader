@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"os/signal"
 	"time"
 
 	ginzap "github.com/gin-contrib/zap"
@@ -16,11 +18,14 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func RunOauth2Server(ctx context.Context, cfg config.Config, log *zap.Logger) <-chan *http.Client {
+func RunOauth2Server(cfg config.Config, log *zap.Logger) <-chan *http.Client {
 	client := make(chan *http.Client, 1)
 
 	go func() {
 		defer close(client)
+
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
 
 		port := cfg.GetInt("port")
 
@@ -76,6 +81,7 @@ func RunOauth2Server(ctx context.Context, cfg config.Config, log *zap.Logger) <-
 			c.String(http.StatusOK, "Success")
 
 			fmt.Println("Dropbox client authorized")
+			stop()
 		})
 
 		srv := &http.Server{
