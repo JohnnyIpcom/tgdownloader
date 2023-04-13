@@ -90,10 +90,6 @@ func (r *Root) newExecutor(rootCmd *cobra.Command) prompt.Executor {
 			return
 		}
 
-		for _, arg := range args {
-			fmt.Println(arg)
-		}
-
 		rootCmd.SetArgs(args)
 		if err := rootCmd.ExecuteContext(rootCmd.Context()); err != nil {
 			r.renderError(err)
@@ -106,13 +102,14 @@ func (r *Root) newCompleter(rootCmd *cobra.Command) prompt.Completer {
 		args := strings.Fields(d.CurrentLine())
 		word := d.GetWordBeforeCursor()
 
+		currCmd := rootCmd
 		if found, _, err := rootCmd.Find(args); err == nil {
-			rootCmd = found
+			currCmd = found
 		}
 
 		if strings.HasPrefix(word, "-") {
 			var flagSuggestions []prompt.Suggest
-			rootCmd.Flags().VisitAll(func(flag *pflag.Flag) {
+			currCmd.Flags().VisitAll(func(flag *pflag.Flag) {
 				flagSuggestions = append(flagSuggestions, prompt.Suggest{
 					//Adding the -- to allow auto-complete to work on the flags flawlessly
 					Text:        "--" + flag.Name,
@@ -152,19 +149,19 @@ func (r *Root) newCompleter(rootCmd *cobra.Command) prompt.Completer {
 			}
 		}
 
-		suggest, ok := rootCmd.Annotations["prompt_suggest"]
+		suggest, ok := currCmd.Annotations["prompt_suggest"]
 		if ok {
 			switch suggest {
 			case "user", "chat", "channel":
-				return r.getPeerSuggestions(rootCmd.Context(), word, suggest)
+				return r.getPeerSuggestions(currCmd.Context(), word, suggest)
 
 			default:
 			}
 		}
 
 		var promptSuggestions []prompt.Suggest
-		if rootCmd.HasAvailableSubCommands() {
-			for _, subCmd := range rootCmd.Commands() {
+		if currCmd.HasAvailableSubCommands() {
+			for _, subCmd := range currCmd.Commands() {
 				promptSuggestions = append(promptSuggestions, prompt.Suggest{
 					Text:        subCmd.Name(),
 					Description: subCmd.Short,

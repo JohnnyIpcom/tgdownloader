@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"strconv"
-	"time"
 
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
@@ -40,7 +39,7 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert channelID", zap.Error(err))
+				r.log.Error("failed to convert channel ID", zap.Error(err))
 				return err
 			}
 
@@ -65,7 +64,7 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert chatID", zap.Error(err))
+				r.log.Error("failed to convert channel ID", zap.Error(err))
 				return err
 			}
 
@@ -107,7 +106,7 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert channelID", zap.Error(err))
+				r.log.Error("failed to convert channel ID", zap.Error(err))
 				return err
 			}
 
@@ -140,14 +139,7 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		},
 	}
 
-	type downloadOptions struct {
-		limit      int
-		user       int64
-		offsetDate string
-	}
-
 	var opts downloadOptions
-
 	downloadHistoryCmd := &cobra.Command{
 		Use:   "history",
 		Short: "Download files from a channel history",
@@ -159,28 +151,17 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert chatID", zap.Error(err))
+				r.log.Error("failed to convert channel ID", zap.Error(err))
 				return err
 			}
 
-			var getFileOptions []telegram.GetFileOption
-			getFileOptions = append(getFileOptions, telegram.GetFileWithUserID(opts.user))
-
-			if opts.limit > 0 {
-				getFileOptions = append(getFileOptions, telegram.GetFileWithLimit(opts.limit))
+			getFileOptions, err := opts.newGetFileOptions()
+			if err != nil {
+				r.log.Error("failed to create get file options", zap.Error(err))
+				return err
 			}
 
-			if opts.offsetDate != "" {
-				offsetDate, err := time.Parse("2006-01-02 15:04:05", opts.offsetDate)
-				if err != nil {
-					r.log.Error("failed to parse offset date", zap.Error(err))
-					return err
-				}
-
-				getFileOptions = append(getFileOptions, telegram.GetFileWithOffsetDate(int(offsetDate.Unix())))
-			}
-
-			files, err := r.client.FileService.GetFiles(
+			return r.downloadFiles(
 				cmd.Context(),
 				telegram.PeerInfo{
 					ID:   ID,
@@ -188,14 +169,6 @@ func (r *Root) newChannelCmd() *cobra.Command {
 				},
 				getFileOptions...,
 			)
-			if err != nil {
-				return err
-			}
-
-			downloader := r.getDownloader()
-			downloader.Start(cmd.Context())
-			downloader.AddDownloadQueue(cmd.Context(), files)
-			return downloader.Stop()
 		},
 	}
 
@@ -214,19 +187,11 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert chatID", zap.Error(err))
+				r.log.Error("failed to convert channel ID", zap.Error(err))
 				return err
 			}
 
-			files, err := r.client.FileService.GetFilesFromNewMessages(cmd.Context(), ID)
-			if err != nil {
-				return err
-			}
-
-			downloader := r.getDownloader()
-			downloader.Start(cmd.Context())
-			downloader.AddDownloadQueue(cmd.Context(), files)
-			return downloader.Stop()
+			return r.downloadFilesFromNewMessages(cmd.Context(), ID)
 		},
 	}
 

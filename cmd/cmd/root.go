@@ -8,7 +8,6 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
-	"sync"
 
 	"github.com/johnnyipcom/tgdownloader/cmd/version"
 	"github.com/johnnyipcom/tgdownloader/internal/dwpool"
@@ -38,9 +37,6 @@ type Root struct {
 	stop   telegram.StopFunc
 	log    *zap.Logger
 	level  zap.AtomicLevel
-
-	loader *dwpool.Downloader
-	ldOnce sync.Once
 }
 
 // NewRoot creates a new root command.
@@ -200,23 +196,20 @@ func (r *Root) getDownloaderFS() (afero.Fs, error) {
 	return nil, fmt.Errorf("invalid downloader type: %s", r.cfg.GetString("downloader.type"))
 }
 
-func (r *Root) getDownloader() *dwpool.Downloader {
-	r.ldOnce.Do(func() {
-		fs, err := r.getDownloaderFS()
-		if err != nil {
-			r.log.Fatal("failed to create downloader fs", zap.Error(err))
-		}
+func (r *Root) newDownloader() (*dwpool.Downloader, error) {
+	fs, err := r.getDownloaderFS()
+	if err != nil {
+		return nil, err
+	}
 
-		threads := r.cfg.GetInt("downloader.threads")
-		if threads <= 0 {
-			threads = runtime.NumCPU()
-		}
+	threads := r.cfg.GetInt("downloader.threads")
+	if threads <= 0 {
+		threads = runtime.NumCPU()
+	}
 
-		r.loader = dwpool.NewDownloader(fs, r.client.FileService, threads)
-		r.loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
-	})
-
-	return r.loader
+	loader := dwpool.NewDownloader(fs, r.client.FileService, threads)
+	loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
+	return loader, nil
 }
 
 func (r *Root) renderBye() {
