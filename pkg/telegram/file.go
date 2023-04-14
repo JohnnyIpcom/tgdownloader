@@ -38,17 +38,12 @@ func (f FileInfo) PeerID() int64 {
 	return f.peer.ID()
 }
 
-func (f FileInfo) Name() string {
+func (f FileInfo) Username() (string, bool) {
 	if f.peer == nil {
-		return ""
+		return "", false
 	}
 
-	username, ok := f.peer.Username()
-	if ok {
-		return username
-	}
-
-	return f.peer.VisibleName()
+	return f.peer.Username()
 }
 
 func (f FileInfo) Filename() string {

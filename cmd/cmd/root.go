@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
 	"runtime"
 	"strings"
-	"sync"
 
+	"github.com/johnnyipcom/tgdownloader/cmd/version"
 	"github.com/johnnyipcom/tgdownloader/internal/dwpool"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
@@ -32,13 +34,9 @@ type Root struct {
 
 	cfg    config.Config
 	client *telegram.Client
+	stop   telegram.StopFunc
 	log    *zap.Logger
 	level  zap.AtomicLevel
-
-	loader *dwpool.Downloader
-	ldOnce sync.Once
-
-	cmdRoot *cobra.Command
 }
 
 // NewRoot creates a new root command.
@@ -70,16 +68,13 @@ func NewRoot(version string) (*Root, error) {
 		return nil, err
 	}
 
-	root := &Root{
+	return &Root{
 		version: version,
 		cfg:     cfg,
 		client:  client,
 		log:     log,
 		level:   level,
-	}
-
-	root.cmdRoot = root.newRootCmd()
-	return root, nil
+	}, nil
 }
 
 // newVersionCmd creates a command to print the version.
@@ -118,7 +113,16 @@ func (r *Root) newRootCmd() *cobra.Command {
 	)
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		cmd.SetContext(ctxlogger.WithLogger(cmd.Context(), r.log))
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, os.Interrupt)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			<-stop
+			cancel()
+		}()
+
+		cmd.SetContext(ctxlogger.WithLogger(ctx, r.log))
 		level, err := zap.ParseAtomicLevel(r.verbosity)
 		if err != nil {
 			return err
@@ -145,9 +149,11 @@ func (r *Root) newRootCmd() *cobra.Command {
 	return rootCmd
 }
 
-func (r *Root) ExecuteContext(ctx context.Context) error {
+func (r *Root) Execute() error {
+	rootCmd := r.newRootCmd()
+
 	cc.Init(&cc.Config{
-		RootCmd:  r.cmdRoot,
+		RootCmd:  rootCmd,
 		Headings: cc.HiCyan + cc.Bold + cc.Underline,
 		Commands: cc.HiYellow + cc.Bold,
 		Example:  cc.Italic,
@@ -155,26 +161,24 @@ func (r *Root) ExecuteContext(ctx context.Context) error {
 		Flags:    cc.Bold,
 	})
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	stop, err := r.client.Connect(ctx)
 	if err != nil {
 		return err
 	}
 
-	defer stop()
-	if err := r.cmdRoot.ExecuteContext(ctx); err != nil {
-		if errors.Is(err, context.Canceled) {
-			r.renderBye()
-			return nil
-		}
+	defer func() {
+		stop()
+		r.renderBye()
+	}()
 
-		return err
-	}
-
-	r.renderBye()
-	return nil
+	r.stop = stop
+	return rootCmd.ExecuteContext(ctx)
 }
 
-func (r *Root) getDownloaderFS(ctx context.Context) (afero.Fs, error) {
+func (r *Root) getDownloaderFS() (afero.Fs, error) {
 	switch strings.ToLower(r.cfg.GetString("downloader.type")) {
 	case "local":
 		return afero.NewOsFs(), nil
@@ -185,32 +189,51 @@ func (r *Root) getDownloaderFS(ctx context.Context) (afero.Fs, error) {
 			return nil, err
 		}
 
-		client := <-dropbox.RunOauth2Server(ctx, r.cfg.Sub("downloader.dropbox"), r.log)
-		return dropbox.NewFs(ctx, client, logger)
+		client := <-dropbox.RunOauth2Server(r.cfg.Sub("downloader.dropbox"), r.log)
+		return dropbox.NewFs(client, logger)
 	}
 
 	return nil, fmt.Errorf("invalid downloader type: %s", r.cfg.GetString("downloader.type"))
 }
 
-func (r *Root) getDownloader(ctx context.Context) *dwpool.Downloader {
-	r.ldOnce.Do(func() {
-		fs, err := r.getDownloaderFS(ctx)
-		if err != nil {
-			panic(err)
-		}
+func (r *Root) newDownloader() (*dwpool.Downloader, error) {
+	fs, err := r.getDownloaderFS()
+	if err != nil {
+		return nil, err
+	}
 
-		threads := r.cfg.GetInt("downloader.threads")
-		if threads <= 0 {
-			threads = runtime.NumCPU()
-		}
+	threads := r.cfg.GetInt("downloader.threads")
+	if threads <= 0 {
+		threads = runtime.NumCPU()
+	}
 
-		r.loader = dwpool.NewDownloader(fs, r.client.FileService, threads)
-		r.loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
-	})
-
-	return r.loader
+	loader := dwpool.NewDownloader(fs, r.client.FileService, threads)
+	loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
+	return loader, nil
 }
 
 func (r *Root) renderBye() {
 	renderer.Println(renderer.Colors{renderer.FgCyan}, "Bye! ^_^")
+}
+
+func (r *Root) renderError(err error) {
+	if errors.Is(err, context.Canceled) {
+		renderer.Println(renderer.Colors{renderer.FgYellow}, "Interrupted")
+		return
+	}
+
+	renderer.Printf(renderer.Colors{renderer.FgRed}, "Error: %s\n", err)
+}
+
+func Run() {
+	root, err := NewRoot(version.Version())
+	if err != nil {
+		root.renderError(err)
+		root.log.Panic("failed to create root", zap.Error(err))
+	}
+
+	if err := root.Execute(); err != nil {
+		root.renderError(err)
+		root.log.Panic("failed to execute root", zap.Error(err))
+	}
 }
