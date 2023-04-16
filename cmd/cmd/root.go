@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -166,7 +165,7 @@ func (r *Root) Execute() error {
 
 	defer func() {
 		stop()
-		renderBye()
+		renderer.RenderBye()
 	}()
 
 	r.stop = stop
@@ -174,30 +173,17 @@ func (r *Root) Execute() error {
 }
 
 func (r *Root) newDownloader() (*downloader.Downloader, error) {
-	return downloader.NewDownloader(r.cfg.Sub("downloader"), r.zap, r.client.FileService)
-}
-
-func renderBye() {
-	renderer.Println(renderer.Colors{renderer.FgCyan}, "Bye! ^_^")
-}
-
-func renderError(err error) {
-	if err == nil {
-		return
-	} else if errors.Is(err, context.Canceled) {
-		renderer.Println(renderer.Colors{renderer.FgYellow}, "Interrupted")
-		return
-	}
-
-	renderer.Printf(renderer.Colors{renderer.FgRed}, "Error: %s\n", err)
+	loader := downloader.NewDownloader(r.cfg.Sub("downloader"), r.zap, r.client.FileService)
+	loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
+	return loader, nil
 }
 
 func Run() {
 	root, err := NewRoot(version.Version())
 	if err != nil {
-		renderError(err)
+		renderer.RenderError(err)
 		return
 	}
 
-	renderError(root.Execute())
+	renderer.RenderError(root.Execute())
 }

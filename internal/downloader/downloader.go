@@ -30,7 +30,7 @@ type Downloader struct {
 }
 
 // NewDownloader creates a new pool of workers.
-func NewDownloader(cfg config.Config, log *zap.Logger, service telegram.FileService) (*Downloader, error) {
+func NewDownloader(cfg config.Config, log *zap.Logger, service telegram.FileService) *Downloader {
 	workers := cfg.GetInt("threads")
 	if workers < 1 {
 		workers = runtime.NumCPU()
@@ -42,7 +42,7 @@ func NewDownloader(cfg config.Config, log *zap.Logger, service telegram.FileServ
 		renderer: renderer.NewDownloadRenderer(renderer.WithNumTrackersExpected(workers)),
 		service:  service,
 		workers:  workers,
-	}, nil
+	}
 }
 
 // SetOutputDir sets the output directory.
@@ -85,7 +85,7 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 				return nil
 			}
 
-			log.Info("found job", zap.Stringer("file", f))
+			log.Info("found job", "file", f.String())
 			file, err := d.createFile(ctx, f)
 			if err != nil {
 				log.Info("failed to create file", zap.Error(err))
@@ -106,7 +106,7 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 			})); err != nil {
 				writer.Fail()
 
-				log.Info("failed to download document", zap.Error(err))
+				log.Error(err, "failed to download file", "filename", f.Filename())
 				file.Close()
 				d.fs.Remove(file.Name())
 				continue
@@ -114,7 +114,7 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 
 			file.Close()
 			writer.Done()
-			log.Info("downloaded document", zap.String("filename", f.Filename()))
+			log.Info("downloaded document", "filename", f.Filename())
 		}
 	}
 }
