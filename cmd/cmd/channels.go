@@ -6,7 +6,6 @@ import (
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 )
 
 func (r *Root) newChannelCmd() *cobra.Command {
@@ -39,13 +38,13 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert channel ID", zap.Error(err))
+				r.log.Error(err, "failed to convert channel ID")
 				return err
 			}
 
 			u, total, err := r.client.UserService.GetAllUsersFromChannel(cmd.Context(), channelID)
 			if err != nil {
-				r.log.Error("failed to get users", zap.Error(err))
+				r.log.Error(err, "failed to get users")
 				return err
 			}
 
@@ -64,13 +63,13 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert channel ID", zap.Error(err))
+				r.log.Error(err, "failed to convert channel ID")
 				return err
 			}
 
 			userQuery, err := cmd.Flags().GetString("user")
 			if err != nil {
-				r.log.Error("failed to get user flag", zap.Error(err))
+				r.log.Error(err, "failed to get user flag")
 				return err
 			}
 
@@ -84,7 +83,7 @@ func (r *Root) newChannelCmd() *cobra.Command {
 			)
 
 			if err != nil {
-				r.log.Error("failed to get users", zap.Error(err))
+				r.log.Error(err, "failed to get users")
 				return err
 			}
 
@@ -106,19 +105,19 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert channel ID", zap.Error(err))
+				r.log.Error(err, "failed to convert channel ID")
 				return err
 			}
 
 			userQuery, err := cmd.Flags().GetString("user")
 			if err != nil {
-				r.log.Error("failed to get user flag", zap.Error(err))
+				r.log.Error(err, "failed to get user flag")
 				return err
 			}
 
 			users, err := r.client.UserService.GetUsersFromChannel(cmd.Context(), channelID, userQuery)
 			if err != nil {
-				r.log.Error("failed to get users", zap.Error(err))
+				r.log.Error(err, "failed to get users")
 				return err
 			}
 
@@ -151,13 +150,13 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert channel ID", zap.Error(err))
+				r.log.Error(err, "failed to convert channel ID")
 				return err
 			}
 
 			getFileOptions, err := opts.newGetFileOptions()
 			if err != nil {
-				r.log.Error("failed to create get file options", zap.Error(err))
+				r.log.Error(err, "failed to create get file options")
 				return err
 			}
 
@@ -187,7 +186,7 @@ func (r *Root) newChannelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert channel ID", zap.Error(err))
+				r.log.Error(err, "failed to convert channel ID")
 				return err
 			}
 

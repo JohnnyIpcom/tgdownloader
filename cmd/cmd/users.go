@@ -5,7 +5,6 @@ import (
 
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 )
 
 func (r *Root) newUserCmd() *cobra.Command {
@@ -39,13 +38,13 @@ func (r *Root) newUserCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert user ID", zap.Error(err))
+				r.log.Error(err, "failed to convert user ID")
 				return err
 			}
 
 			getFileOptions, err := opts.newGetFileOptions()
 			if err != nil {
-				r.log.Error("failed to create get file options", zap.Error(err))
+				r.log.Error(err, "failed to create get file options")
 				return err
 			}
 
@@ -75,7 +74,7 @@ func (r *Root) newUserCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert user ID", zap.Error(err))
+				r.log.Error(err, "failed to convert user ID")
 				return err
 			}
 

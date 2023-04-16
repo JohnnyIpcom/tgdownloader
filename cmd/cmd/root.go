@@ -6,21 +6,18 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"runtime"
-	"strings"
 
+	"github.com/go-logr/logr"
+	"github.com/go-logr/zapr"
 	"github.com/johnnyipcom/tgdownloader/cmd/version"
-	"github.com/johnnyipcom/tgdownloader/internal/dwpool"
+	"github.com/johnnyipcom/tgdownloader/internal/downloader"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/config/viper"
-	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
-	"github.com/johnnyipcom/tgdownloader/pkg/dropbox"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 
 	cc "github.com/ivanpirog/coloredcobra"
 
-	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
 	"go.uber.org/zap"
@@ -35,7 +32,8 @@ type Root struct {
 	cfg    config.Config
 	client *telegram.Client
 	stop   telegram.StopFunc
-	log    *zap.Logger
+	zap    *zap.Logger
+	log    logr.Logger
 	level  zap.AtomicLevel
 }
 
@@ -58,12 +56,12 @@ func NewRoot(version string) (*Root, error) {
 	level := zap.NewAtomicLevelAt(zapcore.InfoLevel)
 	zapConfig.Level = level
 
-	log, err := zapConfig.Build(zap.AddStacktrace(zapcore.ErrorLevel))
+	zap, err := zapConfig.Build(zap.AddStacktrace(zapcore.ErrorLevel))
 	if err != nil {
 		return nil, err
 	}
 
-	client, err := telegram.NewClient(cfg.Sub("telegram"), log.Named("telegram"))
+	client, err := telegram.NewClient(cfg.Sub("telegram"), zap.Named("telegram"))
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +70,8 @@ func NewRoot(version string) (*Root, error) {
 		version: version,
 		cfg:     cfg,
 		client:  client,
-		log:     log,
+		zap:     zap,
+		log:     zapr.NewLogger(zap),
 		level:   level,
 	}, nil
 }
@@ -122,7 +121,7 @@ func (r *Root) newRootCmd() *cobra.Command {
 			cancel()
 		}()
 
-		cmd.SetContext(ctxlogger.WithLogger(ctx, r.log))
+		cmd.SetContext(logr.NewContext(ctx, r.log))
 		level, err := zap.ParseAtomicLevel(r.verbosity)
 		if err != nil {
 			return err
@@ -130,10 +129,6 @@ func (r *Root) newRootCmd() *cobra.Command {
 
 		r.level.SetLevel(level.Level())
 		return nil
-	}
-
-	rootCmd.PersistentPostRun = func(cmd *cobra.Command, args []string) {
-		r.log.Sync()
 	}
 
 	rootCmd.AddCommand(r.newVersionCmd())
@@ -171,53 +166,25 @@ func (r *Root) Execute() error {
 
 	defer func() {
 		stop()
-		r.renderBye()
+		renderBye()
 	}()
 
 	r.stop = stop
 	return rootCmd.ExecuteContext(ctx)
 }
 
-func (r *Root) getDownloaderFS() (afero.Fs, error) {
-	switch strings.ToLower(r.cfg.GetString("downloader.type")) {
-	case "local":
-		return afero.NewOsFs(), nil
-
-	case "dropbox":
-		logger, err := zap.NewStdLogAt(r.log, zap.InfoLevel)
-		if err != nil {
-			return nil, err
-		}
-
-		client := <-dropbox.RunOauth2Server(r.cfg.Sub("downloader.dropbox"), r.log)
-		return dropbox.NewFs(client, logger)
-	}
-
-	return nil, fmt.Errorf("invalid downloader type: %s", r.cfg.GetString("downloader.type"))
+func (r *Root) newDownloader() (*downloader.Downloader, error) {
+	return downloader.NewDownloader(r.cfg.Sub("downloader"), r.zap, r.client.FileService)
 }
 
-func (r *Root) newDownloader() (*dwpool.Downloader, error) {
-	fs, err := r.getDownloaderFS()
-	if err != nil {
-		return nil, err
-	}
-
-	threads := r.cfg.GetInt("downloader.threads")
-	if threads <= 0 {
-		threads = runtime.NumCPU()
-	}
-
-	loader := dwpool.NewDownloader(fs, r.client.FileService, threads)
-	loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
-	return loader, nil
-}
-
-func (r *Root) renderBye() {
+func renderBye() {
 	renderer.Println(renderer.Colors{renderer.FgCyan}, "Bye! ^_^")
 }
 
-func (r *Root) renderError(err error) {
-	if errors.Is(err, context.Canceled) {
+func renderError(err error) {
+	if err == nil {
+		return
+	} else if errors.Is(err, context.Canceled) {
 		renderer.Println(renderer.Colors{renderer.FgYellow}, "Interrupted")
 		return
 	}
@@ -228,12 +195,9 @@ func (r *Root) renderError(err error) {
 func Run() {
 	root, err := NewRoot(version.Version())
 	if err != nil {
-		root.renderError(err)
-		root.log.Panic("failed to create root", zap.Error(err))
+		renderError(err)
+		return
 	}
 
-	if err := root.Execute(); err != nil {
-		root.renderError(err)
-		root.log.Panic("failed to execute root", zap.Error(err))
-	}
+	renderError(root.Execute())
 }

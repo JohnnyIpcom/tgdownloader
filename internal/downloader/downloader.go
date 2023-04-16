@@ -1,14 +1,16 @@
-package dwpool
+package downloader
 
 import (
 	"context"
 	"fmt"
 	"path"
+	"runtime"
 	"strings"
 	"sync"
 
+	"github.com/go-logr/logr"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
-	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
+	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/afero"
 	"go.uber.org/zap"
@@ -28,14 +30,19 @@ type Downloader struct {
 }
 
 // NewDownloader creates a new pool of workers.
-func NewDownloader(fs afero.Fs, service telegram.FileService, workers int) *Downloader {
+func NewDownloader(cfg config.Config, log *zap.Logger, service telegram.FileService) (*Downloader, error) {
+	workers := cfg.GetInt("threads")
+	if workers < 1 {
+		workers = runtime.NumCPU()
+	}
+
 	return &Downloader{
-		fs:       fs,
+		fs:       getDownloaderFS(cfg, log),
 		files:    make(chan FileInfo),
 		renderer: renderer.NewDownloadRenderer(renderer.WithNumTrackersExpected(workers)),
 		service:  service,
 		workers:  workers,
-	}
+	}, nil
 }
 
 // SetOutputDir sets the output directory.
@@ -45,14 +52,16 @@ func (p *Downloader) SetOutputDir(dir string) {
 
 // Start starts the pool of workers.
 func (d *Downloader) Start(ctx context.Context) {
-	logger := ctxlogger.FromContext(ctx)
-	logger.Info("Downloader started", zap.Int("workers", d.workers))
+	log := logr.FromContextOrDiscard(ctx).WithName("downloader")
+	log.Info("Downloader started", "workers", d.workers)
 
 	d.workerG, ctx = errgroup.WithContext(ctx)
 	for i := 0; i < d.workers; i++ {
-		d.workerG.Go(func() error {
-			return d.worker(ctx)
-		})
+		func(i int) {
+			d.workerG.Go(func() error {
+				return d.worker(ctx, log.WithName(fmt.Sprintf("worker-%d", i)))
+			})
+		}(i)
 	}
 }
 
@@ -63,10 +72,8 @@ func (f writerFunc) Write(p []byte) (int, error) {
 }
 
 // worker is a worker that downloads files.
-func (d *Downloader) worker(ctx context.Context) error {
-	logger := ctxlogger.FromContext(ctx)
-
-	defer logger.Debug("worker stopped")
+func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
+	defer log.Info("worker stopped")
 	for {
 		select {
 		case <-ctx.Done():
@@ -74,14 +81,14 @@ func (d *Downloader) worker(ctx context.Context) error {
 
 		case f, ok := <-d.files:
 			if !ok {
-				logger.Debug("no more jobs")
+				log.Info("no more jobs")
 				return nil
 			}
 
-			logger.Debug("found job", zap.Stringer("file", f))
+			log.Info("found job", zap.Stringer("file", f))
 			file, err := d.createFile(ctx, f)
 			if err != nil {
-				logger.Error("failed to create file", zap.Error(err))
+				log.Info("failed to create file", zap.Error(err))
 				continue
 			}
 
@@ -99,7 +106,7 @@ func (d *Downloader) worker(ctx context.Context) error {
 			})); err != nil {
 				writer.Fail()
 
-				logger.Error("failed to download document", zap.Error(err))
+				log.Info("failed to download document", zap.Error(err))
 				file.Close()
 				d.fs.Remove(file.Name())
 				continue
@@ -107,7 +114,7 @@ func (d *Downloader) worker(ctx context.Context) error {
 
 			file.Close()
 			writer.Done()
-			logger.Debug("downloaded document", zap.String("filename", f.Filename()))
+			log.Info("downloaded document", zap.String("filename", f.Filename()))
 		}
 	}
 }

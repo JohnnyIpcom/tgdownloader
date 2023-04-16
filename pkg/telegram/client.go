@@ -25,7 +25,6 @@ import (
 	"github.com/johnnyipcom/gotd-contrib/middleware/ratelimit"
 	"github.com/johnnyipcom/gotd-contrib/storage"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
-	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
 	"github.com/johnnyipcom/tgdownloader/pkg/key"
 	bboltdb "go.etcd.io/bbolt"
 	"go.uber.org/zap"
@@ -42,6 +41,7 @@ type LogoutFunc func() error
 type Client struct {
 	config     config.Config
 	client     *tgclient.Client
+	logger     *zap.Logger
 	peerMgr    *peers.Manager
 	updMgr     *updates.Manager
 	downloader *downloader.Downloader
@@ -60,6 +60,7 @@ type Client struct {
 
 type service struct {
 	client *Client
+	logger *zap.Logger
 }
 
 func newPublicKey(key *rsa.PublicKey) tgclient.PublicKey {
@@ -135,6 +136,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	cli := &Client{
 		config:     cfg,
 		client:     c,
+		logger:     log,
 		peerMgr:    peerMgr,
 		updMgr:     gaps,
 		downloader: downloader.NewDownloader(),
@@ -144,6 +146,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 
 	// Set up services
 	cli.common.client = cli
+	cli.common.logger = log.Named("service")
 	cli.UserService = (*userService)(&cli.common)
 	cli.PeerService = (*peerService)(&cli.common)
 	cli.FileService = (*fileService)(&cli.common)
@@ -218,9 +221,8 @@ func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 			}
 
 			defer func() {
-				logger := ctxlogger.FromContext(ctx)
 				if err := logout(); err != nil {
-					logger.Error("logout", zap.Error(err))
+					c.logger.Error("logout", zap.Error(err))
 				}
 			}()
 			close(initDone)
@@ -263,9 +265,8 @@ func (c *Client) Run(ctx context.Context, f func(context.Context, *Client) error
 		}
 
 		defer func() {
-			logger := ctxlogger.FromContext(ctx)
 			if err := logout(); err != nil {
-				logger.Error("logout", zap.Error(err))
+				c.logger.Error("logout", zap.Error(err))
 			}
 		}()
 

@@ -1,4 +1,4 @@
-package dwpool
+package downloader
 
 import (
 	"strconv"

@@ -11,7 +11,6 @@ import (
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
-	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 )
@@ -131,22 +130,20 @@ func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFi
 	go func() {
 		defer close(fileChan)
 
-		logger := ctxlogger.FromContext(ctx)
-
 		queryBuilder := query.Messages(s.client.API()).GetHistory(inputPeer)
 		queryBuilder = queryBuilder.OffsetDate(options.offsetDate)
 		queryBuilder = queryBuilder.BatchSize(100)
 
 		if err := queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
 			if atomic.LoadInt64(&fileCounter) >= int64(options.limit) {
-				logger.Info("limit reached", zap.Int64("limit", int64(options.limit)))
+				s.logger.Info("limit reached", zap.Int64("limit", int64(options.limit)))
 				return ErrorLimitReached
 			}
 
 			file, err := getFileInfoFromElem(ctx, s.client.peerMgr, elem)
 			if err != nil {
 				if !errors.Is(err, errNoFilesInMessage) {
-					logger.Error("failed to get file info from elem", zap.Error(err))
+					s.logger.Error("failed to get file info from elem", zap.Error(err))
 					return nil
 				}
 
@@ -168,7 +165,7 @@ func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFi
 			return nil
 		}); err != nil {
 			if !errors.Is(err, ErrorLimitReached) {
-				logger.Error("failed to get files", zap.Error(err))
+				s.logger.Error("failed to get files", zap.Error(err))
 				return
 			}
 
@@ -184,11 +181,9 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 	fileChan := make(chan FileInfo)
 
 	onNewMessage := func(ctx context.Context, e tg.Entities, msg tg.MessageClass) error {
-		logger := ctxlogger.FromContext(ctx)
-
 		nonEmpty, ok := msg.AsNotEmpty()
 		if !ok {
-			logger.Debug("empty message")
+			s.logger.Debug("empty message")
 			return nil
 		}
 
@@ -204,7 +199,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 			peerID = peer.GetUserID()
 
 		default:
-			logger.Debug("unsupported peer type", zap.Any("peer", peer))
+			s.logger.Debug("unsupported peer type", zap.Any("peer", peer))
 			return nil
 		}
 
@@ -226,7 +221,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 		})
 		if err != nil {
 			if !errors.Is(err, errNoFilesInMessage) {
-				logger.Error("failed to get file info from elem", zap.Error(err))
+				s.logger.Error("failed to get file info from elem", zap.Error(err))
 				return nil
 			}
 

@@ -86,13 +86,13 @@ func (r *Root) newExecutor(rootCmd *cobra.Command) prompt.Executor {
 	return func(in string) {
 		args, err := s.Split(in)
 		if err != nil {
-			r.renderError(err)
+			renderError(err)
 			return
 		}
 
 		rootCmd.SetArgs(args)
 		if err := rootCmd.ExecuteContext(rootCmd.Context()); err != nil {
-			r.renderError(err)
+			renderError(err)
 		}
 	}
 }
@@ -184,7 +184,7 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 		Long:    `Exit the prompt`,
 		Run: func(cmd *cobra.Command, args []string) {
 			r.stop()
-			r.renderBye()
+			renderBye()
 
 			os.Exit(0)
 		},

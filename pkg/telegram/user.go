@@ -8,7 +8,6 @@ import (
 	"github.com/gotd/td/telegram/peers/members"
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/messages"
-	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
 	"go.uber.org/zap"
 )
 
@@ -44,8 +43,6 @@ func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer PeerI
 	go func() {
 		defer close(usersChan)
 
-		logger := ctxlogger.FromContext(ctx)
-
 		uniqueIDs := make(map[int64]struct{})
 
 		queryBuilder := query.Messages(s.client.API()).GetHistory(inputPeer)
@@ -62,7 +59,7 @@ func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer PeerI
 
 				peerUser, err := s.client.peerMgr.GetUser(ctx, user.AsInput())
 				if err != nil {
-					logger.Error("failed to get peer user", zap.Error(err))
+					s.logger.Error("failed to get peer user", zap.Error(err))
 					continue
 				}
 
@@ -76,7 +73,7 @@ func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer PeerI
 
 			return nil
 		}); err != nil {
-			logger.Error("failed to get users from message history", zap.Error(err))
+			s.logger.Error("failed to get users from message history", zap.Error(err))
 			return
 		}
 	}()

@@ -6,7 +6,6 @@ import (
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 )
 
 func (r *Root) newChatCmd() *cobra.Command {
@@ -39,13 +38,13 @@ func (r *Root) newChatCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			chatID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert chat ID", zap.Error(err))
+				r.log.Error(err, "failed to convert chat ID")
 				return err
 			}
 
 			users, total, err := r.client.UserService.GetAllUsersFromChat(cmd.Context(), chatID)
 			if err != nil {
-				r.log.Error("failed to get users", zap.Error(err))
+				r.log.Error(err, "failed to get users")
 				return err
 			}
 
@@ -64,19 +63,19 @@ func (r *Root) newChatCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			chatID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert chat ID", zap.Error(err))
+				r.log.Error(err, "failed to convert chat ID")
 				return err
 			}
 
 			userQuery, err := cmd.Flags().GetString("user")
 			if err != nil {
-				r.log.Error("failed to get user flag", zap.Error(err))
+				r.log.Error(err, "failed to get user flag")
 				return err
 			}
 
 			users, err := r.client.UserService.GetUsersFromChat(cmd.Context(), chatID, userQuery)
 			if err != nil {
-				r.log.Error("failed to get users", zap.Error(err))
+				r.log.Error(err, "failed to get users")
 				return err
 			}
 
@@ -109,13 +108,13 @@ func (r *Root) newChatCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert chat ID", zap.Error(err))
+				r.log.Error(err, "failed to convert chat ID")
 				return err
 			}
 
 			getFileOptions, err := opts.newGetFileOptions()
 			if err != nil {
-				r.log.Error("failed to get get file options", zap.Error(err))
+				r.log.Error(err, "failed to get get file options")
 				return err
 			}
 
@@ -145,7 +144,7 @@ func (r *Root) newChatCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				r.log.Error("failed to convert chat ID", zap.Error(err))
+				r.log.Error(err, "failed to convert chat ID")
 				return err
 			}
 
