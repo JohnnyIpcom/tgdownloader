@@ -3,6 +3,8 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gotd/td/telegram/message/peer"
@@ -62,6 +64,19 @@ func extractPeer(ctx context.Context, mgr *peers.Manager, ent peer.Entities, pee
 	}
 
 	return mgr.FromInputPeer(ctx, peer)
+}
+
+func findHashtags(input string) []string {
+	hashtags := []string{}
+	regex := regexp.MustCompile(`#[^\s#]+`)
+
+	matches := regex.FindAllString(input, -1)
+	for _, match := range matches {
+		trimmedTag := strings.TrimPrefix(match, "#")
+		hashtags = append(hashtags, trimmedTag)
+	}
+
+	return hashtags
 }
 
 func getFileInfoFromElem(ctx context.Context, mgr *peers.Manager, elem messages.Elem) (FileInfo, error) {

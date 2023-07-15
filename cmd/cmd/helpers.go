@@ -11,6 +11,7 @@ type downloadOptions struct {
 	limit      int
 	user       int64
 	offsetDate string
+	hashtags   bool
 }
 
 func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) {
@@ -36,7 +37,7 @@ func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) 
 	return opts, nil
 }
 
-func (r *Root) downloadFiles(ctx context.Context, peer telegram.PeerInfo, opts ...telegram.GetFileOption) error {
+func (r *Root) downloadFiles(ctx context.Context, peer telegram.PeerInfo, saveByHashtags bool, opts ...telegram.GetFileOption) error {
 	files, err := r.client.FileService.GetFiles(ctx, peer, opts...)
 	if err != nil {
 		return err
@@ -48,11 +49,11 @@ func (r *Root) downloadFiles(ctx context.Context, peer telegram.PeerInfo, opts .
 	}
 
 	d.Start(ctx)
-	d.AddDownloadQueue(ctx, files)
+	d.AddDownloadQueue(ctx, files, saveByHashtags)
 	return d.Stop()
 }
 
-func (r *Root) downloadFilesFromNewMessages(ctx context.Context, ID int64) error {
+func (r *Root) downloadFilesFromNewMessages(ctx context.Context, ID int64, saveByHashtags bool) error {
 	files, err := r.client.FileService.GetFilesFromNewMessages(ctx, ID)
 	if err != nil {
 		return err
@@ -64,6 +65,6 @@ func (r *Root) downloadFilesFromNewMessages(ctx context.Context, ID int64) error
 	}
 
 	d.Start(ctx)
-	d.AddDownloadQueue(ctx, files)
+	d.AddDownloadQueue(ctx, files, true)
 	return d.Stop()
 }

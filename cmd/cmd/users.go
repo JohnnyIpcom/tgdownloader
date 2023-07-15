@@ -54,6 +54,7 @@ func (r *Root) newUserCmd() *cobra.Command {
 					ID:   ID,
 					Type: telegram.PeerTypeUser,
 				},
+				opts.hashtags,
 				getFileOptions...,
 			)
 		},
@@ -62,6 +63,7 @@ func (r *Root) newUserCmd() *cobra.Command {
 	downloadHistoryCmd.Flags().IntVarP(&opts.limit, "limit", "l", 0, "Limit of files to download")
 	downloadHistoryCmd.Flags().Int64VarP(&opts.user, "user", "u", 0, "User ID to download from")
 	downloadHistoryCmd.Flags().StringVarP(&opts.offsetDate, "offset-date", "d", "", "Offset date to download from, format: 2006-01-02 15:04:05")
+	downloadHistoryCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
 
 	downloadWatcherCmd := &cobra.Command{
 		Use:   "watcher",
@@ -78,9 +80,11 @@ func (r *Root) newUserCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFilesFromNewMessages(cmd.Context(), ID)
+			return r.downloadFilesFromNewMessages(cmd.Context(), ID, opts.hashtags)
 		},
 	}
+
+	downloadWatcherCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
 
 	downloadCmd.AddCommand(downloadHistoryCmd)
 	downloadCmd.AddCommand(downloadWatcherCmd)

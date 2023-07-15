@@ -36,9 +36,10 @@
                 "channel",
                 "download",
                 "history",
+                "--hashtags",
                 "--limit",
                 "5",
-                "1745633015",
+                "1862393618",
             ]
         },
         {

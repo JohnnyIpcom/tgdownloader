@@ -106,7 +106,7 @@ func (r *Root) newRootCmd() *cobra.Command {
 		&r.verbosity,
 		"verbosity",
 		"v",
-		"info",
+		"debug",
 		"verbosity level (debug, info, warn, error, fatal, panic)",
 	)
 

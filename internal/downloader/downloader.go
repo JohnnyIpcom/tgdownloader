@@ -107,8 +107,7 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 				writer.Fail()
 
 				log.Error(err, "failed to download file", "filename", f.Filename())
-				file.Close()
-				d.fs.Remove(file.Name())
+				file.Remove(d.fs)
 				continue
 			}
 
@@ -130,12 +129,15 @@ func (p *Downloader) Stop() error {
 }
 
 // AddSingleDownload adds a single file to the download queue.
-func (p *Downloader) AddSingleDownload(file telegram.FileInfo) {
-	p.files <- FileInfo{FileInfo: file}
+func (p *Downloader) AddSingleDownload(file telegram.FileInfo, saveByHashtags bool) {
+	p.files <- FileInfo{
+		FileInfo:       file,
+		saveByHashtags: saveByHashtags,
+	}
 }
 
 // AddDownloadQueue adds a channel of files to the download queue.
-func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan telegram.FileInfo) {
+func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan telegram.FileInfo, saveByHashtags bool) {
 	p.queueWG.Add(1)
 	go func() {
 		defer p.queueWG.Done()
@@ -150,25 +152,46 @@ func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan telegram
 					return
 				}
 
-				p.AddSingleDownload(file)
+				p.AddSingleDownload(file, saveByHashtags)
 			}
 		}
 	}()
 }
 
-// createFile creates a file with a unique filename in the output directory
-func (p *Downloader) createFile(ctx context.Context, f FileInfo) (afero.File, error) {
+// createFile creates a file(s) and returns a MultiFile that can be used to write to it.
+func (p *Downloader) createFile(ctx context.Context, f FileInfo) (*MultiFile, error) {
 	outputDir := path.Join(p.outputDir, f.Subdir())
 	if err := p.createDirectoryIfNotExists(outputDir); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	filename, err := p.getUniqueFilename(outputDir, f.Filename())
-	if err != nil {
-		return nil, err
+	filenames := make([]string, 0, len(f.Hashtags()))
+	if f.saveByHashtags {
+		for _, hashtag := range f.Hashtags() {
+			hashtagDir := path.Join(outputDir, hashtag)
+			if err := p.createDirectoryIfNotExists(hashtagDir); err != nil {
+				return nil, fmt.Errorf("failed to create directory: %w", err)
+			}
+
+			filename, err := p.getUniqueFilename(hashtagDir, f.Filename())
+			if err != nil {
+				return nil, err
+			}
+
+			filenames = append(filenames, path.Join(hashtagDir, filename))
+		}
 	}
 
-	return p.fs.Create(path.Join(outputDir, filename))
+	if len(filenames) == 0 {
+		filename, err := p.getUniqueFilename(outputDir, f.Filename())
+		if err != nil {
+			return nil, err
+		}
+
+		filenames = append(filenames, path.Join(outputDir, filename))
+	}
+
+	return NewMultiFile(p.fs, filenames)
 }
 
 // createDirectoryIfNotExists creates a directory and all parent directories if it does not exist

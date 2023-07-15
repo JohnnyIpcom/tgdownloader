@@ -190,17 +190,29 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	fmt.Printf("Authenticated as '%s'\n", username)
 
 	fmt.Println("Notifying updates manager...")
-	if err := c.updMgr.Auth(ctx, c.client.API(), user.GetID(), false, true); err != nil {
-		return func() error { return nil }, fmt.Errorf("auth updates: %w", err)
+
+	authorized := make(chan struct{})
+	authOptions := updates.AuthOptions{
+		IsBot:  true,
+		Forget: true,
+		OnStart: func(ctx context.Context) {
+			fmt.Println("Starting updates manager...")
+			close(authorized)
+		},
 	}
+
+	go func() {
+		if err := c.updMgr.Run(ctx, c.client.API(), user.GetID(), authOptions); err != nil {
+			fmt.Printf("auth updates error: %s\n", err)
+		}
+	}()
+
+	<-authorized
 
 	fmt.Println("Done")
 	return func() error {
 		fmt.Println("\nLogging out...")
-		if err := c.updMgr.Logout(); err != nil {
-			return err
-		}
-
+		c.updMgr.Reset()
 		fmt.Println("Done")
 		return nil
 	}, nil
@@ -214,7 +226,7 @@ func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 	initDone := make(chan struct{})
 	go func() {
 		defer close(errC)
-		errC <- c.client.Run(ctx, func(ctx context.Context) error {
+		errC <- c.client.Run(context.Background(), func(ctx context.Context) error {
 			logout, err := c.Auth(ctx)
 			if err != nil {
 				return err

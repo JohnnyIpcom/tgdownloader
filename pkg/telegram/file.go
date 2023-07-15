@@ -19,6 +19,8 @@ type FileInfo struct {
 	file messages.File
 	peer peers.Peer
 	size int64
+
+	hashtags []string
 }
 
 func (f FileInfo) Size() int64 {
@@ -47,6 +49,10 @@ func (f FileInfo) Username() (string, bool) {
 
 func (f FileInfo) Filename() string {
 	return f.file.Name
+}
+
+func (f FileInfo) Hashtags() []string {
+	return f.hashtags
 }
 
 type FileService interface {
@@ -154,6 +160,11 @@ func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFi
 				return nil
 			}
 
+			msgContent, ok := elem.Msg.(*tg.Message)
+			if ok {
+				file.hashtags = findHashtags(msgContent.GetMessage())
+			}
+
 			select {
 			case fileChan <- file:
 				atomic.AddInt64(&fileCounter, 1)
@@ -226,6 +237,11 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 			}
 
 			return nil
+		}
+
+		msgContent, ok := nonEmpty.(*tg.Message)
+		if ok {
+			file.hashtags = findHashtags(msgContent.GetMessage())
 		}
 
 		select {
