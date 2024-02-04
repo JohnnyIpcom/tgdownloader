@@ -11,9 +11,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-type FilterDialogFunc func(telegram.DialogInfo) bool
+type FilterDialogFunc func(telegram.Dialog) bool
 
-func RenderDialogsTable(dialogs []telegram.DialogInfo, filterFuncs ...FilterDialogFunc) string {
+func RenderDialogsTable(dialogs []telegram.Dialog, filterFuncs ...FilterDialogFunc) string {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAutoIndex(true)
@@ -47,9 +47,9 @@ func RenderDialogsTable(dialogs []telegram.DialogInfo, filterFuncs ...FilterDial
 		if !skip {
 			t.AppendRow(
 				table.Row{
-					ReplaceAllEmojis(dialog.Peer.Name),
-					dialog.Peer.ID,
-					dialog.Peer.Type.String(),
+					getVisibleName(dialog.Peer),
+					dialog.Peer.ID(),
+					getPeerTypename(dialog.Peer),
 				},
 			)
 		}
@@ -58,7 +58,7 @@ func RenderDialogsTable(dialogs []telegram.DialogInfo, filterFuncs ...FilterDial
 	return t.Render()
 }
 
-func RenderDialogsTableAsync(ctx context.Context, d <-chan telegram.DialogInfo, total int, filterFunc ...FilterDialogFunc) error {
+func RenderDialogsTableAsync(ctx context.Context, d <-chan telegram.Dialog, total int, filterFunc ...FilterDialogFunc) error {
 	pw := progress.NewWriter()
 	pw.SetAutoStop(true)
 	pw.SetTrackerLength(25)
@@ -80,7 +80,7 @@ func RenderDialogsTableAsync(ctx context.Context, d <-chan telegram.DialogInfo, 
 	}
 
 	pw.AppendTracker(tracker)
-	var dialogs []telegram.DialogInfo
+	var dialogs []telegram.Dialog
 
 	defer func() {
 		for pw.IsRenderInProgress() {

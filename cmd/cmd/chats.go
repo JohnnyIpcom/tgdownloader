@@ -3,8 +3,8 @@ package cmd
 import (
 	"strconv"
 
+	"github.com/gotd/td/constant"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
-	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
 )
 
@@ -42,7 +42,7 @@ func (r *Root) newChatCmd() *cobra.Command {
 				return err
 			}
 
-			users, total, err := r.client.UserService.GetAllUsersFromChat(cmd.Context(), chatID)
+			users, total, err := r.client.UserService.GetUsersFromChat(cmd.Context(), chatID)
 			if err != nil {
 				r.log.Error(err, "failed to get users")
 				return err
@@ -51,41 +51,6 @@ func (r *Root) newChatCmd() *cobra.Command {
 			return renderer.RenderUserTableAsync(cmd.Context(), users, total)
 		},
 	}
-
-	userFindCmd := &cobra.Command{
-		Use:   "find",
-		Short: "Find a user in a chat",
-		Long:  `Find a user in a chat by its data.`,
-		Args:  cobra.ExactArgs(1),
-		Annotations: map[string]string{
-			"prompt_suggest": "chat",
-		},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			chatID, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				r.log.Error(err, "failed to convert chat ID")
-				return err
-			}
-
-			userQuery, err := cmd.Flags().GetString("user")
-			if err != nil {
-				r.log.Error(err, "failed to get user flag")
-				return err
-			}
-
-			users, err := r.client.UserService.GetUsersFromChat(cmd.Context(), chatID, userQuery)
-			if err != nil {
-				r.log.Error(err, "failed to get users")
-				return err
-			}
-
-			renderer.RenderUserTable(users)
-			return nil
-		},
-	}
-
-	userFindCmd.Flags().StringP("user", "u", "", "Username/first name/last name of the user to find")
-	userFindCmd.MarkFlagRequired("user")
 
 	downloadCmd := &cobra.Command{
 		Use:   "download",
@@ -118,15 +83,16 @@ func (r *Root) newChatCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFiles(
-				cmd.Context(),
-				telegram.PeerInfo{
-					ID:   ID,
-					Type: telegram.PeerTypeChat,
-				},
-				opts.hashtags,
-				getFileOptions...,
-			)
+			var tdLibPeerID constant.TDLibPeerID
+			tdLibPeerID.Chat(ID)
+
+			peer, err := r.client.PeerService.ResolveTDLibID(cmd.Context(), tdLibPeerID)
+			if err != nil {
+				r.log.Error(err, "failed to resolve peer")
+				return err
+			}
+
+			return r.downloadFiles(cmd.Context(), peer, opts.hashtags, getFileOptions...)
 		},
 	}
 
@@ -160,7 +126,6 @@ func (r *Root) newChatCmd() *cobra.Command {
 	downloadCmd.AddCommand(downloadWatcherCmd)
 
 	userCmd.AddCommand(userListCmd)
-	userCmd.AddCommand(userFindCmd)
 
 	chat.AddCommand(userCmd)
 	chat.AddCommand(downloadCmd)

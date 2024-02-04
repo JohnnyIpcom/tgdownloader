@@ -5,31 +5,29 @@ import (
 	"os"
 	"time"
 
+	"github.com/gotd/td/telegram/peers"
 	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"golang.org/x/sync/errgroup"
 )
 
 // RenderUser renders a single user.
-func RenderUser(user telegram.UserInfo) string {
+func RenderUser(user peers.User) string {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.AppendHeader(
 		table.Row{
 			"ID",
 			"Username",
-			"First Name",
-			"Last Name",
+			"Visible Name",
 		},
 	)
 
 	t.AppendRow(
 		table.Row{
-			user.ID,
-			user.Username,
-			ReplaceAllEmojis(user.FirstName),
-			ReplaceAllEmojis(user.LastName),
+			user.ID(),
+			getUsername(user),
+			getVisibleName(user),
 		},
 	)
 
@@ -37,7 +35,7 @@ func RenderUser(user telegram.UserInfo) string {
 }
 
 // RenderUserAsync renders a user one by one asynchronously.
-func RenderUserAsync(ctx context.Context, u <-chan telegram.UserInfo) error {
+func RenderUserAsync(ctx context.Context, u <-chan peers.User) error {
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		for {
@@ -59,7 +57,7 @@ func RenderUserAsync(ctx context.Context, u <-chan telegram.UserInfo) error {
 }
 
 // RenderUserTable renders a table of users.
-func RenderUserTable(users []telegram.UserInfo) string {
+func RenderUserTable(users []peers.User) string {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAutoIndex(true)
@@ -67,8 +65,7 @@ func RenderUserTable(users []telegram.UserInfo) string {
 		table.Row{
 			"ID",
 			"Username",
-			"First Name",
-			"Last Name",
+			"Visible Name",
 		},
 	)
 
@@ -79,10 +76,9 @@ func RenderUserTable(users []telegram.UserInfo) string {
 	for _, user := range users {
 		t.AppendRow(
 			table.Row{
-				user.ID,
-				user.Username,
-				ReplaceAllEmojis(user.FirstName),
-				ReplaceAllEmojis(user.LastName),
+				user.ID(),
+				getUsername(user),
+				getVisibleName(user),
 			},
 		)
 	}
@@ -91,7 +87,7 @@ func RenderUserTable(users []telegram.UserInfo) string {
 }
 
 // RenderUserTableAsync renders a table of users asynchronously.
-func RenderUserTableAsync(ctx context.Context, u <-chan telegram.UserInfo, total int) error {
+func RenderUserTableAsync(ctx context.Context, u <-chan peers.User, total int) error {
 	pw := progress.NewWriter()
 	pw.SetAutoStop(true)
 	pw.SetTrackerLength(25)
@@ -113,7 +109,7 @@ func RenderUserTableAsync(ctx context.Context, u <-chan telegram.UserInfo, total
 	}
 
 	pw.AppendTracker(tracker)
-	var users []telegram.UserInfo
+	var users []peers.User
 
 	defer func() {
 		for pw.IsRenderInProgress() {

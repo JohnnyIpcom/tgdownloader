@@ -17,26 +17,26 @@ import (
 )
 
 func (r *Root) getPeerSuggestions(ctx context.Context, word string, peerType string) []prompt.Suggest {
-	var filter telegram.PeerCacheInfoFilter
+	var filter telegram.CachedPeerFilter
 	switch peerType {
 	case "user":
-		filter = telegram.OnlyUsersPeerCacheInfoFilter()
+		filter = telegram.OnlyUsersCachedPeerFilter()
 	case "chat":
-		filter = telegram.OnlyChatsPeerCacheInfoFilter()
+		filter = telegram.OnlyChatsCachedPeerFilter()
 	case "channel":
-		filter = telegram.OnlyChannelsPeerCacheInfoFilter()
+		filter = telegram.OnlyChannelsCachedPeerFilter()
 	}
 
-	peers, err := r.client.CacheService.CollectPeersFromCache(ctx, filter)
+	peers, err := r.client.CacheService.GetCachedPeers(ctx, filter)
 	if err != nil {
 		return nil
 	}
 
-	suggestions := make([]prompt.Suggest, 0, len(peers))
+	var suggestions []prompt.Suggest
 	for _, peer := range peers {
 		suggestions = append(suggestions, prompt.Suggest{
-			Text:        strconv.FormatInt(peer.ID, 10),
-			Description: renderer.ReplaceAllEmojis(peer.Peer.Name),
+			Text:        strconv.FormatInt(peer.Key.ID, 10),
+			Description: peer.Name(),
 		})
 	}
 

@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
+	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 
 	"github.com/spf13/cobra"
 )
@@ -21,25 +24,47 @@ func (r *Root) newCacheCmd() *cobra.Command {
 		Short: "view cache",
 		Long:  "view cache",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cachedPeers, err := r.client.CacheService.GetPeersFromCache(cmd.Context())
+			kind, err := cmd.Flags().GetString("type")
 			if err != nil {
 				return err
 			}
 
-			return renderer.RenderCachedPeerTableAsync(cmd.Context(), cachedPeers)
+			var filterFuncs []telegram.CachedPeerFilter
+			if kind != "" {
+				switch kind {
+				case "user":
+					filterFuncs = append(filterFuncs, telegram.OnlyUsersCachedPeerFilter())
+				case "chat":
+					filterFuncs = append(filterFuncs, telegram.OnlyChatsCachedPeerFilter())
+				case "channel":
+					filterFuncs = append(filterFuncs, telegram.OnlyChannelsCachedPeerFilter())
+				}
+			}
+
+			name, err := cmd.Flags().GetString("name")
+			if err != nil {
+				return err
+			}
+
+			if name != "" {
+				filterFuncs = append(filterFuncs, telegram.NameCachedPeerFilter(name))
+			}
+
+			cachedPeers, err := r.client.CacheService.GetCachedPeers(cmd.Context(), filterFuncs...)
+			if err != nil {
+				return err
+			}
+
+			fmt.Println("Cached peers:", len(cachedPeers))
+
+			renderer.RenderCachedPeerTable(cachedPeers)
+			return nil
 		},
 	}
 
-	cacheUpdateCmd := &cobra.Command{
-		Use:   "update",
-		Short: "update cache",
-		Long:  "update cache",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return r.client.CacheService.UpdateDialogCache(cmd.Context())
-		},
-	}
+	cacheViewCmd.Flags().StringP("type", "t", "", "filter by type")
+	cacheViewCmd.Flags().StringP("name", "n", "", "filter by name")
 
 	cacheCmd.AddCommand(cacheViewCmd)
-	cacheCmd.AddCommand(cacheUpdateCmd)
 	return cacheCmd
 }

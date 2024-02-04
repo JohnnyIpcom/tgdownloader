@@ -11,13 +11,14 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func RenderCachedPeerTable(cacheInfos []telegram.PeerCacheInfo) {
+func RenderCachedPeerTable(peers []telegram.CachedPeer) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAutoIndex(true)
 	t.AppendHeader(
 		table.Row{
 			"ID",
+			"Type",
 			"Name",
 			"Access Hash",
 		},
@@ -27,18 +28,28 @@ func RenderCachedPeerTable(cacheInfos []telegram.PeerCacheInfo) {
 		{Name: "ID", Mode: table.AscNumeric},
 	})
 
-	for _, cacheInfo := range cacheInfos {
+	for _, peer := range peers {
+		peerType := "Unknown"
+		if peer.User != nil {
+			peerType = "User"
+		} else if peer.Chat != nil {
+			peerType = "Chat"
+		} else if peer.Channel != nil {
+			peerType = "Channel"
+		}
+
 		t.AppendRow(table.Row{
-			cacheInfo.ID,
-			ReplaceAllEmojis(cacheInfo.Peer.Name),
-			cacheInfo.AccessHash,
+			peer.Key.ID,
+			peerType,
+			ReplaceAllEmojis(peer.Name()),
+			peer.Key.AccessHash,
 		})
 	}
 
 	t.Render()
 }
 
-func RenderCachedPeerTableAsync(ctx context.Context, d <-chan telegram.PeerCacheInfo) error {
+func RenderCachedPeerTableAsync(ctx context.Context, d <-chan telegram.CachedPeer) error {
 	pw := progress.NewWriter()
 	pw.SetAutoStop(true)
 	pw.SetTrackerLength(25)
@@ -59,14 +70,14 @@ func RenderCachedPeerTableAsync(ctx context.Context, d <-chan telegram.PeerCache
 	}
 
 	pw.AppendTracker(tracker)
-	var cachedInfos []telegram.PeerCacheInfo
+	var cachedPeers []telegram.CachedPeer
 
 	defer func() {
 		for pw.IsRenderInProgress() {
 			time.Sleep(time.Millisecond)
 		}
 
-		RenderCachedPeerTable(cachedInfos)
+		RenderCachedPeerTable(cachedPeers)
 	}()
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -76,13 +87,13 @@ func RenderCachedPeerTableAsync(ctx context.Context, d <-chan telegram.PeerCache
 			case <-ctx.Done():
 				return ctx.Err()
 
-			case cacheInfo, ok := <-d:
+			case peer, ok := <-d:
 				if !ok {
 					return nil
 				}
 
 				tracker.Increment(1)
-				cachedInfos = append(cachedInfos, cacheInfo)
+				cachedPeers = append(cachedPeers, peer)
 			}
 		}
 	})

@@ -36,8 +36,8 @@ func (r *Root) newDialogsCmd() *cobra.Command {
 
 			filterFuncs := []renderer.FilterDialogFunc{}
 			if filter != "" {
-				filterFuncs = append(filterFuncs, func(dialog telegram.DialogInfo) bool {
-					return strings.EqualFold(dialog.Peer.Type.String(), filter)
+				filterFuncs = append(filterFuncs, func(dialog telegram.Dialog) bool {
+					return strings.EqualFold(dialog.VisibleName(), filter)
 				})
 			}
 

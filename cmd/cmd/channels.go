@@ -3,6 +3,7 @@ package cmd
 import (
 	"strconv"
 
+	"github.com/gotd/td/constant"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
@@ -42,7 +43,7 @@ func (r *Root) newChannelCmd() *cobra.Command {
 				return err
 			}
 
-			u, total, err := r.client.UserService.GetAllUsersFromChannel(cmd.Context(), channelID)
+			u, total, err := r.client.UserService.GetUsersFromChannel(cmd.Context(), channelID, telegram.QueryRecent())
 			if err != nil {
 				r.log.Error(err, "failed to get users")
 				return err
@@ -61,27 +62,22 @@ func (r *Root) newChannelCmd() *cobra.Command {
 			"prompt_suggest": "channel",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			channelID, err := strconv.ParseInt(args[0], 10, 64)
+			ID, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
 				r.log.Error(err, "failed to convert channel ID")
 				return err
 			}
 
-			userQuery, err := cmd.Flags().GetString("user")
+			var tdLibPeerID constant.TDLibPeerID
+			tdLibPeerID.Channel(ID)
+
+			peer, err := r.client.PeerService.ResolveTDLibID(cmd.Context(), tdLibPeerID)
 			if err != nil {
-				r.log.Error(err, "failed to get user flag")
+				r.log.Error(err, "failed to resolve peer")
 				return err
 			}
 
-			usersChan, err := r.client.UserService.GetUsersFromMessageHistory(
-				cmd.Context(),
-				telegram.PeerInfo{
-					ID:   channelID,
-					Type: telegram.PeerTypeChannel,
-				},
-				userQuery,
-			)
-
+			usersChan, err := r.client.UserService.GetUsersFromMessageHistory(cmd.Context(), peer)
 			if err != nil {
 				r.log.Error(err, "failed to get users")
 				return err
@@ -115,13 +111,13 @@ func (r *Root) newChannelCmd() *cobra.Command {
 				return err
 			}
 
-			users, err := r.client.UserService.GetUsersFromChannel(cmd.Context(), channelID, userQuery)
+			users, total, err := r.client.UserService.GetUsersFromChannel(cmd.Context(), channelID, telegram.QuerySearch(userQuery))
 			if err != nil {
 				r.log.Error(err, "failed to get users")
 				return err
 			}
 
-			renderer.RenderUserTable(users)
+			renderer.RenderUserTableAsync(cmd.Context(), users, total)
 			return nil
 		},
 	}
@@ -160,15 +156,16 @@ func (r *Root) newChannelCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFiles(
-				cmd.Context(),
-				telegram.PeerInfo{
-					ID:   ID,
-					Type: telegram.PeerTypeChannel,
-				},
-				opts.hashtags,
-				getFileOptions...,
-			)
+			var tdLibPeerID constant.TDLibPeerID
+			tdLibPeerID.Channel(ID)
+
+			peer, err := r.client.PeerService.ResolveTDLibID(cmd.Context(), tdLibPeerID)
+			if err != nil {
+				r.log.Error(err, "failed to resolve peer")
+				return err
+			}
+
+			return r.downloadFiles(cmd.Context(), peer, opts.hashtags, getFileOptions...)
 		},
 	}
 

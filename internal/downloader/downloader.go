@@ -93,7 +93,7 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 			}
 
 			writer := d.renderer.TrackedWriter(f.Filename(), f.Size(), file)
-			if err := d.service.Download(ctx, f.FileInfo, writerFunc(func(p []byte) (int, error) {
+			if err := d.service.Download(ctx, f.File, writerFunc(func(p []byte) (int, error) {
 				select {
 				case <-ctx.Done():
 					writer.Fail()
@@ -129,15 +129,15 @@ func (p *Downloader) Stop() error {
 }
 
 // AddSingleDownload adds a single file to the download queue.
-func (p *Downloader) AddSingleDownload(file telegram.FileInfo, saveByHashtags bool) {
+func (p *Downloader) AddSingleDownload(file telegram.File, saveByHashtags bool) {
 	p.files <- FileInfo{
-		FileInfo:       file,
+		File:           file,
 		saveByHashtags: saveByHashtags,
 	}
 }
 
 // AddDownloadQueue adds a channel of files to the download queue.
-func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan telegram.FileInfo, saveByHashtags bool) {
+func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan telegram.File, saveByHashtags bool) {
 	p.queueWG.Add(1)
 	go func() {
 		defer p.queueWG.Done()

@@ -9,7 +9,7 @@ import (
 )
 
 type FileInfo struct {
-	telegram.FileInfo
+	telegram.File
 
 	saveByHashtags bool
 }
@@ -28,7 +28,7 @@ func (f *FileInfo) Hashtags() []string {
 		return nil
 	}
 
-	return f.FileInfo.Hashtags()
+	return f.File.Hashtags()
 }
 
 type MultiFile struct {

@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-type FileInfo struct {
+type File struct {
 	file messages.File
 	peer peers.Peer
 	size int64
@@ -23,15 +23,15 @@ type FileInfo struct {
 	hashtags []string
 }
 
-func (f FileInfo) Size() int64 {
+func (f File) Size() int64 {
 	return f.size
 }
 
-func (f FileInfo) String() string {
+func (f File) String() string {
 	return fmt.Sprintf("%v %d %d", f.file, f.PeerID(), f.size)
 }
 
-func (f FileInfo) PeerID() int64 {
+func (f File) PeerID() int64 {
 	if f.peer == nil {
 		return 0
 	}
@@ -39,7 +39,7 @@ func (f FileInfo) PeerID() int64 {
 	return f.peer.ID()
 }
 
-func (f FileInfo) Username() (string, bool) {
+func (f File) Username() (string, bool) {
 	if f.peer == nil {
 		return "", false
 	}
@@ -47,18 +47,18 @@ func (f FileInfo) Username() (string, bool) {
 	return f.peer.Username()
 }
 
-func (f FileInfo) Filename() string {
+func (f File) Filename() string {
 	return f.file.Name
 }
 
-func (f FileInfo) Hashtags() []string {
+func (f File) Hashtags() []string {
 	return f.hashtags
 }
 
 type FileService interface {
-	GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFileOption) (<-chan FileInfo, error)
-	GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan FileInfo, error)
-	Download(ctx context.Context, file FileInfo, out io.Writer) error
+	GetFiles(ctx context.Context, peer peers.Peer, opts ...GetFileOption) (<-chan File, error)
+	GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan File, error)
+	Download(ctx context.Context, file File, out io.Writer) error
 }
 
 type fileService service
@@ -115,7 +115,7 @@ func GetFileWithOffsetDate(offsetDate int) GetFileOption {
 }
 
 // GetFiles returns channel for file IDs and error channel.
-func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFileOption) (<-chan FileInfo, error) {
+func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...GetFileOption) (<-chan File, error) {
 	options := getfileOptions{
 		limit: int(^uint(0) >> 1), // MaxInt
 	}
@@ -127,12 +127,12 @@ func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFi
 
 	var fileCounter int64
 
-	inputPeer, err := s.client.getInputPeer(ctx, peer.TDLibPeerID())
+	inputPeer, err := s.client.GetInputPeer(ctx, peer.TDLibPeerID())
 	if err != nil {
 		return nil, err
 	}
 
-	fileChan := make(chan FileInfo)
+	fileChan := make(chan File)
 	go func() {
 		defer close(fileChan)
 
@@ -146,7 +146,7 @@ func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFi
 				return ErrorLimitReached
 			}
 
-			file, err := getFileInfoFromElem(ctx, s.client.peerMgr, elem)
+			file, err := s.client.GetFileFromElem(ctx, elem)
 			if err != nil {
 				if !errors.Is(err, errNoFilesInMessage) {
 					s.logger.Error("failed to get file info from elem", zap.Error(err))
@@ -188,8 +188,8 @@ func (s *fileService) GetFiles(ctx context.Context, peer PeerInfo, opts ...GetFi
 }
 
 // GetFilesFromNewChannelMessages returns files from new messages.
-func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan FileInfo, error) {
-	fileChan := make(chan FileInfo)
+func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan File, error) {
+	fileChan := make(chan File)
 
 	onNewMessage := func(ctx context.Context, e tg.Entities, msg tg.MessageClass) error {
 		nonEmpty, ok := msg.AsNotEmpty()
@@ -225,7 +225,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 			msgPeer = &tg.InputPeerEmpty{}
 		}
 
-		file, err := getFileInfoFromElem(ctx, s.client.peerMgr, messages.Elem{
+		file, err := s.client.GetFileFromElem(ctx, messages.Elem{
 			Msg:      nonEmpty,
 			Peer:     msgPeer,
 			Entities: entities,
@@ -266,7 +266,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 	return fileChan, nil
 }
 
-func (s *fileService) Download(ctx context.Context, file FileInfo, out io.Writer) error {
+func (s *fileService) Download(ctx context.Context, file File, out io.Writer) error {
 	builder := s.client.downloader.Download(s.client.API(), file.file.Location)
 
 	_, err := builder.Stream(ctx, out)

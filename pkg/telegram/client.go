@@ -3,29 +3,28 @@ package telegram
 import (
 	"bufio"
 	"context"
-	"crypto/rsa"
 	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/gotd/contrib/bbolt"
+	"github.com/gotd/contrib/middleware/floodwait"
+	"github.com/gotd/contrib/middleware/ratelimit"
+	"github.com/gotd/contrib/storage"
 	"github.com/gotd/td/constant"
 	"github.com/gotd/td/session"
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/downloader"
+	"github.com/gotd/td/telegram/message/peer"
 	"github.com/gotd/td/telegram/peers"
-	"github.com/gotd/td/telegram/query/dialogs"
+	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/telegram/updates/hook"
 	"github.com/gotd/td/tg"
-	"github.com/johnnyipcom/gotd-contrib/bbolt"
-	"github.com/johnnyipcom/gotd-contrib/middleware/floodwait"
-	"github.com/johnnyipcom/gotd-contrib/middleware/ratelimit"
-	"github.com/johnnyipcom/gotd-contrib/storage"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
-	"github.com/johnnyipcom/tgdownloader/pkg/key"
 	bboltdb "go.etcd.io/bbolt"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
@@ -63,17 +62,27 @@ type service struct {
 	logger *zap.Logger
 }
 
-func newPublicKey(key *rsa.PublicKey) tgclient.PublicKey {
-	return tgclient.PublicKey{
-		RSA: key,
-	}
-}
-
 // NewClient creates new Telegram client.
 func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	dispatcher := tg.NewUpdateDispatcher()
+
+	var peerStorage storage.PeerStorage
+	if cfg.IsSet("cache.path") {
+		db, err := bboltdb.Open(cfg.GetString("cache.path"), 0600, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		peerStorage = bbolt.NewPeerStorage(db, []byte("peers"))
+	}
+
+	var handler tgclient.UpdateHandler = tg.NewUpdateDispatcher()
+	if peerStorage != nil {
+		handler = storage.UpdateHook(dispatcher, peerStorage)
+	}
+
 	gaps := updates.New(updates.Config{
-		Handler: dispatcher,
+		Handler: handler,
 		Logger:  log.Named("gaps"),
 	})
 
@@ -90,40 +99,18 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		},
 	}
 
-	var storage storage.PeerStorage
-	if cfg.IsSet("cache.path") {
-		db, err := bboltdb.Open(cfg.GetString("cache.path"), 0600, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		storage = bbolt.NewPeerStorage(db, []byte("peers"))
-	}
-
 	if cfg.IsSet("session.path") {
 		options.SessionStorage = &session.FileStorage{
 			Path: cfg.GetString("session.path"),
 		}
 	}
 
-	if cfg.IsSet("mtproto.public_keys") {
-		var keys []tgclient.PublicKey
+	keys, err := getPublicKeys(cfg)
+	if err != nil {
+		return nil, err
+	}
 
-		publicKeys := cfg.GetStringSlice("mtproto.public_keys")
-		for _, publicKey := range publicKeys {
-			publicKeyData, err := os.ReadFile(publicKey)
-			if err != nil {
-				return nil, err
-			}
-
-			k, err := key.ParsePublicKey(publicKeyData)
-			if err != nil {
-				return nil, err
-			}
-
-			keys = append(keys, newPublicKey(k))
-		}
-
+	if len(keys) > 0 {
 		options.PublicKeys = keys
 	}
 
@@ -141,7 +128,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		updMgr:     gaps,
 		downloader: downloader.NewDownloader(),
 		dispatcher: dispatcher,
-		storage:    storage,
+		storage:    peerStorage,
 	}
 
 	// Set up services
@@ -202,7 +189,8 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	}
 
 	go func() {
-		if err := c.updMgr.Run(ctx, c.client.API(), user.GetID(), authOptions); err != nil {
+		updErr := c.updMgr.Run(ctx, c.client.API(), user.GetID(), authOptions)
+		if updErr != nil && !errors.Is(updErr, context.Canceled) {
 			fmt.Printf("auth updates error: %s\n", err)
 		}
 	}()
@@ -226,7 +214,7 @@ func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 	initDone := make(chan struct{})
 	go func() {
 		defer close(errC)
-		errC <- c.client.Run(context.Background(), func(ctx context.Context) error {
+		errC <- c.client.Run(ctx, func(ctx context.Context) error {
 			logout, err := c.Auth(ctx)
 			if err != nil {
 				return err
@@ -290,7 +278,16 @@ func (c *Client) API() *tg.Client {
 	return c.client.API()
 }
 
-func (c *Client) getInputPeer(ctx context.Context, ID constant.TDLibPeerID) (tg.InputPeerClass, error) {
+func (c *Client) ExtractPeer(ctx context.Context, ent peer.Entities, peerID tg.PeerClass) (peers.Peer, error) {
+	peer, err := ent.ExtractPeer(peerID)
+	if err != nil {
+		return nil, fmt.Errorf("extract peer: %w", err)
+	}
+
+	return c.peerMgr.FromInputPeer(ctx, peer)
+}
+
+func (c *Client) GetInputPeer(ctx context.Context, ID constant.TDLibPeerID) (tg.InputPeerClass, error) {
 	if c.storage != nil {
 		if peer, err := c.storage.Resolve(ctx, strconv.FormatInt(ID.ToPlain(), 10)); err == nil {
 			return peer.AsInputPeer(), nil
@@ -309,36 +306,40 @@ func (c *Client) getInputPeer(ctx context.Context, ID constant.TDLibPeerID) (tg.
 	return peer.InputPeer(), nil
 }
 
-func (c *Client) storeDialog(ctx context.Context, elem dialogs.Elem) error {
-	if c.storage == nil {
-		return nil
+func (c *Client) GetFileFromElem(ctx context.Context, elem messages.Elem) (File, error) {
+	var peer peers.Peer
+	fromID, ok := elem.Msg.GetFromID()
+	if ok {
+		from, err := c.ExtractPeer(ctx, elem.Entities, fromID)
+		if err != nil {
+			return File{}, fmt.Errorf("extract fromID: %w", err)
+		}
+
+		peer = from
 	}
 
-	var key string
-
-	var p storage.Peer
-	switch dlg := elem.Dialog.GetPeer().(type) {
-	case *tg.PeerUser:
-		key = strconv.FormatInt(dlg.UserID, 10)
-		user, ok := elem.Entities.User(dlg.UserID)
-		if !ok || !p.FromUser(user) {
-			return fmt.Errorf("user not found: %d", dlg.UserID)
+	if peer == nil {
+		p, err := c.ExtractPeer(ctx, elem.Entities, elem.Msg.GetPeerID())
+		if err != nil {
+			return File{}, fmt.Errorf("extract peerID: %w", err)
 		}
 
-	case *tg.PeerChat:
-		key = strconv.FormatInt(dlg.ChatID, 10)
-		chat, ok := elem.Entities.Chat(dlg.ChatID)
-		if !ok || !p.FromChat(chat) {
-			return fmt.Errorf("chat not found: %d", dlg.ChatID)
-		}
-
-	case *tg.PeerChannel:
-		key = strconv.FormatInt(dlg.ChannelID, 10)
-		channel, ok := elem.Entities.Channel(dlg.ChannelID)
-		if !ok || !p.FromChat(channel) {
-			return fmt.Errorf("channel not found: %d", dlg.ChannelID)
-		}
+		peer = p
 	}
 
-	return c.storage.Assign(ctx, key, p)
+	file, ok := elem.File()
+	if !ok {
+		return File{}, errNoFilesInMessage
+	}
+
+	var size int64
+	if doc, ok := elem.Document(); ok {
+		size = doc.Size
+	}
+
+	return File{
+		file: file,
+		peer: peer,
+		size: size,
+	}, nil
 }

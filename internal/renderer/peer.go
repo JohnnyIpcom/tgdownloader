@@ -3,18 +3,18 @@ package renderer
 import (
 	"os"
 
+	"github.com/gotd/td/telegram/peers"
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 )
 
 // RenderPeerTable renders a list of peers.
-func RenderPeerTable(chats []telegram.PeerInfo) string {
+func RenderPeerTable(peers []peers.Peer) string {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAutoIndex(true)
 	t.AppendHeader(
 		table.Row{
-			"Name",
+			"Visible Name",
 			"ID",
 			"Type",
 		},
@@ -24,12 +24,12 @@ func RenderPeerTable(chats []telegram.PeerInfo) string {
 		{Name: "Name", Mode: table.Asc},
 	})
 
-	for _, chat := range chats {
+	for _, peer := range peers {
 		t.AppendRow(
 			table.Row{
-				ReplaceAllEmojis(chat.Name),
-				chat.ID,
-				chat.Type.String(),
+				getVisibleName(peer),
+				peer.ID(),
+				getPeerTypename(peer),
 			},
 		)
 	}

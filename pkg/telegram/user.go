@@ -2,29 +2,47 @@ package telegram
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/peers/members"
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/messages"
 	"go.uber.org/zap"
 )
 
-type UserInfo struct {
-	ID        int64
-	Username  string
-	FirstName string
-	LastName  string
+// Query is a query for channel members.
+type Query interface {
+	channelMembers(channel peers.Channel) *members.ChannelMembers
+}
+
+type recent struct{}
+
+func (r recent) channelMembers(channel peers.Channel) *members.ChannelMembers {
+	return members.Channel(channel)
+}
+
+func QueryRecent() Query {
+	return recent{}
+}
+
+type querySearch struct {
+	query string
+}
+
+func (q querySearch) channelMembers(channel peers.Channel) *members.ChannelMembers {
+	return members.ChannelQuery{Channel: channel}.Search(q.query)
+}
+
+func QuerySearch(query string) Query {
+	return querySearch{query: query}
 }
 
 type UserService interface {
-	GetUsersFromMessageHistory(ctx context.Context, peer PeerInfo, Q string) (<-chan UserInfo, error)
-	GetUser(ctx context.Context, userID int64) (UserInfo, error)
-	GetUsersFromChat(ctx context.Context, chatID int64, query string) ([]UserInfo, error)
-	GetUsersFromChannel(ctx context.Context, channelID int64, query string) ([]UserInfo, error)
-	GetAllUsersFromChat(ctx context.Context, chatID int64) (<-chan UserInfo, int, error)
-	GetAllUsersFromChannel(ctx context.Context, channelID int64) (<-chan UserInfo, int, error)
+	GetUser(ctx context.Context, userID int64) (peers.User, error)
+
+	GetUsersFromMessageHistory(ctx context.Context, peer peers.Peer) (<-chan peers.User, error)
+	GetUsersFromChat(ctx context.Context, chatID int64) (<-chan peers.User, int, error)
+	GetUsersFromChannel(ctx context.Context, channelID int64, query Query) (<-chan peers.User, int, error)
 }
 
 type userService service
@@ -33,13 +51,13 @@ var _ UserService = (*userService)(nil)
 
 // GetUsersFromMessageHistory returns chan with users from message history. Sometimes chat doesn't provide list of users.
 // This method is a workaround for this problem.
-func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer PeerInfo, Q string) (<-chan UserInfo, error) {
-	inputPeer, err := s.client.getInputPeer(ctx, peer.TDLibPeerID())
+func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer peers.Peer) (<-chan peers.User, error) {
+	inputPeer, err := s.client.GetInputPeer(ctx, peer.TDLibPeerID())
 	if err != nil {
 		return nil, err
 	}
 
-	usersChan := make(chan UserInfo)
+	usersChan := make(chan peers.User)
 	go func() {
 		defer close(usersChan)
 
@@ -63,12 +81,7 @@ func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer PeerI
 					continue
 				}
 
-				u := getUserInfoFromUser(peerUser)
-				if Q != "" && !strings.Contains(u.FirstName, Q) && !strings.Contains(u.LastName, Q) && !strings.Contains(u.Username, Q) {
-					continue
-				}
-
-				usersChan <- u
+				usersChan <- peerUser
 			}
 
 			return nil
@@ -81,40 +94,17 @@ func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer PeerI
 	return usersChan, nil
 }
 
-func (s *userService) GetUser(ctx context.Context, ID int64) (UserInfo, error) {
+func (s *userService) GetUser(ctx context.Context, ID int64) (peers.User, error) {
 	user, err := s.client.peerMgr.ResolveUserID(ctx, ID)
 	if err != nil {
-		return UserInfo{}, err
+		return peers.User{}, err
 	}
 
-	return getUserInfoFromUser(user), nil
+	return user, nil
 }
 
-// GetUsersFromChat returns users from chat by query.
-func (c *userService) GetUsersFromChat(ctx context.Context, ID int64, query string) ([]UserInfo, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-// GetUsersFromChannel returns users from channel by query.
-func (s *userService) GetUsersFromChannel(ctx context.Context, ID int64, query string) ([]UserInfo, error) {
-	channel, err := s.client.peerMgr.ResolveChannelID(ctx, ID)
-	if err != nil {
-		return nil, err
-	}
-
-	var users []UserInfo
-
-	channelMembers := members.ChannelQuery{Channel: channel}.Search(query)
-	channelMembers.ForEach(ctx, func(m members.Member) error {
-		users = append(users, getUserInfoFromUser(m.User()))
-		return nil
-	})
-
-	return users, nil
-}
-
-// GetAllUsersFromChat returns all users from chat.
-func (s *userService) GetAllUsersFromChat(ctx context.Context, ID int64) (<-chan UserInfo, int, error) {
+// GetUsersFromChat returns all users from chat.
+func (s *userService) GetUsersFromChat(ctx context.Context, ID int64) (<-chan peers.User, int, error) {
 	chat, err := s.client.peerMgr.ResolveChatID(ctx, ID)
 	if err != nil {
 		return nil, 0, err
@@ -127,12 +117,12 @@ func (s *userService) GetAllUsersFromChat(ctx context.Context, ID int64) (<-chan
 		return nil, 0, err
 	}
 
-	usersChan := make(chan UserInfo)
+	usersChan := make(chan peers.User)
 	go func() {
 		defer close(usersChan)
 
 		chatMembers.ForEach(ctx, func(m members.Member) error {
-			usersChan <- getUserInfoFromUser(m.User())
+			usersChan <- m.User()
 			return nil
 		})
 	}()
@@ -140,26 +130,26 @@ func (s *userService) GetAllUsersFromChat(ctx context.Context, ID int64) (<-chan
 	return usersChan, count, nil
 }
 
-// GetAllUsersFromChannel returns all users from channel.
-func (s *userService) GetAllUsersFromChannel(ctx context.Context, ID int64) (<-chan UserInfo, int, error) {
+// GetUsersFromChannel returns users from channel.
+func (s *userService) GetUsersFromChannel(ctx context.Context, ID int64, query Query) (<-chan peers.User, int, error) {
 	channel, err := s.client.peerMgr.ResolveChannelID(ctx, ID)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	channelMembers := members.Channel(channel)
+	channelMembers := query.channelMembers(channel)
 
 	count, err := channelMembers.Count(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	usersChan := make(chan UserInfo)
+	usersChan := make(chan peers.User)
 	go func() {
 		defer close(usersChan)
 
 		channelMembers.ForEach(ctx, func(m members.Member) error {
-			usersChan <- getUserInfoFromUser(m.User())
+			usersChan <- m.User()
 			return nil
 		})
 	}()

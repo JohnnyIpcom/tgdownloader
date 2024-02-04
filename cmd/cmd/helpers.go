@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/gotd/td/telegram/peers"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 )
 
@@ -37,7 +38,7 @@ func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) 
 	return opts, nil
 }
 
-func (r *Root) downloadFiles(ctx context.Context, peer telegram.PeerInfo, saveByHashtags bool, opts ...telegram.GetFileOption) error {
+func (r *Root) downloadFiles(ctx context.Context, peer peers.Peer, saveByHashtags bool, opts ...telegram.GetFileOption) error {
 	files, err := r.client.FileService.GetFiles(ctx, peer, opts...)
 	if err != nil {
 		return err

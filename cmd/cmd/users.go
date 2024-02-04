@@ -3,7 +3,7 @@ package cmd
 import (
 	"strconv"
 
-	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
+	"github.com/gotd/td/constant"
 	"github.com/spf13/cobra"
 )
 
@@ -48,15 +48,15 @@ func (r *Root) newUserCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFiles(
-				cmd.Context(),
-				telegram.PeerInfo{
-					ID:   ID,
-					Type: telegram.PeerTypeUser,
-				},
-				opts.hashtags,
-				getFileOptions...,
-			)
+			var tdLibPeerID constant.TDLibPeerID
+			tdLibPeerID.User(ID)
+			peer, err := r.client.PeerService.ResolveTDLibID(cmd.Context(), tdLibPeerID)
+			if err != nil {
+				r.log.Error(err, "failed to resolve peer")
+				return err
+			}
+
+			return r.downloadFiles(cmd.Context(), peer, opts.hashtags, getFileOptions...)
 		},
 	}
 

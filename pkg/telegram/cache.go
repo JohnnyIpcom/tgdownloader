@@ -2,65 +2,71 @@ package telegram
 
 import (
 	"context"
-	"time"
+	"strings"
 
-	"github.com/gotd/td/telegram/query"
+	"github.com/gotd/contrib/storage"
 	"github.com/gotd/td/telegram/query/dialogs"
-	"github.com/johnnyipcom/gotd-contrib/storage"
+	"github.com/gotd/td/tg"
 )
 
-type PeerCacheInfo struct {
-	ID         int64
-	Peer       PeerInfo
-	AccessHash int64
-	CreatedAt  time.Time
+type CachedPeerFilter interface {
+	filter(CachedPeer) bool
 }
 
-type PeerCacheInfoFilter interface {
-	filter(storage.Peer) bool
-}
-
-type keyKindPeerCacheInfoFilter struct {
+type keyKindCachedPeerFilter struct {
 	kind dialogs.PeerKind
 }
 
-func (f keyKindPeerCacheInfoFilter) filter(p storage.Peer) bool {
+func (f keyKindCachedPeerFilter) filter(p CachedPeer) bool {
 	return p.Key.Kind == f.kind
 }
 
-func OnlyUsersPeerCacheInfoFilter() PeerCacheInfoFilter {
-	return keyKindPeerCacheInfoFilter{kind: dialogs.User}
+func OnlyUsersCachedPeerFilter() CachedPeerFilter {
+	return keyKindCachedPeerFilter{kind: dialogs.User}
 }
 
-func OnlyChatsPeerCacheInfoFilter() PeerCacheInfoFilter {
-	return keyKindPeerCacheInfoFilter{kind: dialogs.Chat}
+func OnlyChatsCachedPeerFilter() CachedPeerFilter {
+	return keyKindCachedPeerFilter{kind: dialogs.Chat}
 }
 
-func OnlyChannelsPeerCacheInfoFilter() PeerCacheInfoFilter {
-	return keyKindPeerCacheInfoFilter{kind: dialogs.Channel}
+func OnlyChannelsCachedPeerFilter() CachedPeerFilter {
+	return keyKindCachedPeerFilter{kind: dialogs.Channel}
+}
+
+type nameCachedPeerFilter struct {
+	name string
+}
+
+// NameCachedPeerFilter returns a filter that matches peers by substring of their name.
+func NameCachedPeerFilter(name string) CachedPeerFilter {
+	return nameCachedPeerFilter{name: name}
+}
+
+func (f nameCachedPeerFilter) filter(p CachedPeer) bool {
+	return strings.Contains(strings.ToLower(p.Name()), strings.ToLower(f.name))
 }
 
 type not struct {
-	f PeerCacheInfoFilter
+	f CachedPeerFilter
 }
 
-func NotPeerCacheInfoFilter(f PeerCacheInfoFilter) PeerCacheInfoFilter {
+func NotCachedPeerFilter(f CachedPeerFilter) CachedPeerFilter {
 	return not{f: f}
 }
 
-func (f not) filter(p storage.Peer) bool {
+func (f not) filter(p CachedPeer) bool {
 	return !f.f.filter(p)
 }
 
 type and struct {
-	filters []PeerCacheInfoFilter
+	filters []CachedPeerFilter
 }
 
-func AndPeerCacheInfoFilter(filters ...PeerCacheInfoFilter) PeerCacheInfoFilter {
+func AndCachedPeerFilter(filters ...CachedPeerFilter) CachedPeerFilter {
 	return and{filters: filters}
 }
 
-func (f and) filter(p storage.Peer) bool {
+func (f and) filter(p CachedPeer) bool {
 	for _, filter := range f.filters {
 		if !filter.filter(p) {
 			return false
@@ -71,14 +77,14 @@ func (f and) filter(p storage.Peer) bool {
 }
 
 type or struct {
-	filters []PeerCacheInfoFilter
+	filters []CachedPeerFilter
 }
 
-func OrPeerCacheInfoFilter(filters ...PeerCacheInfoFilter) PeerCacheInfoFilter {
+func OrCachedPeerFilter(filters ...CachedPeerFilter) CachedPeerFilter {
 	return or{filters: filters}
 }
 
-func (f or) filter(p storage.Peer) bool {
+func (f or) filter(p CachedPeer) bool {
 	for _, filter := range f.filters {
 		if filter.filter(p) {
 			return true
@@ -88,26 +94,33 @@ func (f or) filter(p storage.Peer) bool {
 	return false
 }
 
+type CachedPeer struct {
+	storage.Peer
+}
+
+func (p CachedPeer) Name() string {
+	if p.User != nil {
+		return p.User.Username
+	} else if p.Chat != nil {
+		return p.Chat.Title
+	} else if p.Channel != nil {
+		return p.Channel.Title
+	}
+
+	return ""
+}
+
 type CacheService interface {
-	UpdateDialogCache(ctx context.Context) error
-	GetPeersFromCache(ctx context.Context, filters ...PeerCacheInfoFilter) (<-chan PeerCacheInfo, error)
-	CollectPeersFromCache(ctx context.Context, filters ...PeerCacheInfoFilter) ([]PeerCacheInfo, error)
+	GetCachedPeers(ctx context.Context, filters ...CachedPeerFilter) ([]CachedPeer, error)
+	CacheChat(ctx context.Context, chat tg.ChatClass) error
+	CacheUser(ctx context.Context, user tg.UserClass) error
 }
 
 type cacheService service
 
-func (s *cacheService) UpdateDialogCache(ctx context.Context) error {
-	if s.client.storage == nil {
-		return errPeerStoreNotSet
-	}
+var _ CacheService = (*cacheService)(nil)
 
-	query := query.GetDialogs(s.client.API())
-	return query.ForEach(ctx, func(ctx context.Context, elem dialogs.Elem) error {
-		return s.client.storeDialog(ctx, elem)
-	})
-}
-
-func (s *cacheService) GetPeersFromCache(ctx context.Context, filters ...PeerCacheInfoFilter) (<-chan PeerCacheInfo, error) {
+func (s *cacheService) GetCachedPeers(ctx context.Context, filters ...CachedPeerFilter) ([]CachedPeer, error) {
 	if s.client.storage == nil {
 		return nil, errPeerStoreNotSet
 	}
@@ -117,48 +130,40 @@ func (s *cacheService) GetPeersFromCache(ctx context.Context, filters ...PeerCac
 		return nil, err
 	}
 
-	peerCacheInfo := make(chan PeerCacheInfo)
-	go func() {
-		defer close(peerCacheInfo)
-
-		storage.ForEach(ctx, iter, func(p storage.Peer) error {
-			for _, filter := range filters {
-				if !filter.filter(p) {
-					return nil
-				}
-			}
-
-			peerCacheInfo <- getPeerCacheInfoFromStoragePeer(p)
-			return nil
-		})
-	}()
-
-	return peerCacheInfo, nil
-}
-
-func (s *cacheService) CollectPeersFromCache(ctx context.Context, filters ...PeerCacheInfoFilter) ([]PeerCacheInfo, error) {
-	if s.client.storage == nil {
-		return nil, errPeerStoreNotSet
-	}
-
-	iter, err := s.client.storage.Iterate(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var peers []PeerCacheInfo
-	if err := storage.ForEach(ctx, iter, func(p storage.Peer) error {
+	peers := make([]CachedPeer, 0)
+	storage.ForEach(ctx, iter, func(p storage.Peer) error {
+		peer := CachedPeer{p}
 		for _, filter := range filters {
-			if !filter.filter(p) {
+			if !filter.filter(peer) {
 				return nil
 			}
 		}
 
-		peers = append(peers, getPeerCacheInfoFromStoragePeer(p))
+		peers = append(peers, peer)
 		return nil
-	}); err != nil {
-		return nil, err
-	}
+	})
 
 	return peers, nil
+}
+
+func (s *cacheService) CacheChat(ctx context.Context, chat tg.ChatClass) error {
+	if s.client.storage == nil {
+		return errPeerStoreNotSet
+	}
+
+	peer := storage.Peer{}
+	peer.FromChat(chat)
+
+	return s.client.storage.Add(ctx, peer)
+}
+
+func (s *cacheService) CacheUser(ctx context.Context, user tg.UserClass) error {
+	if s.client.storage == nil {
+		return errPeerStoreNotSet
+	}
+
+	peer := storage.Peer{}
+	peer.FromUser(user)
+
+	return s.client.storage.Add(ctx, peer)
 }
