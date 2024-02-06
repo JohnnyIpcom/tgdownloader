@@ -122,6 +122,8 @@ func (s *userService) GetUsersFromChat(ctx context.Context, ID int64) (<-chan pe
 		defer close(usersChan)
 
 		chatMembers.ForEach(ctx, func(m members.Member) error {
+			s.client.cacheUser(ctx, m.User().Raw())
+
 			usersChan <- m.User()
 			return nil
 		})
@@ -149,6 +151,8 @@ func (s *userService) GetUsersFromChannel(ctx context.Context, ID int64, query Q
 		defer close(usersChan)
 
 		channelMembers.ForEach(ctx, func(m members.Member) error {
+			s.client.cacheUser(ctx, m.User().Raw())
+
 			usersChan <- m.User()
 			return nil
 		})

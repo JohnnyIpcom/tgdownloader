@@ -19,6 +19,7 @@ import (
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/message/peer"
 	"github.com/gotd/td/telegram/peers"
+	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/telegram/updates/hook"
@@ -64,15 +65,12 @@ type service struct {
 func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	dispatcher := tg.NewUpdateDispatcher()
 
-	var peerStorage storage.PeerStorage
-	if cfg.IsSet("cache.path") {
-		db, err := bboltdb.Open(cfg.GetString("cache.path"), 0600, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		peerStorage = bbolt.NewPeerStorage(db, []byte("peers"))
+	db, err := bboltdb.Open(cfg.GetString("cache.path"), 0600, nil)
+	if err != nil {
+		return nil, err
 	}
+
+	peerStorage := bbolt.NewPeerStorage(db, []byte("peers"))
 
 	var handler tgclient.UpdateHandler = tg.NewUpdateDispatcher()
 	if peerStorage != nil {
@@ -339,4 +337,40 @@ func (c *Client) GetFileFromElem(ctx context.Context, elem messages.Elem) (File,
 		peer: peer,
 		size: size,
 	}, nil
+}
+
+func (c *Client) cacheDialog(ctx context.Context, elem dialogs.Elem) error {
+	var p storage.Peer
+
+	switch dlg := elem.Dialog.GetPeer().(type) {
+	case *tg.PeerUser:
+		user, ok := elem.Entities.User(dlg.UserID)
+		if !ok || !p.FromUser(user) {
+			return nil
+		}
+
+	case *tg.PeerChat:
+		chat, ok := elem.Entities.Chat(dlg.ChatID)
+		if !ok || !p.FromChat(chat) {
+			return nil
+		}
+
+	case *tg.PeerChannel:
+		channel, ok := elem.Entities.Channel(dlg.ChannelID)
+		if !ok || !p.FromChat(channel) {
+			return nil
+		}
+	}
+
+	return c.storage.Add(ctx, p)
+}
+
+func (c *Client) cacheUser(ctx context.Context, u tg.UserClass) error {
+	var p storage.Peer
+
+	if !p.FromUser(u) {
+		return nil
+	}
+
+	return c.storage.Add(ctx, p)
 }

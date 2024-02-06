@@ -144,7 +144,7 @@ func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...Get
 		if err := queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
 			if atomic.LoadInt64(&fileCounter) >= int64(options.limit) {
 				s.logger.Info("limit reached", zap.Int64("limit", int64(options.limit)))
-				return ErrorLimitReached
+				return errLimitReached
 			}
 
 			file, err := s.client.GetFileFromElem(ctx, elem)
@@ -176,7 +176,7 @@ func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...Get
 
 			return nil
 		}); err != nil {
-			if !errors.Is(err, ErrorLimitReached) {
+			if !errors.Is(err, errLimitReached) {
 				s.logger.Error("failed to get files", zap.Error(err))
 				return
 			}

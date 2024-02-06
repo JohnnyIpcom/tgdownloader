@@ -6,7 +6,6 @@ import (
 
 	"github.com/gotd/contrib/storage"
 	"github.com/gotd/td/telegram/query/dialogs"
-	"github.com/gotd/td/tg"
 )
 
 type CachedPeerFilter interface {
@@ -112,8 +111,6 @@ func (p CachedPeer) Name() string {
 
 type CacheService interface {
 	GetCachedPeers(ctx context.Context, filters ...CachedPeerFilter) ([]CachedPeer, error)
-	CacheChat(ctx context.Context, chat tg.ChatClass) error
-	CacheUser(ctx context.Context, user tg.UserClass) error
 }
 
 type cacheService service
@@ -121,10 +118,6 @@ type cacheService service
 var _ CacheService = (*cacheService)(nil)
 
 func (s *cacheService) GetCachedPeers(ctx context.Context, filters ...CachedPeerFilter) ([]CachedPeer, error) {
-	if s.client.storage == nil {
-		return nil, errPeerStoreNotSet
-	}
-
 	iter, err := s.client.storage.Iterate(ctx)
 	if err != nil {
 		return nil, err
@@ -144,26 +137,4 @@ func (s *cacheService) GetCachedPeers(ctx context.Context, filters ...CachedPeer
 	})
 
 	return peers, nil
-}
-
-func (s *cacheService) CacheChat(ctx context.Context, chat tg.ChatClass) error {
-	if s.client.storage == nil {
-		return errPeerStoreNotSet
-	}
-
-	peer := storage.Peer{}
-	peer.FromChat(chat)
-
-	return s.client.storage.Add(ctx, peer)
-}
-
-func (s *cacheService) CacheUser(ctx context.Context, user tg.UserClass) error {
-	if s.client.storage == nil {
-		return errPeerStoreNotSet
-	}
-
-	peer := storage.Peer{}
-	peer.FromUser(user)
-
-	return s.client.storage.Add(ctx, peer)
 }
