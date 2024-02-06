@@ -5,14 +5,16 @@ import (
 	"time"
 
 	"github.com/gotd/td/telegram/peers"
+	"github.com/johnnyipcom/tgdownloader/internal/downloader"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 )
 
 type downloadOptions struct {
-	limit      int
-	user       int64
-	offsetDate string
-	hashtags   bool
+	limit         int
+	user          int64
+	offsetDate    string
+	hashtags      bool
+	saveOnlyIfNew bool
 }
 
 func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) {
@@ -38,8 +40,27 @@ func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) 
 	return opts, nil
 }
 
-func (r *Root) downloadFiles(ctx context.Context, peer peers.Peer, saveByHashtags bool, opts ...telegram.GetFileOption) error {
-	files, err := r.client.FileService.GetFiles(ctx, peer, opts...)
+func (o *downloadOptions) newSaveFileOptions() []downloader.SaveFileOption {
+	var opts []downloader.SaveFileOption
+
+	if o.hashtags {
+		opts = append(opts, downloader.SaveByHashtags())
+	}
+
+	if o.saveOnlyIfNew {
+		opts = append(opts, downloader.SaveOnlyIfNew())
+	}
+
+	return opts
+}
+
+func (r *Root) downloadFiles(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
+	getFileOptions, err := opts.newGetFileOptions()
+	if err != nil {
+		return err
+	}
+
+	files, err := r.client.FileService.GetFiles(ctx, peer, getFileOptions...)
 	if err != nil {
 		return err
 	}
@@ -50,11 +71,11 @@ func (r *Root) downloadFiles(ctx context.Context, peer peers.Peer, saveByHashtag
 	}
 
 	d.Start(ctx)
-	d.AddDownloadQueue(ctx, files, saveByHashtags)
+	d.AddDownloadQueue(ctx, files, opts.newSaveFileOptions()...)
 	return d.Stop()
 }
 
-func (r *Root) downloadFilesFromNewMessages(ctx context.Context, ID int64, saveByHashtags bool) error {
+func (r *Root) downloadFilesFromNewMessages(ctx context.Context, ID int64, opts downloadOptions) error {
 	files, err := r.client.FileService.GetFilesFromNewMessages(ctx, ID)
 	if err != nil {
 		return err
@@ -66,6 +87,6 @@ func (r *Root) downloadFilesFromNewMessages(ctx context.Context, ID int64, saveB
 	}
 
 	d.Start(ctx)
-	d.AddDownloadQueue(ctx, files, true)
+	d.AddDownloadQueue(ctx, files, opts.newSaveFileOptions()...)
 	return d.Stop()
 }

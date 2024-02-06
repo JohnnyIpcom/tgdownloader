@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
@@ -173,7 +174,19 @@ func (r *Root) Execute() error {
 }
 
 func (r *Root) newDownloader() (*downloader.Downloader, error) {
-	loader := downloader.NewDownloader(r.cfg.Sub("downloader"), r.zap, r.client.FileService)
+	dCfg := r.cfg.Sub("downloader")
+
+	workers := dCfg.GetInt("workers")
+	if workers < 1 {
+		workers = runtime.NumCPU()
+	}
+
+	loader := downloader.NewDownloader(
+		downloader.GetFS(dCfg, zap.NewStdLog(r.zap)),
+		workers,
+		r.client.FileService,
+	)
+
 	loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
 	return loader, nil
 }

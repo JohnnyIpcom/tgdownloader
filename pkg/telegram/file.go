@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync/atomic"
 
+	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message/peer"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/query"
@@ -267,8 +268,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 }
 
 func (s *fileService) Download(ctx context.Context, file File, out io.Writer) error {
-	builder := s.client.downloader.Download(s.client.API(), file.file.Location)
-
+	builder := downloader.NewDownloader().Download(s.client.API(), file.file.Location)
 	_, err := builder.Stream(ctx, out)
 	if err != nil {
 		return err

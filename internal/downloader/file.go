@@ -2,7 +2,6 @@ package downloader
 
 import (
 	"io"
-	"strconv"
 
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/afero"
@@ -11,45 +10,61 @@ import (
 type FileInfo struct {
 	telegram.File
 
-	saveByHashtags bool
+	opts saveFileOption
 }
 
-func (f *FileInfo) Subdir() string {
-	username, ok := f.Username()
-	if ok && username != "" {
-		return username
-	}
+type Saver interface {
+	io.WriteCloser
 
-	return strconv.FormatInt(f.PeerID(), 10)
+	// IsValid returns true if there are files to write to
+	IsValid() bool
+
+	// Remove removes all files created by this MultiSaver
+	Remove() error
 }
 
-func (f *FileInfo) Hashtags() []string {
-	if !f.saveByHashtags {
-		return nil
-	}
+// MultiSaver is an io.WriteCloser that writes to multiple files
+type MultiSaver interface {
+	Saver
 
-	return f.File.Hashtags()
+	// AddFile creates a new file with the given filename in the MultiSaver
+	AddFile(filename string) error
 }
 
-type MultiFile struct {
+//
+// AferoMultiSaver is an implementation of MultiSaver that uses afero.Fs
+// to create and write to files
+//
+
+type aferoMultiSaver struct {
+	fs    afero.Fs
 	files []afero.File
 }
 
-func NewMultiFile(fs afero.Fs, filenames []string) (*MultiFile, error) {
-	files := make([]afero.File, len(filenames))
-	for i, filename := range filenames {
-		file, err := fs.Create(filename)
-		if err != nil {
-			return nil, err
-		}
+var _ MultiSaver = &aferoMultiSaver{}
 
-		files[i] = file
+func NewAferoMultiSaver(fs afero.Fs) MultiSaver {
+	return &aferoMultiSaver{
+		fs:    fs,
+		files: make([]afero.File, 0),
 	}
-
-	return &MultiFile{files: files}, nil
 }
 
-func (m *MultiFile) Write(p []byte) (n int, err error) {
+func (m *aferoMultiSaver) AddFile(filename string) error {
+	file, err := m.fs.Create(filename)
+	if err != nil {
+		return err
+	}
+
+	m.files = append(m.files, file)
+	return nil
+}
+
+func (m *aferoMultiSaver) IsValid() bool {
+	return len(m.files) > 0
+}
+
+func (m *aferoMultiSaver) Write(p []byte) (n int, err error) {
 	for _, file := range m.files {
 		written, err := file.Write(p)
 		if err != nil {
@@ -64,7 +79,7 @@ func (m *MultiFile) Write(p []byte) (n int, err error) {
 	return n, nil
 }
 
-func (m *MultiFile) Close() error {
+func (m *aferoMultiSaver) Close() error {
 	var err error
 	for _, file := range m.files {
 		if cerr := file.Close(); cerr != nil && err == nil {
@@ -74,17 +89,45 @@ func (m *MultiFile) Close() error {
 	return err
 }
 
-func (m *MultiFile) Remove(fs afero.Fs) error {
+func (m *aferoMultiSaver) Remove() error {
 	if err := m.Close(); err != nil {
 		return err
 	}
 
 	var err error
 	for _, file := range m.files {
-		if cerr := fs.Remove(file.Name()); cerr != nil && err == nil {
+		if cerr := m.fs.Remove(file.Name()); cerr != nil && err == nil {
 			err = cerr
 		}
 	}
 
 	return err
+}
+
+//
+// NullSaver is an implementation of Saver that does nothing
+//
+
+type nullSaver struct{}
+
+var _ Saver = &nullSaver{}
+
+func NewNullSaver() Saver {
+	return &nullSaver{}
+}
+
+func (s *nullSaver) Write(p []byte) (n int, err error) {
+	return len(p), nil
+}
+
+func (s *nullSaver) Close() error {
+	return nil
+}
+
+func (s *nullSaver) IsValid() bool {
+	return true
+}
+
+func (s *nullSaver) Remove() error {
+	return nil
 }

@@ -77,12 +77,6 @@ func (r *Root) newChatCmd() *cobra.Command {
 				return err
 			}
 
-			getFileOptions, err := opts.newGetFileOptions()
-			if err != nil {
-				r.log.Error(err, "failed to get get file options")
-				return err
-			}
-
 			var tdLibPeerID constant.TDLibPeerID
 			tdLibPeerID.Chat(ID)
 
@@ -92,7 +86,7 @@ func (r *Root) newChatCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFiles(cmd.Context(), peer, opts.hashtags, getFileOptions...)
+			return r.downloadFiles(cmd.Context(), peer, opts)
 		},
 	}
 
@@ -100,6 +94,7 @@ func (r *Root) newChatCmd() *cobra.Command {
 	downloadHistoryCmd.Flags().Int64VarP(&opts.user, "user", "u", 0, "User ID to download from")
 	downloadHistoryCmd.Flags().StringVarP(&opts.offsetDate, "offset-date", "d", "", "Offset date to download from, format: 2006-01-02 15:04:05")
 	downloadHistoryCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
+	downloadHistoryCmd.Flags().BoolVar(&opts.saveOnlyIfNew, "save-only-if-new", false, "Save only if new")
 
 	downloadWatcherCmd := &cobra.Command{
 		Use:   "watcher",
@@ -116,7 +111,7 @@ func (r *Root) newChatCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFilesFromNewMessages(cmd.Context(), ID, opts.hashtags)
+			return r.downloadFilesFromNewMessages(cmd.Context(), ID, opts)
 		},
 	}
 

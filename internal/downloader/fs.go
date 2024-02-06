@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -9,7 +10,6 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/dropbox"
 	"github.com/johnnyipcom/tgdownloader/pkg/oauth2server"
 	"github.com/spf13/afero"
-	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 )
 
@@ -18,7 +18,7 @@ var (
 	fs     afero.Fs
 )
 
-func getDownloaderFS(cfg config.Config, log *zap.Logger) afero.Fs {
+func GetFS(cfg config.Config, log *log.Logger) afero.Fs {
 	fsOnce.Do(func() {
 		switch strings.ToLower(cfg.GetString("type")) {
 		case "local":
@@ -36,7 +36,7 @@ func getDownloaderFS(cfg config.Config, log *zap.Logger) afero.Fs {
 				},
 			})
 
-			dfs, err := dropbox.NewFs(client, zap.NewStdLog(log.Named("dropbox")))
+			dfs, err := dropbox.NewFs(client, log)
 			if err != nil {
 				panic(err)
 			}

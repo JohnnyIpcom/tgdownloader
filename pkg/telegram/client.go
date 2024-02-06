@@ -17,7 +17,6 @@ import (
 	"github.com/gotd/td/session"
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
-	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message/peer"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/query/messages"
@@ -43,7 +42,6 @@ type Client struct {
 	logger     *zap.Logger
 	peerMgr    *peers.Manager
 	updMgr     *updates.Manager
-	downloader *downloader.Downloader
 	dispatcher tg.UpdateDispatcher
 	storage    storage.PeerStorage
 
@@ -126,7 +124,6 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		logger:     log,
 		peerMgr:    peerMgr,
 		updMgr:     gaps,
-		downloader: downloader.NewDownloader(),
 		dispatcher: dispatcher,
 		storage:    peerStorage,
 	}

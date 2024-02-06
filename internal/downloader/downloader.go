@@ -4,18 +4,35 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
-	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/afero"
-	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
+
+type saveFileOption struct {
+	saveByHashtags bool
+	saveOnlyIfNew  bool
+}
+
+type SaveFileOption func(*saveFileOption)
+
+func SaveByHashtags() SaveFileOption {
+	return func(o *saveFileOption) {
+		o.saveByHashtags = true
+	}
+}
+
+func SaveOnlyIfNew() SaveFileOption {
+	return func(o *saveFileOption) {
+		o.saveOnlyIfNew = true
+	}
+}
 
 // Pool is a pool of workers that download files
 type Downloader struct {
@@ -30,14 +47,9 @@ type Downloader struct {
 }
 
 // NewDownloader creates a new pool of workers.
-func NewDownloader(cfg config.Config, log *zap.Logger, service telegram.FileService) *Downloader {
-	workers := cfg.GetInt("threads")
-	if workers < 1 {
-		workers = runtime.NumCPU()
-	}
-
+func NewDownloader(fs afero.Fs, workers int, service telegram.FileService) *Downloader {
 	return &Downloader{
-		fs:       getDownloaderFS(cfg, log),
+		fs:       fs,
 		files:    make(chan FileInfo),
 		renderer: renderer.NewDownloadRenderer(renderer.WithNumTrackersExpected(workers)),
 		service:  service,
@@ -86,13 +98,18 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 			}
 
 			log.Info("found job", "file", f.String())
-			file, err := d.createFile(ctx, f)
+			saver, err := d.createSaver(f)
 			if err != nil {
-				log.Info("failed to create file", zap.Error(err))
+				log.Error(err, "failed to create file", "filename", f.Filename())
 				continue
 			}
 
-			writer := d.renderer.TrackedWriter(f.Filename(), f.Size(), file)
+			if !saver.IsValid() {
+				log.Info("no valid files to write to")
+				continue
+			}
+
+			writer := d.renderer.TrackedWriter(f.Filename(), f.Size(), saver)
 			if err := d.service.Download(ctx, f.File, writerFunc(func(p []byte) (int, error) {
 				select {
 				case <-ctx.Done():
@@ -107,11 +124,11 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 				writer.Fail()
 
 				log.Error(err, "failed to download file", "filename", f.Filename())
-				file.Remove(d.fs)
+				saver.Remove()
 				continue
 			}
 
-			file.Close()
+			saver.Close()
 			writer.Done()
 			log.Info("downloaded document", "filename", f.Filename())
 		}
@@ -129,15 +146,20 @@ func (p *Downloader) Stop() error {
 }
 
 // AddSingleDownload adds a single file to the download queue.
-func (p *Downloader) AddSingleDownload(file telegram.File, saveByHashtags bool) {
+func (p *Downloader) AddDownload(file telegram.File, saveOptions ...SaveFileOption) {
+	opts := saveFileOption{}
+	for _, opt := range saveOptions {
+		opt(&opts)
+	}
+
 	p.files <- FileInfo{
-		File:           file,
-		saveByHashtags: saveByHashtags,
+		File: file,
+		opts: opts,
 	}
 }
 
 // AddDownloadQueue adds a channel of files to the download queue.
-func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan telegram.File, saveByHashtags bool) {
+func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan telegram.File, saveOptions ...SaveFileOption) {
 	p.queueWG.Add(1)
 	go func() {
 		defer p.queueWG.Done()
@@ -152,46 +174,86 @@ func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan telegram
 					return
 				}
 
-				p.AddSingleDownload(file, saveByHashtags)
+				p.AddDownload(file, saveOptions...)
 			}
 		}
 	}()
 }
 
-// createFile creates a file(s) and returns a MultiFile that can be used to write to it.
-func (p *Downloader) createFile(ctx context.Context, f FileInfo) (*MultiFile, error) {
-	outputDir := path.Join(p.outputDir, f.Subdir())
+func (p *Downloader) tryAddFileToSaver(s MultiSaver, dir string, f FileInfo) error {
+	filepath := path.Join(dir, f.Filename())
+
+	exists, err := afero.Exists(p.fs, filepath)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		return s.AddFile(filepath)
+	} else if f.opts.saveOnlyIfNew {
+		return nil
+	}
+
+	fileExt := path.Ext(f.Filename())
+	fileWithoutExt := strings.TrimSuffix(f.Filename(), fileExt)
+
+	// File exists, generate a new filename
+	i := 1
+	for {
+		newFilename := fmt.Sprintf("%s_%d%s", fileWithoutExt, i, fileExt)
+		newFilepath := path.Join(dir, newFilename)
+
+		exists, err := afero.Exists(p.fs, newFilepath)
+		if err != nil {
+			return nil
+		}
+
+		// File does not exist, return the new filename
+		if !exists {
+			return s.AddFile(newFilepath)
+		}
+
+		i++
+	}
+}
+
+// createFileSaver creates a file saver for the file
+func (p *Downloader) createSaver(f FileInfo) (Saver, error) {
+	subdir := strconv.FormatInt(f.PeerID(), 10)
+	username, ok := f.Username()
+	if ok && username != "" {
+		subdir = username
+	}
+
+	outputDir := path.Join(p.outputDir, subdir)
 	if err := p.createDirectoryIfNotExists(outputDir); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	filenames := make([]string, 0, len(f.Hashtags()))
-	if f.saveByHashtags {
+	multiSaver := NewAferoMultiSaver(p.fs)
+
+	if f.opts.saveByHashtags {
 		for _, hashtag := range f.Hashtags() {
 			hashtagDir := path.Join(outputDir, hashtag)
 			if err := p.createDirectoryIfNotExists(hashtagDir); err != nil {
 				return nil, fmt.Errorf("failed to create directory: %w", err)
 			}
 
-			filename, err := p.getUniqueFilename(hashtagDir, f.Filename())
-			if err != nil {
+			if err := p.tryAddFileToSaver(multiSaver, hashtagDir, f); err != nil {
 				return nil, err
 			}
+		}
 
-			filenames = append(filenames, path.Join(hashtagDir, filename))
+		if multiSaver.IsValid() {
+			return multiSaver, nil
 		}
 	}
 
-	if len(filenames) == 0 {
-		filename, err := p.getUniqueFilename(outputDir, f.Filename())
-		if err != nil {
-			return nil, err
-		}
-
-		filenames = append(filenames, path.Join(outputDir, filename))
+	if err := p.tryAddFileToSaver(multiSaver, outputDir, f); err != nil {
+		return nil, err
 	}
 
-	return NewMultiFile(p.fs, filenames)
+	return multiSaver, nil
 }
 
 // createDirectoryIfNotExists creates a directory and all parent directories if it does not exist
@@ -209,39 +271,4 @@ func (p *Downloader) createDirectoryIfNotExists(dir string) error {
 	}
 
 	return nil
-}
-
-// getUniqueFilename returns a unique filename by appending a number to the end of the filename if it already exists
-func (p *Downloader) getUniqueFilename(dir string, filename string) (string, error) {
-	fullPath := path.Join(dir, filename)
-	fileExt := path.Ext(filename)
-	fileNameOnly := strings.TrimSuffix(filename, fileExt)
-
-	ok, err := afero.Exists(p.fs, fullPath)
-	if err != nil {
-		return "", err
-	}
-
-	// File exists, generate a new filename
-	if ok {
-		i := 1
-		for {
-			newFilename := fmt.Sprintf("%s_%d%s", fileNameOnly, i, fileExt)
-			newFullPath := path.Join(dir, newFilename)
-
-			ok, err := afero.Exists(p.fs, newFullPath)
-			if err != nil {
-				return "", err
-			}
-
-			// File does not exist, return the new filename
-			if !ok {
-				return newFilename, nil
-			}
-
-			i++
-		}
-	}
-
-	return filename, nil
 }
