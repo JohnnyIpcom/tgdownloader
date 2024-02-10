@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/gotd/td/telegram/downloader"
@@ -17,43 +18,31 @@ import (
 )
 
 type File struct {
-	file messages.File
-	peer peers.Peer
-	size int64
+	name     string
+	size     int64
+	dc       int
+	location tg.InputFileLocationClass
+	metadata map[string]interface{}
+}
 
-	hashtags []string
+func (f File) String() string {
+	return fmt.Sprintf("File{dc: %d, name: %s, size: %d}", f.dc, f.name, f.size)
+}
+
+func (f File) DC() int {
+	return f.dc
+}
+
+func (f File) Name() string {
+	return f.name
 }
 
 func (f File) Size() int64 {
 	return f.size
 }
 
-func (f File) String() string {
-	return fmt.Sprintf("%v %d %d", f.file, f.PeerID(), f.size)
-}
-
-func (f File) PeerID() int64 {
-	if f.peer == nil {
-		return 0
-	}
-
-	return f.peer.ID()
-}
-
-func (f File) Username() (string, bool) {
-	if f.peer == nil {
-		return "", false
-	}
-
-	return f.peer.Username()
-}
-
-func (f File) Filename() string {
-	return f.file.Name
-}
-
-func (f File) Hashtags() []string {
-	return f.hashtags
+func (f File) Metadata() map[string]interface{} {
+	return f.metadata
 }
 
 type FileService interface {
@@ -115,6 +104,54 @@ func GetFileWithOffsetDate(offsetDate int) GetFileOption {
 	return getfileOffsetDateOption{offsetDate: offsetDate}
 }
 
+func (s *fileService) extractFileFromMessage(ctx context.Context, elem messages.Elem) (*File, int64, error) {
+	file, err := getFileFromMessage(ctx, elem)
+	if err != nil {
+		if errors.Is(err, errNoFilesInMessage) {
+			return nil, 0, nil
+		}
+
+		return nil, 0, err
+	}
+
+	var peer peers.Peer
+	fromID, ok := elem.Msg.GetFromID()
+	if ok {
+		from, err := s.client.ExtractPeer(ctx, elem.Entities, fromID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("extract fromID: %w", err)
+		}
+
+		peer = from
+	}
+
+	if peer == nil {
+		p, err := s.client.ExtractPeer(ctx, elem.Entities, elem.Msg.GetPeerID())
+		if err != nil {
+			return nil, 0, fmt.Errorf("extract peer: %w", err)
+		}
+
+		peer = p
+	}
+
+	file.metadata["peername"] = strconv.FormatInt(peer.ID(), 10)
+
+	visibleName := peer.VisibleName()
+	if visibleName != "" {
+		file.metadata["peername"] = visibleName
+	}
+
+	msg, ok := elem.Msg.(*tg.Message)
+	if ok {
+		hashtags := extractHashtags(msg.GetMessage())
+		if len(hashtags) > 0 {
+			file.metadata["hashtags"] = hashtags
+		}
+	}
+
+	return file, peer.ID(), nil
+}
+
 // GetFiles returns channel for file IDs and error channel.
 func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...GetFileOption) (<-chan File, error) {
 	options := getfileOptions{
@@ -147,27 +184,17 @@ func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...Get
 				return errLimitReached
 			}
 
-			file, err := s.client.GetFileFromElem(ctx, elem)
+			file, peerID, err := s.extractFileFromMessage(ctx, elem)
 			if err != nil {
-				if !errors.Is(err, errNoFilesInMessage) {
-					s.logger.Error("failed to get file info from elem", zap.Error(err))
-					return nil
-				}
-
-				return nil
+				return err
 			}
 
-			if options.userID != 0 && file.PeerID() != options.userID {
+			if file == nil || (options.userID > 0 && peerID != options.userID) {
 				return nil
-			}
-
-			msgContent, ok := elem.Msg.(*tg.Message)
-			if ok {
-				file.hashtags = findHashtags(msgContent.GetMessage())
 			}
 
 			select {
-			case fileChan <- file:
+			case fileChan <- *file:
 				atomic.AddInt64(&fileCounter, 1)
 
 			case <-ctx.Done():
@@ -199,26 +226,6 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 			return nil
 		}
 
-		var peerID int64
-		switch peer := nonEmpty.GetPeerID().(type) {
-		case *tg.PeerChat:
-			peerID = peer.GetChatID()
-
-		case *tg.PeerChannel:
-			peerID = peer.GetChannelID()
-
-		case *tg.PeerUser:
-			peerID = peer.GetUserID()
-
-		default:
-			s.logger.Debug("unsupported peer type", zap.Any("peer", peer))
-			return nil
-		}
-
-		if peerID != ID {
-			return nil
-		}
-
 		entities := peer.EntitiesFromUpdate(e)
 
 		msgPeer, err := entities.ExtractPeer(nonEmpty.GetPeerID())
@@ -226,27 +233,22 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 			msgPeer = &tg.InputPeerEmpty{}
 		}
 
-		file, err := s.client.GetFileFromElem(ctx, messages.Elem{
+		file, peerID, err := s.extractFileFromMessage(ctx, messages.Elem{
 			Msg:      nonEmpty,
 			Peer:     msgPeer,
 			Entities: entities,
 		})
-		if err != nil {
-			if !errors.Is(err, errNoFilesInMessage) {
-				s.logger.Error("failed to get file info from elem", zap.Error(err))
-				return nil
-			}
 
+		if err != nil {
+			return err
+		}
+
+		if file == nil || peerID != ID {
 			return nil
 		}
 
-		msgContent, ok := nonEmpty.(*tg.Message)
-		if ok {
-			file.hashtags = findHashtags(msgContent.GetMessage())
-		}
-
 		select {
-		case fileChan <- file:
+		case fileChan <- *file:
 			// pass
 
 		case <-ctx.Done():
@@ -268,7 +270,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 }
 
 func (s *fileService) Download(ctx context.Context, file File, out io.Writer) error {
-	builder := downloader.NewDownloader().Download(s.client.API(), file.file.Location)
+	builder := downloader.NewDownloader().Download(s.client.API(), file.location)
 	_, err := builder.Stream(ctx, out)
 	if err != nil {
 		return err

@@ -20,7 +20,6 @@ import (
 	"github.com/gotd/td/telegram/message/peer"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/query/dialogs"
-	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/telegram/updates/hook"
 	"github.com/gotd/td/tg"
@@ -299,44 +298,6 @@ func (c *Client) GetInputPeer(ctx context.Context, ID constant.TDLibPeerID) (tg.
 	}
 
 	return peer.InputPeer(), nil
-}
-
-func (c *Client) GetFileFromElem(ctx context.Context, elem messages.Elem) (File, error) {
-	var peer peers.Peer
-	fromID, ok := elem.Msg.GetFromID()
-	if ok {
-		from, err := c.ExtractPeer(ctx, elem.Entities, fromID)
-		if err != nil {
-			return File{}, fmt.Errorf("extract fromID: %w", err)
-		}
-
-		peer = from
-	}
-
-	if peer == nil {
-		p, err := c.ExtractPeer(ctx, elem.Entities, elem.Msg.GetPeerID())
-		if err != nil {
-			return File{}, fmt.Errorf("extract peerID: %w", err)
-		}
-
-		peer = p
-	}
-
-	file, ok := elem.File()
-	if !ok {
-		return File{}, errNoFilesInMessage
-	}
-
-	var size int64
-	if doc, ok := elem.Document(); ok {
-		size = doc.Size
-	}
-
-	return File{
-		file: file,
-		peer: peer,
-		size: size,
-	}, nil
 }
 
 func (c *Client) cacheDialog(ctx context.Context, elem dialogs.Elem) error {

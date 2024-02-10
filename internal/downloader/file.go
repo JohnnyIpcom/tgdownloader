@@ -7,10 +7,42 @@ import (
 	"github.com/spf13/afero"
 )
 
-type FileInfo struct {
+type File struct {
 	telegram.File
 
-	opts saveFileOption
+	subdirs []string
+}
+
+type FileOption func(*File)
+
+func WithSubdirs(subdirs ...string) FileOption {
+	return func(o *File) {
+		// Ensure subdirs are unique
+		subdirsMap := make(map[string]struct{})
+		for _, subdir := range subdirs {
+			subdirsMap[subdir] = struct{}{}
+		}
+
+		// create subdirs slice if it does not exist and append subdirs to it
+		if o.subdirs == nil {
+			o.subdirs = make([]string, 0, len(subdirsMap))
+		}
+		for subdir := range subdirsMap {
+			o.subdirs = append(o.subdirs, subdir)
+		}
+	}
+}
+
+func NewFile(file telegram.File, opts ...FileOption) File {
+	f := File{
+		File: file,
+	}
+
+	for _, opt := range opts {
+		opt(&f)
+	}
+
+	return f
 }
 
 type Saver interface {
@@ -110,10 +142,14 @@ func (m *aferoMultiSaver) Remove() error {
 
 type nullSaver struct{}
 
-var _ Saver = &nullSaver{}
+var _ MultiSaver = &nullSaver{}
 
-func NewNullSaver() Saver {
+func NewNullSaver() MultiSaver {
 	return &nullSaver{}
+}
+
+func (s *nullSaver) AddFile(filename string) error {
+	return nil
 }
 
 func (s *nullSaver) Write(p []byte) (n int, err error) {

@@ -16,17 +16,6 @@
             ]
         },
         {
-            "name": "Peer List",
-            "type": "go",
-            "request": "launch",
-            "mode": "auto",
-            "program": "${workspaceFolder}/main.go",
-            "args": [
-                "peer",
-                "list"
-            ]
-        },
-        {
             "name": "Download",
             "type": "go",
             "request": "launch",
@@ -36,10 +25,7 @@
                 "channel",
                 "download",
                 "history",
-                "--hashtags",
-                "--limit",
-                "5",
-                "1862393618",
+                "1452414804",
             ]
         },
         {
@@ -53,26 +39,5 @@
                 "list",
             ]
         },
-        {
-            "name": "Cache view",
-            "type": "go",
-            "request": "launch",
-            "mode": "auto",
-            "program": "${workspaceFolder}/main.go",
-            "args": [
-                "cache",
-                "view",
-            ]
-        },
-        {
-            "name": "Prompt",
-            "type": "go",
-            "request": "launch",
-            "mode": "auto",
-            "program": "${workspaceFolder}/main.go",
-            "args": [
-                "prompt",
-            ]
-        }
     ]
 }

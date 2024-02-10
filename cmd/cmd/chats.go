@@ -86,7 +86,7 @@ func (r *Root) newChatCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFiles(cmd.Context(), peer, opts)
+			return r.downloadFilesFromPeer(cmd.Context(), peer, opts)
 		},
 	}
 
@@ -94,7 +94,8 @@ func (r *Root) newChatCmd() *cobra.Command {
 	downloadHistoryCmd.Flags().Int64VarP(&opts.user, "user", "u", 0, "User ID to download from")
 	downloadHistoryCmd.Flags().StringVarP(&opts.offsetDate, "offset-date", "d", "", "Offset date to download from, format: 2006-01-02 15:04:05")
 	downloadHistoryCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
-	downloadHistoryCmd.Flags().BoolVar(&opts.saveOnlyIfNew, "save-only-if-new", false, "Save only if new")
+	downloadHistoryCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite existing files")
+	downloadHistoryCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
 
 	downloadWatcherCmd := &cobra.Command{
 		Use:   "watcher",

@@ -6,15 +6,17 @@ import (
 
 	"github.com/gotd/td/telegram/peers"
 	"github.com/johnnyipcom/tgdownloader/internal/downloader"
+	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 )
 
 type downloadOptions struct {
-	limit         int
-	user          int64
-	offsetDate    string
-	hashtags      bool
-	saveOnlyIfNew bool
+	limit      int
+	user       int64
+	offsetDate string
+	hashtags   bool
+	rewrite    bool
+	dryRun     bool
 }
 
 func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) {
@@ -40,21 +42,7 @@ func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) 
 	return opts, nil
 }
 
-func (o *downloadOptions) newSaveFileOptions() []downloader.SaveFileOption {
-	var opts []downloader.SaveFileOption
-
-	if o.hashtags {
-		opts = append(opts, downloader.SaveByHashtags())
-	}
-
-	if o.saveOnlyIfNew {
-		opts = append(opts, downloader.SaveOnlyIfNew())
-	}
-
-	return opts
-}
-
-func (r *Root) downloadFiles(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
+func (r *Root) downloadFilesFromPeer(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
 	getFileOptions, err := opts.newGetFileOptions()
 	if err != nil {
 		return err
@@ -65,14 +53,7 @@ func (r *Root) downloadFiles(ctx context.Context, peer peers.Peer, opts download
 		return err
 	}
 
-	d, err := r.newDownloader()
-	if err != nil {
-		return err
-	}
-
-	d.Start(ctx)
-	d.AddDownloadQueue(ctx, files, opts.newSaveFileOptions()...)
-	return d.Stop()
+	return r.downloadFiles(ctx, files, opts)
 }
 
 func (r *Root) downloadFilesFromNewMessages(ctx context.Context, ID int64, opts downloadOptions) error {
@@ -81,12 +62,62 @@ func (r *Root) downloadFilesFromNewMessages(ctx context.Context, ID int64, opts 
 		return err
 	}
 
-	d, err := r.newDownloader()
+	return r.downloadFiles(ctx, files, opts)
+}
+
+func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, opts downloadOptions) error {
+	tracker := renderer.NewDownloadTracker()
+	defer tracker.Stop()
+
+	var downloaderOptions []downloader.Option
+	downloaderOptions = append(downloaderOptions, downloader.WithRewrite(opts.rewrite))
+	downloaderOptions = append(downloaderOptions, downloader.WithDryRun(opts.dryRun))
+	downloaderOptions = append(downloaderOptions, downloader.WithTracker(tracker))
+
+	d, err := r.newDownloader(downloaderOptions...)
 	if err != nil {
 		return err
 	}
 
+	queue := make(chan downloader.File)
+	go func() {
+		defer close(queue)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case file, ok := <-files:
+				if !ok {
+					return
+				}
+
+				subdirs := make([]string, 0, 2)
+				metadata := file.Metadata()
+				if metadata != nil {
+					if peername, ok := metadata["peername"]; ok {
+						subdirs = append(subdirs, peername.(string))
+					}
+
+					if opts.hashtags {
+						if hashtags, ok := metadata["hashtags"]; ok {
+							subdirs = append(subdirs, hashtags.([]string)...)
+						}
+					}
+				}
+
+				var fileOptions []downloader.FileOption
+				if len(subdirs) > 0 {
+					fileOptions = append(fileOptions, downloader.WithSubdirs(subdirs...))
+				}
+
+				queue <- downloader.NewFile(file, fileOptions...)
+			}
+		}
+	}()
+
 	d.Start(ctx)
-	d.AddDownloadQueue(ctx, files, opts.newSaveFileOptions()...)
+	d.AddDownloadQueue(ctx, queue)
 	return d.Stop()
 }

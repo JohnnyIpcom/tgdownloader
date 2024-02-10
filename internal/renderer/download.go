@@ -5,22 +5,26 @@ import (
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/progress"
+	"github.com/johnnyipcom/tgdownloader/internal/downloader"
 )
 
-type DownloadRenderer struct {
+type downloadTracker struct {
 	pw progress.Writer
 }
 
-type DownloadRendererOption func(*DownloadRenderer)
+var _ downloader.Tracker = (*downloadTracker)(nil)
 
-func WithNumTrackersExpected(n int) DownloadRendererOption {
-	return func(dr *DownloadRenderer) {
+// DownloadTrackerOption is an option for a download renderer.
+type DownloadTrackerOption func(*downloadTracker)
+
+func WithNumTrackersExpected(n int) DownloadTrackerOption {
+	return func(dr *downloadTracker) {
 		dr.pw.SetNumTrackersExpected(n)
 	}
 }
 
 // NewDownloadRenderer creates a new download renderer.
-func NewDownloadRenderer(opts ...DownloadRendererOption) *DownloadRenderer {
+func NewDownloadTracker(opts ...DownloadTrackerOption) downloader.Tracker {
 	pw := progress.NewWriter()
 	pw.SetAutoStop(false)
 	pw.SetMessageWidth(50)
@@ -37,15 +41,12 @@ func NewDownloadRenderer(opts ...DownloadRendererOption) *DownloadRenderer {
 
 	go pw.Render()
 
-	renderer := &DownloadRenderer{
-		pw: pw,
-	}
-
+	tracker := &downloadTracker{pw: pw}
 	for _, opt := range opts {
-		opt(renderer)
+		opt(tracker)
 	}
 
-	return renderer
+	return tracker
 }
 
 type TrackedWriter interface {
@@ -79,7 +80,7 @@ func (tw *trackedWriter) Done() {
 	tw.tracker.MarkAsDone()
 }
 
-func (dr *DownloadRenderer) TrackedWriter(msg string, size int64, w io.Writer) TrackedWriter {
+func (dr *downloadTracker) WrapWriter(w io.Writer, msg string, size int64) downloader.TrackedWriter {
 	tracker := &progress.Tracker{
 		Message: msg,
 		Total:   size,
@@ -93,6 +94,6 @@ func (dr *DownloadRenderer) TrackedWriter(msg string, size int64, w io.Writer) T
 	}
 }
 
-func (dr *DownloadRenderer) Stop() {
+func (dr *downloadTracker) Stop() {
 	dr.pw.Stop()
 }
