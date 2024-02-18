@@ -46,7 +46,7 @@ func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan Dialog, int, 
 				return nil
 			}
 
-			s.client.cacheDialog(ctx, elem)
+			s.client.CacheDialog(ctx, elem)
 
 			dialogsChan <- Dialog{Peer: peer}
 			return nil

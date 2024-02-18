@@ -21,9 +21,13 @@ func RenderDialogsTable(dialogs []telegram.Dialog, filterFuncs ...FilterDialogFu
 		table.Row{
 			"Name",
 			"ID",
+			"TDLib Peer ID",
 			"Type",
 		},
 	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		getVisibleNameConfig("Name"),
+	})
 
 	t.SortBy([]table.SortBy{
 		{Name: "Name", Mode: table.Asc},
@@ -49,6 +53,7 @@ func RenderDialogsTable(dialogs []telegram.Dialog, filterFuncs ...FilterDialogFu
 				table.Row{
 					getVisibleName(dialog.Peer),
 					dialog.Peer.ID(),
+					RenderTDLibPeerID(dialog.Peer.TDLibPeerID()),
 					getPeerTypename(dialog.Peer),
 				},
 			)

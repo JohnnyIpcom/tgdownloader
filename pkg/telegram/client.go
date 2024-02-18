@@ -71,7 +71,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 
 	peerStorage := bbolt.NewPeerStorage(db, []byte("peers"))
 
-	var handler tgclient.UpdateHandler = tg.NewUpdateDispatcher()
+	var handler tgclient.UpdateHandler = dispatcher
 	if peerStorage != nil {
 		handler = storage.UpdateHook(dispatcher, peerStorage)
 	}
@@ -282,13 +282,11 @@ func (c *Client) ExtractPeer(ctx context.Context, ent peer.Entities, peerID tg.P
 }
 
 func (c *Client) GetInputPeer(ctx context.Context, ID constant.TDLibPeerID) (tg.InputPeerClass, error) {
-	if c.storage != nil {
-		if peer, err := c.storage.Resolve(ctx, strconv.FormatInt(ID.ToPlain(), 10)); err == nil {
-			return peer.AsInputPeer(), nil
-		} else {
-			if !errors.Is(err, storage.ErrPeerNotFound) {
-				return nil, err
-			}
+	if peer, err := c.storage.Resolve(ctx, strconv.FormatInt(ID.ToPlain(), 10)); err == nil {
+		return peer.AsInputPeer(), nil
+	} else {
+		if !errors.Is(err, storage.ErrPeerNotFound) {
+			return nil, err
 		}
 	}
 
@@ -300,7 +298,7 @@ func (c *Client) GetInputPeer(ctx context.Context, ID constant.TDLibPeerID) (tg.
 	return peer.InputPeer(), nil
 }
 
-func (c *Client) cacheDialog(ctx context.Context, elem dialogs.Elem) error {
+func (c *Client) CacheDialog(ctx context.Context, elem dialogs.Elem) error {
 	var p storage.Peer
 
 	switch dlg := elem.Dialog.GetPeer().(type) {
@@ -326,11 +324,11 @@ func (c *Client) cacheDialog(ctx context.Context, elem dialogs.Elem) error {
 	return c.storage.Add(ctx, p)
 }
 
-func (c *Client) cacheUser(ctx context.Context, u tg.UserClass) error {
+func (c *Client) CacheInputPeer(ctx context.Context, inputPeer tg.InputPeerClass) error {
 	var p storage.Peer
 
-	if !p.FromUser(u) {
-		return nil
+	if err := p.FromInputPeer(inputPeer); err != nil {
+		return err
 	}
 
 	return c.storage.Add(ctx, p)

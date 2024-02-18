@@ -39,5 +39,17 @@
                 "list",
             ]
         },
+        {
+            "name": "Peer find",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/main.go",
+            "args": [
+                "peer",
+                "find",
+                "0xFFFFFF16CA46930B"
+            ]
+        },
     ]
 }

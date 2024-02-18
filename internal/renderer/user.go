@@ -18,14 +18,19 @@ func RenderUser(user peers.User) string {
 	t.AppendHeader(
 		table.Row{
 			"ID",
+			"TDLIB Peer ID",
 			"Username",
 			"Visible Name",
 		},
 	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		getVisibleNameConfig("Visible Name"),
+	})
 
 	t.AppendRow(
 		table.Row{
 			user.ID(),
+			RenderTDLibPeerID(user.TDLibPeerID()),
 			getUsername(user),
 			getVisibleName(user),
 		},
@@ -35,20 +40,65 @@ func RenderUser(user peers.User) string {
 }
 
 // RenderUserAsync renders a user one by one asynchronously.
-func RenderUserAsync(ctx context.Context, u <-chan peers.User) error {
+func RenderUsersAsync(ctx context.Context, u <-chan peers.User) error {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(
+		table.Row{
+			"ID",
+			"TDLIB Peer ID",
+			"Username",
+			"Visible Name",
+		},
+	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		{
+			Name:     "ID",
+			WidthMin: 10,
+			WidthMax: 10,
+		},
+		{
+			Name:     "Username",
+			WidthMin: 20,
+			WidthMax: 20,
+		},
+		getVisibleNameConfig("Visible Name"),
+	})
+
+	ticker := time.NewTicker(time.Second * 1)
+
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		for {
 			select {
 			case <-ctx.Done():
+				if t.Length() > 0 {
+					t.Render()
+				}
 				return ctx.Err()
+
+			case <-ticker.C:
+				if t.Length() > 0 {
+					t.Render()
+					t.ResetRows() // Reset rows to avoid duplicates
+				}
 
 			case user, ok := <-u:
 				if !ok {
+					if t.Length() > 0 {
+						t.Render()
+					}
 					return nil
 				}
 
-				RenderUser(user)
+				t.AppendRow(
+					table.Row{
+						user.ID(),
+						RenderTDLibPeerID(user.TDLibPeerID()),
+						getUsername(user),
+						getVisibleName(user),
+					},
+				)
 			}
 		}
 	})
@@ -64,10 +114,14 @@ func RenderUserTable(users []peers.User) string {
 	t.AppendHeader(
 		table.Row{
 			"ID",
+			"TDLIB Peer ID",
 			"Username",
 			"Visible Name",
 		},
 	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		getVisibleNameConfig("Visible Name"),
+	})
 
 	t.SortBy([]table.SortBy{
 		{Name: "ID", Mode: table.AscNumeric},
@@ -77,6 +131,7 @@ func RenderUserTable(users []peers.User) string {
 		t.AppendRow(
 			table.Row{
 				user.ID(),
+				RenderTDLibPeerID(user.TDLibPeerID()),
 				getUsername(user),
 				getVisibleName(user),
 			},
@@ -100,7 +155,7 @@ func RenderUserTableAsync(ctx context.Context, u <-chan peers.User, total int) e
 	pw.Style().Visibility.ETA = true
 	pw.Style().Visibility.ETAOverall = true
 
-	go pw.Render()
+	//go pw.Render()
 
 	tracker := &progress.Tracker{
 		Total:   int64(total),

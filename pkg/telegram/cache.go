@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gotd/contrib/storage"
+	"github.com/gotd/td/constant"
 	"github.com/gotd/td/telegram/query/dialogs"
 )
 
@@ -107,6 +108,19 @@ func (p CachedPeer) Name() string {
 	}
 
 	return ""
+}
+
+func (p CachedPeer) TDLibPeerID() constant.TDLibPeerID {
+	var peerID constant.TDLibPeerID
+	switch p.Key.Kind {
+	case dialogs.User:
+		peerID.User(p.Key.ID)
+	case dialogs.Chat:
+		peerID.Chat(p.Key.ID)
+	case dialogs.Channel:
+		peerID.Channel(p.Key.ID)
+	}
+	return peerID
 }
 
 type CacheService interface {

@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/gotd/td/constant"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/johnnyipcom/tgdownloader/internal/downloader"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
@@ -56,8 +59,8 @@ func (r *Root) downloadFilesFromPeer(ctx context.Context, peer peers.Peer, opts 
 	return r.downloadFiles(ctx, files, opts)
 }
 
-func (r *Root) downloadFilesFromNewMessages(ctx context.Context, ID int64, opts downloadOptions) error {
-	files, err := r.client.FileService.GetFilesFromNewMessages(ctx, ID)
+func (r *Root) downloadFilesFromNewMessages(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
+	files, err := r.client.FileService.GetFilesFromNewMessages(ctx, peer)
 	if err != nil {
 		return err
 	}
@@ -120,4 +123,13 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 	d.Start(ctx)
 	d.AddDownloadQueue(ctx, queue)
 	return d.Stop()
+}
+
+func (r *Root) parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {
+	parsed, err := strconv.ParseUint(strings.ToLower(strings.TrimPrefix(peerID, "0x")), 16, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return constant.TDLibPeerID(parsed), nil
 }

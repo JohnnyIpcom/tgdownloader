@@ -16,9 +16,13 @@ func RenderPeerTable(peers []peers.Peer) string {
 		table.Row{
 			"Visible Name",
 			"ID",
+			"TDLib Peer ID",
 			"Type",
 		},
 	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		getVisibleNameConfig("Visible Name"),
+	})
 
 	t.SortBy([]table.SortBy{
 		{Name: "Name", Mode: table.Asc},
@@ -29,6 +33,7 @@ func RenderPeerTable(peers []peers.Peer) string {
 			table.Row{
 				getVisibleName(peer),
 				peer.ID(),
+				RenderTDLibPeerID(peer.TDLibPeerID()),
 				getPeerTypename(peer),
 			},
 		)

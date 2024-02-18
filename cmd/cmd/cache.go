@@ -46,6 +46,9 @@ func (r *Root) newCacheCmd() *cobra.Command {
 				return err
 			}
 
+			fmt.Println("Filter by type:", kind)
+			fmt.Println("Filter by name:", name)
+
 			if name != "" {
 				filterFuncs = append(filterFuncs, telegram.NameCachedPeerFilter(name))
 			}
@@ -54,8 +57,6 @@ func (r *Root) newCacheCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			fmt.Println("Cached peers:", len(cachedPeers))
 
 			renderer.RenderCachedPeerTable(cachedPeers)
 			return nil

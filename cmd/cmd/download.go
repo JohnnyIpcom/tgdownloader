@@ -1,26 +1,14 @@
 package cmd
 
 import (
-	"strconv"
-
-	"github.com/gotd/td/constant"
 	"github.com/spf13/cobra"
 )
 
-func (r *Root) newUserCmd() *cobra.Command {
-	userCmd := &cobra.Command{
-		Use:   "user",
-		Short: "Manage users",
-		Long:  `Manage users`,
-		Run: func(cmd *cobra.Command, args []string) {
-			cmd.HelpFunc()(cmd, []string{})
-		},
-	}
-
+func (r *Root) newDownloadCmd() *cobra.Command {
 	downloadCmd := &cobra.Command{
 		Use:   "download",
-		Short: "Download files from a user",
-		Long:  `Download files from a user.`,
+		Short: "Download files from a peer",
+		Long:  `Download files from chat, channel or user`,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.HelpFunc()(cmd, args)
 		},
@@ -29,21 +17,19 @@ func (r *Root) newUserCmd() *cobra.Command {
 	var opts downloadOptions
 	downloadHistoryCmd := &cobra.Command{
 		Use:   "history",
-		Short: "Download files from a user history",
-		Long:  `Download files from a user history.`,
+		Short: "Download files from a peer history",
+		Long:  `Download files from a chat, channel or user history.`,
 		Args:  cobra.ExactArgs(1),
 		Annotations: map[string]string{
-			"prompt_suggest": "user",
+			"prompt_suggest": "any",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ID, err := strconv.ParseInt(args[0], 10, 64)
+			tdLibPeerID, err := r.parseTDLibPeerID(args[0])
 			if err != nil {
 				r.log.Error(err, "failed to convert user ID")
 				return err
 			}
 
-			var tdLibPeerID constant.TDLibPeerID
-			tdLibPeerID.User(ID)
 			peer, err := r.client.PeerService.ResolveTDLibID(cmd.Context(), tdLibPeerID)
 			if err != nil {
 				r.log.Error(err, "failed to resolve peer")
@@ -61,30 +47,36 @@ func (r *Root) newUserCmd() *cobra.Command {
 	downloadHistoryCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
 	downloadHistoryCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
 
-	downloadWatcherCmd := &cobra.Command{
+	dowwnloadWatcherCmd := &cobra.Command{
 		Use:   "watcher",
-		Short: "Watch a user for new files",
-		Long:  `Watch a user for new files.`,
+		Short: "Watch a peer for new files",
+		Long:  `Watch a peer for new files.`,
 		Args:  cobra.ExactArgs(1),
 		Annotations: map[string]string{
-			"prompt_suggest": "watcher",
+			"prompt_suggest": "any",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ID, err := strconv.ParseInt(args[0], 10, 64)
+			tdLibPeerID, err := r.parseTDLibPeerID(args[0])
 			if err != nil {
 				r.log.Error(err, "failed to convert user ID")
 				return err
 			}
 
-			return r.downloadFilesFromNewMessages(cmd.Context(), ID, opts)
+			peer, err := r.client.PeerService.ResolveTDLibID(cmd.Context(), tdLibPeerID)
+			if err != nil {
+				r.log.Error(err, "failed to resolve peer")
+				return err
+			}
+
+			return r.downloadFilesFromNewMessages(cmd.Context(), peer, opts)
 		},
 	}
 
-	downloadWatcherCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
+	dowwnloadWatcherCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
+	dowwnloadWatcherCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
+	dowwnloadWatcherCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
 
 	downloadCmd.AddCommand(downloadHistoryCmd)
-	downloadCmd.AddCommand(downloadWatcherCmd)
-
-	userCmd.AddCommand(downloadCmd)
-	return userCmd
+	downloadCmd.AddCommand(dowwnloadWatcherCmd)
+	return downloadCmd
 }

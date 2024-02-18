@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -25,18 +24,29 @@ func (r *Root) getPeerSuggestions(ctx context.Context, word string, peerType str
 		filter = telegram.OnlyChatsCachedPeerFilter()
 	case "channel":
 		filter = telegram.OnlyChannelsCachedPeerFilter()
+	case "chatorchannel":
+		filter = telegram.OrCachedPeerFilter(
+			telegram.OnlyChatsCachedPeerFilter(),
+			telegram.OnlyChannelsCachedPeerFilter(),
+		)
+	case "any":
+		filter = telegram.OrCachedPeerFilter(
+			telegram.OnlyUsersCachedPeerFilter(),
+			telegram.OnlyChatsCachedPeerFilter(),
+			telegram.OnlyChannelsCachedPeerFilter(),
+		)
 	}
 
 	peers, err := r.client.CacheService.GetCachedPeers(ctx, filter)
 	if err != nil {
-		return nil
+		return []prompt.Suggest{}
 	}
 
 	var suggestions []prompt.Suggest
 	for _, peer := range peers {
 		suggestions = append(suggestions, prompt.Suggest{
-			Text:        strconv.FormatInt(peer.Key.ID, 10),
-			Description: peer.Name(),
+			Text:        renderer.RenderTDLibPeerID(peer.TDLibPeerID()),
+			Description: renderer.RenderName(peer.Name()),
 		})
 	}
 
@@ -152,7 +162,7 @@ func (r *Root) newCompleter(rootCmd *cobra.Command) prompt.Completer {
 		suggest, ok := currCmd.Annotations["prompt_suggest"]
 		if ok {
 			switch suggest {
-			case "user", "chat", "channel":
+			case "user", "chat", "channel", "chatorchannel", "any":
 				return r.getPeerSuggestions(currCmd.Context(), word, suggest)
 
 			default:

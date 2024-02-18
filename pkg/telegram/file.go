@@ -47,7 +47,7 @@ func (f File) Metadata() map[string]interface{} {
 
 type FileService interface {
 	GetFiles(ctx context.Context, peer peers.Peer, opts ...GetFileOption) (<-chan File, error)
-	GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan File, error)
+	GetFilesFromNewMessages(ctx context.Context, peer peers.Peer, opts ...GetFileOption) (<-chan File, error)
 	Download(ctx context.Context, file File, out io.Writer) error
 }
 
@@ -216,7 +216,7 @@ func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...Get
 }
 
 // GetFilesFromNewChannelMessages returns files from new messages.
-func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-chan File, error) {
+func (s *fileService) GetFilesFromNewMessages(ctx context.Context, p peers.Peer, opts ...GetFileOption) (<-chan File, error) {
 	fileChan := make(chan File)
 
 	onNewMessage := func(ctx context.Context, e tg.Entities, msg tg.MessageClass) error {
@@ -243,7 +243,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, ID int64) (<-
 			return err
 		}
 
-		if file == nil || peerID != ID {
+		if file == nil || peerID != p.ID() {
 			return nil
 		}
 

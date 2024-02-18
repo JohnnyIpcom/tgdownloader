@@ -117,13 +117,13 @@ func (s *userService) GetUsersFromChat(ctx context.Context, ID int64) (<-chan pe
 		return nil, 0, err
 	}
 
-	usersChan := make(chan peers.User)
+	usersChan := make(chan peers.User, count)
 	go func() {
-		defer close(usersChan)
+		defer func() {
+			close(usersChan)
+		}()
 
 		chatMembers.ForEach(ctx, func(m members.Member) error {
-			s.client.cacheUser(ctx, m.User().Raw())
-
 			usersChan <- m.User()
 			return nil
 		})
@@ -151,8 +151,6 @@ func (s *userService) GetUsersFromChannel(ctx context.Context, ID int64, query Q
 		defer close(usersChan)
 
 		channelMembers.ForEach(ctx, func(m members.Member) error {
-			s.client.cacheUser(ctx, m.User().Raw())
-
 			usersChan <- m.User()
 			return nil
 		})

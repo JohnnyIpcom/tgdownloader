@@ -18,6 +18,7 @@ import (
 	cc "github.com/ivanpirog/coloredcobra"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -130,13 +131,18 @@ func (r *Root) newRootCmd() *cobra.Command {
 		return nil
 	}
 
+	rootCmd.PersistentPostRunE = func(cmd *cobra.Command, args []string) error {
+		cmd.Flags().VisitAll(func(f *pflag.Flag) {
+			f.Value.Set(f.DefValue)
+		})
+		return nil
+	}
+
 	rootCmd.AddCommand(r.newVersionCmd())
 	rootCmd.AddCommand(r.newPeerCmd())
-	rootCmd.AddCommand(r.newChatCmd())
-	rootCmd.AddCommand(r.newChannelCmd())
-	rootCmd.AddCommand(r.newUserCmd())
 	rootCmd.AddCommand(r.newDialogsCmd())
 	rootCmd.AddCommand(r.newCacheCmd())
+	rootCmd.AddCommand(r.newDownloadCmd())
 
 	// Prompt command must be the last one to initialize all other commands first.
 	rootCmd.AddCommand(r.newPromptCmd(rootCmd))
