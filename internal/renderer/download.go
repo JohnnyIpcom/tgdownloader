@@ -95,5 +95,12 @@ func (dr *downloadTracker) WrapWriter(w io.Writer, msg string, size int64) downl
 }
 
 func (dr *downloadTracker) Stop() {
-	dr.pw.Stop()
+	for dr.pw.IsRenderInProgress() {
+		if dr.pw.LengthActive() == 0 {
+			dr.pw.Stop()
+			return
+		}
+
+		time.Sleep(time.Millisecond * 100)
+	}
 }

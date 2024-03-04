@@ -76,6 +76,17 @@ func RenderDialogsTableAsync(ctx context.Context, d <-chan telegram.Dialog, tota
 	pw.Style().Visibility.ETA = true
 	pw.Style().Visibility.ETAOverall = true
 
+	defer func() {
+		for pw.IsRenderInProgress() {
+			if pw.LengthActive() == 0 {
+				pw.Stop()
+				return
+			}
+
+			time.Sleep(time.Millisecond * 100)
+		}
+	}()
+
 	go pw.Render()
 
 	tracker := &progress.Tracker{

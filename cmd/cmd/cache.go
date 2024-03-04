@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 
@@ -45,9 +43,6 @@ func (r *Root) newCacheCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			fmt.Println("Filter by type:", kind)
-			fmt.Println("Filter by name:", name)
 
 			if name != "" {
 				filterFuncs = append(filterFuncs, telegram.NameCachedPeerFilter(name))

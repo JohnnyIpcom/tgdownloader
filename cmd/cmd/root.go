@@ -93,11 +93,9 @@ func (r *Root) newVersionCmd() *cobra.Command {
 // newRootCmd returns the root command.
 func (r *Root) newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:           "tgdownloader",
-		Short:         "Telegram CLI Downloader",
-		Long:          "Telegram CLI Downloader is a CLI tool to download Telegram files from a chat, channel or user, even if this chat, channel or user is not in private mode.",
-		SilenceUsage:  true,
-		SilenceErrors: true,
+		Use:   "tgdownloader",
+		Short: "Telegram CLI Downloader",
+		Long:  "Telegram CLI Downloader is a CLI tool to download Telegram files from a chat, channel or user, even if this chat, channel or user is not in private mode.",
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.HelpFunc()(cmd, []string{})
 		},
