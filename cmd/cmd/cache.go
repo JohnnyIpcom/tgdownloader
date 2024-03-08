@@ -21,31 +21,11 @@ func (r *Root) newCacheCmd() *cobra.Command {
 		Use:   "view",
 		Short: "view cache",
 		Long:  "view cache",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			kind, err := cmd.Flags().GetString("type")
-			if err != nil {
-				return err
-			}
-
-			var filterFuncs []telegram.CachedPeerFilter
-			if kind != "" {
-				switch kind {
-				case "user":
-					filterFuncs = append(filterFuncs, telegram.OnlyUsersCachedPeerFilter())
-				case "chat":
-					filterFuncs = append(filterFuncs, telegram.OnlyChatsCachedPeerFilter())
-				case "channel":
-					filterFuncs = append(filterFuncs, telegram.OnlyChannelsCachedPeerFilter())
-				}
-			}
-
-			name, err := cmd.Flags().GetString("name")
-			if err != nil {
-				return err
-			}
-
-			if name != "" {
-				filterFuncs = append(filterFuncs, telegram.NameCachedPeerFilter(name))
+			filterFuncs := []telegram.CachedPeerFilter{}
+			if len(args) > 0 {
+				filterFuncs = append(filterFuncs, telegram.NameCachedPeerFilter(args[0]))
 			}
 
 			cachedPeers, err := r.client.CacheService.GetCachedPeers(cmd.Context(), filterFuncs...)
@@ -57,9 +37,6 @@ func (r *Root) newCacheCmd() *cobra.Command {
 			return nil
 		},
 	}
-
-	cacheViewCmd.Flags().StringP("type", "t", "", "filter by type")
-	cacheViewCmd.Flags().StringP("name", "n", "", "filter by name")
 
 	cacheCmd.AddCommand(cacheViewCmd)
 	return cacheCmd

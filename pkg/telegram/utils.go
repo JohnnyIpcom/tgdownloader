@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"regexp"
@@ -70,7 +69,7 @@ func getPhotoSize(sizes []tg.PhotoSizeClass) (string, int, bool) {
 
 const dateLayout = "2006-01-02_15-04-05"
 
-func getPhotoFromMessage(ctx context.Context, elem messages.Elem) (*File, error) {
+func getPhotoFromMessage(elem messages.Elem) (*File, error) {
 	photo, ok := elem.Photo()
 	if !ok {
 		return nil, errNoFilesInMessage
@@ -105,7 +104,7 @@ func getPhotoFromMessage(ctx context.Context, elem messages.Elem) (*File, error)
 	}, nil
 }
 
-func getDocumentFromMessage(ctx context.Context, elem messages.Elem) (*File, error) {
+func getDocumentFromMessage(elem messages.Elem) (*File, error) {
 	doc, ok := elem.Document()
 	if !ok {
 		return nil, errNoFilesInMessage
@@ -181,7 +180,7 @@ func getDocumentFromMessage(ctx context.Context, elem messages.Elem) (*File, err
 	}, nil
 }
 
-func getFileFromMessage(ctx context.Context, elem messages.Elem) (*File, error) {
+func getFileFromMessage(elem messages.Elem) (*File, error) {
 	msg, ok := elem.Msg.(*tg.Message)
 	if !ok {
 		return nil, errNoFilesInMessage
@@ -189,9 +188,9 @@ func getFileFromMessage(ctx context.Context, elem messages.Elem) (*File, error) 
 
 	switch msg.Media.(type) {
 	case *tg.MessageMediaPhoto:
-		return getPhotoFromMessage(ctx, elem)
+		return getPhotoFromMessage(elem)
 	case *tg.MessageMediaDocument:
-		return getDocumentFromMessage(ctx, elem)
+		return getDocumentFromMessage(elem)
 	}
 
 	return nil, errNoFilesInMessage

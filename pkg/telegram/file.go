@@ -105,7 +105,7 @@ func GetFileWithOffsetDate(offsetDate int) GetFileOption {
 }
 
 func (s *fileService) extractFileFromMessage(ctx context.Context, elem messages.Elem) (*File, int64, error) {
-	file, err := getFileFromMessage(ctx, elem)
+	file, err := getFileFromMessage(elem)
 	if err != nil {
 		if errors.Is(err, errNoFilesInMessage) {
 			return nil, 0, nil
