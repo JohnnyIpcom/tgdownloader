@@ -110,6 +110,15 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		options.PublicKeys = keys
 	}
 
+	clock, err := getClock(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if clock != nil {
+		options.Clock = clock
+	}
+
 	c := tgclient.NewClient(cfg.GetInt("app.id"), cfg.GetString("app.hash"), options)
 
 	peerMgr := peers.Options{

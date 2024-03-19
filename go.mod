@@ -5,6 +5,7 @@ go 1.21
 toolchain go1.21.6
 
 require (
+	github.com/beevik/ntp v1.0.0
 	github.com/c-bata/go-prompt v0.2.6
 	github.com/dropbox/dropbox-sdk-go-unofficial/v6 v6.0.5
 	github.com/go-andiamo/splitter v1.2.5

@@ -10,6 +10,7 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/key"
 
+	"github.com/gotd/td/clock"
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
@@ -53,6 +54,15 @@ func getPublicKeys(cfg config.Config) ([]tgclient.PublicKey, error) {
 	}
 
 	return keys, nil
+}
+
+func getClock(cfg config.Config) (clock.Clock, error) {
+	if !cfg.IsSet("clock.ntp.host") {
+		return clock.System, nil
+	}
+
+	ntpHost := cfg.GetString("clock.ntp.host")
+	return NewNTPClock(ntpHost)
 }
 
 func getPhotoSize(sizes []tg.PhotoSizeClass) (string, int, bool) {

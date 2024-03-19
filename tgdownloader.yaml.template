@@ -10,6 +10,10 @@ telegram:
       - "public_key_test.pem"
       - "public_key_prod.pem"
 
+  clock:
+    ntp:
+      host: "pool.ntp.org"
+
   session:
     path: "session.json"
 
