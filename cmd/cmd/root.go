@@ -28,10 +28,11 @@ import (
 type Root struct {
 	version   string
 	verbosity string
+	stopFunc  telegram.StopFunc
+	progress  telegram.ProgressRenderer
 
 	cfg    config.Config
 	client *telegram.Client
-	stop   telegram.StopFunc
 	zap    *zap.Logger
 	log    logr.Logger
 	level  zap.AtomicLevel
@@ -66,13 +67,16 @@ func NewRoot(version string) (*Root, error) {
 		return nil, err
 	}
 
+	progress := renderer.NewProgressRenderer()
+	client.SetProgressRenderer(progress)
 	return &Root{
-		version: version,
-		cfg:     cfg,
-		client:  client,
-		zap:     zap,
-		log:     zapr.NewLogger(zap),
-		level:   level,
+		version:  version,
+		cfg:      cfg,
+		client:   client,
+		zap:      zap,
+		log:      zapr.NewLogger(zap),
+		level:    level,
+		progress: progress,
 	}, nil
 }
 
@@ -116,7 +120,9 @@ func (r *Root) newRootCmd() *cobra.Command {
 		ctx, cancel := context.WithCancel(context.Background())
 		go func() {
 			<-stop
+
 			cancel()
+			signal.Stop(stop)
 		}()
 
 		cmd.SetContext(logr.NewContext(ctx, r.log))
@@ -159,21 +165,62 @@ func (r *Root) Execute() error {
 		Flags:    cc.Bold,
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	return rootCmd.Execute()
+}
+
+func (r *Root) Close() error {
+	r.Disconnect()
+
+	r.progress.Stop()
+
+	renderer.RenderBye()
+	return r.zap.Sync()
+}
+
+func (r *Root) IsConnected() bool {
+	return r.stopFunc != nil
+}
+
+func (r *Root) Connect(ctx context.Context) error {
+	if r.IsConnected() {
+		return nil
+	}
 
 	stop, err := r.client.Connect(ctx)
 	if err != nil {
 		return err
 	}
 
-	defer func() {
-		stop()
-		renderer.RenderBye()
-	}()
+	r.stopFunc = stop
+	return nil
+}
 
-	r.stop = stop
-	return rootCmd.ExecuteContext(ctx)
+func (r *Root) Disconnect() {
+	if r.stopFunc != nil {
+		r.stopFunc()
+		r.stopFunc = nil
+	}
+}
+
+type needCloseKey struct{}
+
+func (r *Root) setupConnectionForCmd(cmds ...*cobra.Command) {
+	for _, cmd := range cmds {
+		cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+			ctx := context.WithValue(cmd.Context(), needCloseKey{}, !r.IsConnected())
+			cmd.SetContext(ctx)
+
+			return r.Connect(ctx)
+		}
+
+		cmd.PostRunE = func(cmd *cobra.Command, args []string) error {
+			if needDisconnect, ok := cmd.Context().Value(needCloseKey{}).(bool); ok && needDisconnect {
+				return r.Close()
+			}
+
+			return nil
+		}
+	}
 }
 
 func (r *Root) newDownloader(opts ...downloader.Option) (*downloader.Downloader, error) {

@@ -39,5 +39,7 @@ func (r *Root) newCacheCmd() *cobra.Command {
 	}
 
 	cacheCmd.AddCommand(cacheViewCmd)
+
+	r.setupConnectionForCmd(cacheViewCmd)
 	return cacheCmd
 }

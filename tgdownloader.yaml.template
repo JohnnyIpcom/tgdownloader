@@ -1,0 +1,35 @@
+telegram:
+  app:
+    id: 0000000
+    hash: "000000000000000000000000000000000000000000000"
+  phone: "+389999999999"
+  password: "password"
+
+  mtproto:
+    public_keys:
+      - "public_key_test.pem"
+      - "public_key_prod.pem"
+
+  session:
+    path: "session.json"
+
+  cache:
+    path: "storage.db"
+
+  rate:
+    limit: 100ms
+    burst: 3
+
+downloader:
+  type: "local" # local, dropbox
+  dir:
+    output: "./downloads"
+
+service:
+  password: 'password'
+  downloader_id: "111111111111"
+
+logger:
+  outputPaths:
+    #- "stderr"
+    - "/var/log/tgdownloader.log"

@@ -38,6 +38,7 @@ func QuerySearch(query string) Query {
 }
 
 type UserService interface {
+	GetSelf(ctx context.Context) (peers.User, error)
 	GetUser(ctx context.Context, userID int64) (peers.User, error)
 
 	GetUsersFromMessageHistory(ctx context.Context, peer peers.Peer) (<-chan peers.User, error)
@@ -101,6 +102,15 @@ func (s *userService) GetUser(ctx context.Context, ID int64) (peers.User, error)
 	}
 
 	return user, nil
+}
+
+func (s *userService) GetSelf(ctx context.Context) (peers.User, error) {
+	self, err := s.client.peerMgr.Self(ctx)
+	if err != nil {
+		return peers.User{}, err
+	}
+
+	return self, nil
 }
 
 // GetUsersFromChat returns all users from chat.

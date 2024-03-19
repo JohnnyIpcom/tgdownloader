@@ -31,5 +31,7 @@ func (r *Root) newDialogsCmd() *cobra.Command {
 	}
 
 	dialogCmd.AddCommand(dialogListCmd)
+
+	r.setupConnectionForCmd(dialogListCmd)
 	return dialogCmd
 }

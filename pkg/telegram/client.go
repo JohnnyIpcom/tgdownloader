@@ -44,6 +44,7 @@ type Client struct {
 	updMgr     *updates.Manager
 	dispatcher tg.UpdateDispatcher
 	storage    storage.PeerStorage
+	progress   ProgressRenderer
 
 	common service // Reuse a single struct instead of allocating one for each service on the heap
 
@@ -123,6 +124,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		updMgr:     gaps,
 		dispatcher: dispatcher,
 		storage:    peerStorage,
+		progress:   &progressRenderer{},
 	}
 
 	// Set up services
@@ -148,8 +150,12 @@ func (c *codeAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode)
 	return strings.TrimSpace(code), nil
 }
 
+func (c *Client) SetProgressRenderer(r ProgressRenderer) {
+	c.progress = r
+}
+
 func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
-	fmt.Println("Authenticating...")
+	authTracker := c.progress.NewTracker("Authentication")
 	flow := auth.NewFlow(
 		auth.Constant(
 			c.config.GetString("phone"),
@@ -159,43 +165,44 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	)
 
 	if err := c.client.Auth().IfNecessary(ctx, flow); err != nil {
+		authTracker.Fail()
 		return func() error { return nil }, fmt.Errorf("auth: %w", err)
 	}
+
+	authTracker.Done()
+	c.progress.Wait()
 
 	user, err := c.client.Self(ctx)
 	if err != nil {
 		return func() error { return nil }, fmt.Errorf("fetch self: %w", err)
 	}
 
-	username, _ := user.GetUsername()
-	fmt.Printf("Authenticated as '%s'\n", username)
+	updateTracker := c.progress.NewTracker("Update tracker")
 
-	fmt.Println("Notifying updates manager...")
-
-	authorized := make(chan struct{})
+	updateStarted := make(chan struct{})
 	authOptions := updates.AuthOptions{
 		IsBot:  true,
 		Forget: true,
 		OnStart: func(ctx context.Context) {
-			fmt.Println("Starting updates manager...")
-			close(authorized)
+			updateTracker.Done()
+			c.progress.Wait()
+			close(updateStarted)
 		},
 	}
 
 	go func() {
 		updErr := c.updMgr.Run(ctx, c.client.API(), user.GetID(), authOptions)
 		if updErr != nil && !errors.Is(updErr, context.Canceled) {
+			updateTracker.Fail()
 			fmt.Printf("auth updates error: %s\n", err)
 		}
 	}()
 
-	<-authorized
-
-	fmt.Println("Done")
+	<-updateStarted
 	return func() error {
-		fmt.Println("\nLogging out...")
+		logoutTracker := c.progress.NewTracker("Logout")
 		c.updMgr.Reset()
-		fmt.Println("Done")
+		logoutTracker.Done()
 		return nil
 	}, nil
 }

@@ -11,7 +11,7 @@ import (
 )
 
 func (r *Root) newPeerCmd() *cobra.Command {
-	peer := &cobra.Command{
+	peerCmd := &cobra.Command{
 		Use:   "peer",
 		Short: "Manage peers(chats/channels/users)",
 		Long:  `Manage peers(chats/channels/users)`,
@@ -173,9 +173,18 @@ func (r *Root) newPeerCmd() *cobra.Command {
 		},
 	}
 
-	peer.AddCommand(peerListCmd)
-	peer.AddCommand(peerResolveCmd)
-	peer.AddCommand(peerFindCmd)
-	peer.AddCommand(peerFromHistoryCmd)
-	return peer
+	peerCmd.AddCommand(
+		peerListCmd,
+		peerResolveCmd,
+		peerFindCmd,
+		peerFromHistoryCmd,
+	)
+
+	r.setupConnectionForCmd(
+		peerListCmd,
+		peerResolveCmd,
+		peerFindCmd,
+		peerFromHistoryCmd,
+	)
+	return peerCmd
 }

@@ -96,26 +96,7 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 					return
 				}
 
-				subdirs := make([]string, 0, 2)
-				metadata := file.Metadata()
-				if metadata != nil {
-					if peername, ok := metadata["peername"]; ok {
-						subdirs = append(subdirs, peername.(string))
-					}
-
-					if opts.hashtags {
-						if hashtags, ok := metadata["hashtags"]; ok {
-							subdirs = append(subdirs, hashtags.([]string)...)
-						}
-					}
-				}
-
-				var fileOptions []downloader.FileOption
-				if len(subdirs) > 0 {
-					fileOptions = append(fileOptions, downloader.WithSubdirs(subdirs...))
-				}
-
-				queue <- downloader.NewFile(file, fileOptions...)
+				queue <- downloader.NewFile(file, downloader.WithSaveByHashtags(opts.hashtags))
 			}
 		}
 	}()

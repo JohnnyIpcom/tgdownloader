@@ -47,7 +47,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 	downloadHistoryCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
 	downloadHistoryCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
 
-	dowwnloadWatcherCmd := &cobra.Command{
+	downloadWatcherCmd := &cobra.Command{
 		Use:   "watcher",
 		Short: "Watch a peer for new files",
 		Long:  `Watch a peer for new files.`,
@@ -72,11 +72,18 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		},
 	}
 
-	dowwnloadWatcherCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
-	dowwnloadWatcherCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
-	dowwnloadWatcherCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
+	downloadWatcherCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
+	downloadWatcherCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
+	downloadWatcherCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
 
-	downloadCmd.AddCommand(downloadHistoryCmd)
-	downloadCmd.AddCommand(dowwnloadWatcherCmd)
+	downloadCmd.AddCommand(
+		downloadHistoryCmd,
+		downloadWatcherCmd,
+	)
+
+	r.setupConnectionForCmd(
+		downloadHistoryCmd,
+		downloadWatcherCmd,
+	)
 	return downloadCmd
 }

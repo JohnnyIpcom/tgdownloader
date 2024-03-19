@@ -26,6 +26,10 @@ func RenderTDLibPeerID(peerID constant.TDLibPeerID) string {
 	return fmt.Sprintf("0x%016X", uint64(peerID))
 }
 
+func RenderAccessHash(accessHash int64) string {
+	return fmt.Sprintf("0x%016X", uint64(accessHash))
+}
+
 func RenderName(name string) string {
 	return text.Snip(ReplaceAllEmojis(name), 35, "...")
 }

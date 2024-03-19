@@ -188,14 +188,11 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 	rootCmd.DisableSuggestions = true
 
 	rootCmd.AddCommand(&cobra.Command{
-		Use:     "exit",
-		Aliases: []string{"quit"},
-		Short:   "Exit the prompt",
-		Long:    `Exit the prompt`,
+		Use:   "exit",
+		Short: "Exit the prompt",
+		Long:  `Exit the prompt`,
 		Run: func(cmd *cobra.Command, args []string) {
-			r.stop()
-			renderer.RenderBye()
-
+			r.Close()
 			os.Exit(0)
 		},
 	})
@@ -205,15 +202,23 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 		Short: "Start an interactive prompt",
 		Long:  `Start an interactive prompt`,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("Open prompt with autocompletion")
-			p := prompt.New(
+			if err := r.Connect(rootCmd.Context()); err != nil {
+				renderer.RenderError(err)
+				return
+			}
+
+			self, err := r.client.UserService.GetSelf(rootCmd.Context())
+			if err != nil {
+				renderer.RenderError(err)
+				return
+			}
+
+			prompt.New(
 				r.newExecutor(rootCmd),
 				r.newCompleter(rootCmd),
-				prompt.OptionPrefix(">> "),
+				prompt.OptionPrefix(fmt.Sprintf("%s> ", self.Raw().Username)),
 				prompt.OptionTitle("tgdownloader"),
-			)
-
-			p.Run()
+			).Run()
 		},
 	}
 

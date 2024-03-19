@@ -162,7 +162,7 @@ func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan File) {
 
 // downloadFile downloads a file.
 func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logger) {
-	saver := NewAferoMultiSaver(p.fs)
+	saver := NewAferoSaver(p.fs)
 	if p.settings.DryRun {
 		saver = NewNullSaver()
 	}

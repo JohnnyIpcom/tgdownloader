@@ -55,7 +55,7 @@ func RenderCachedPeerTable(peers []telegram.CachedPeer) {
 			RenderTDLibPeerID(tdLibPeerID),
 			peerType,
 			RenderName(peer.Name()),
-			peer.Key.AccessHash,
+			RenderAccessHash(peer.Key.AccessHash),
 		})
 	}
 

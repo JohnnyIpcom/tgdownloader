@@ -10,7 +10,8 @@ import (
 type File struct {
 	telegram.File
 
-	subdirs []string
+	subdirs        []string
+	saveByHashtags bool
 }
 
 type FileOption func(*File)
@@ -33,6 +34,12 @@ func WithSubdirs(subdirs ...string) FileOption {
 	}
 }
 
+func WithSaveByHashtags(saveByHashtags bool) FileOption {
+	return func(o *File) {
+		o.saveByHashtags = saveByHashtags
+	}
+}
+
 func NewFile(file telegram.File, opts ...FileOption) File {
 	f := File{
 		File: file,
@@ -40,6 +47,19 @@ func NewFile(file telegram.File, opts ...FileOption) File {
 
 	for _, opt := range opts {
 		opt(&f)
+	}
+
+	metadata := file.Metadata()
+	if metadata != nil {
+		if peername, ok := metadata["peername"]; ok {
+			f.subdirs = append(f.subdirs, peername.(string))
+		}
+
+		if f.saveByHashtags {
+			if hashtags, ok := metadata["hashtags"]; ok {
+				f.subdirs = append(f.subdirs, hashtags.([]string)...)
+			}
+		}
 	}
 
 	return f
@@ -64,25 +84,25 @@ type MultiSaver interface {
 }
 
 //
-// AferoMultiSaver is an implementation of MultiSaver that uses afero.Fs
+// aferoSaver is an implementation of MultiSaver that uses afero.Fs
 // to create and write to files
 //
 
-type aferoMultiSaver struct {
+type aferoSaver struct {
 	fs    afero.Fs
 	files []afero.File
 }
 
-var _ MultiSaver = &aferoMultiSaver{}
+var _ MultiSaver = &aferoSaver{}
 
-func NewAferoMultiSaver(fs afero.Fs) MultiSaver {
-	return &aferoMultiSaver{
+func NewAferoSaver(fs afero.Fs) MultiSaver {
+	return &aferoSaver{
 		fs:    fs,
 		files: make([]afero.File, 0),
 	}
 }
 
-func (m *aferoMultiSaver) AddFile(filename string) error {
+func (m *aferoSaver) AddFile(filename string) error {
 	file, err := m.fs.Create(filename)
 	if err != nil {
 		return err
@@ -92,11 +112,11 @@ func (m *aferoMultiSaver) AddFile(filename string) error {
 	return nil
 }
 
-func (m *aferoMultiSaver) IsValid() bool {
+func (m *aferoSaver) IsValid() bool {
 	return len(m.files) > 0
 }
 
-func (m *aferoMultiSaver) Write(p []byte) (n int, err error) {
+func (m *aferoSaver) Write(p []byte) (n int, err error) {
 	for _, file := range m.files {
 		written, err := file.Write(p)
 		if err != nil {
@@ -111,7 +131,7 @@ func (m *aferoMultiSaver) Write(p []byte) (n int, err error) {
 	return n, nil
 }
 
-func (m *aferoMultiSaver) Close() error {
+func (m *aferoSaver) Close() error {
 	var err error
 	for _, file := range m.files {
 		if cerr := file.Close(); cerr != nil && err == nil {
@@ -121,7 +141,7 @@ func (m *aferoMultiSaver) Close() error {
 	return err
 }
 
-func (m *aferoMultiSaver) Remove() error {
+func (m *aferoSaver) Remove() error {
 	if err := m.Close(); err != nil {
 		return err
 	}
