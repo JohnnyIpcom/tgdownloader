@@ -17,13 +17,14 @@ type downloadOptions struct {
 	limit      int
 	user       int64
 	offsetDate string
+	single     bool
 	hashtags   bool
 	rewrite    bool
 	dryRun     bool
 }
 
-func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) {
-	var opts []telegram.GetFileOption
+func (o *downloadOptions) newGetAllFilesOptions() ([]telegram.GetAllFilesOption, error) {
+	var opts []telegram.GetAllFilesOption
 
 	if o.user > 0 {
 		opts = append(opts, telegram.GetFileWithUserID(o.user))
@@ -45,13 +46,23 @@ func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) 
 	return opts, nil
 }
 
+func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) {
+	var opts []telegram.GetFileOption
+
+	if o.single {
+		opts = append(opts, telegram.GetFileWithGrouped(false))
+	}
+
+	return opts, nil
+}
+
 func (r *Root) downloadFilesFromPeer(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
-	getFileOptions, err := opts.newGetFileOptions()
+	getFileOptions, err := opts.newGetAllFilesOptions()
 	if err != nil {
 		return err
 	}
 
-	files, err := r.client.FileService.GetFiles(ctx, peer, getFileOptions...)
+	files, err := r.client.FileService.GetAllFiles(ctx, peer, getFileOptions...)
 	if err != nil {
 		return err
 	}
@@ -60,7 +71,7 @@ func (r *Root) downloadFilesFromPeer(ctx context.Context, peer peers.Peer, opts 
 }
 
 func (r *Root) downloadFilesFromNewMessages(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
-	files, err := r.client.FileService.GetFilesFromNewMessages(ctx, peer)
+	files, err := r.client.FileService.GetAllFilesFromNewMessages(ctx, peer)
 	if err != nil {
 		return err
 	}
@@ -104,6 +115,37 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 	d.Start(ctx)
 	d.AddDownloadQueue(ctx, queue)
 	return d.Stop()
+}
+
+func makeChannelFromSlice(ctx context.Context, files []*telegram.File) <-chan telegram.File {
+	ch := make(chan telegram.File)
+	go func() {
+		defer close(ch)
+
+		for _, file := range files {
+			select {
+			case ch <- *file:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return ch
+}
+
+func (r *Root) downloadFilesFromMessage(ctx context.Context, peer peers.Peer, msgID int, opts downloadOptions) error {
+	getFileOptions, err := opts.newGetFileOptions()
+	if err != nil {
+		return err
+	}
+
+	files, err := r.client.FileService.GetFilesFromMessage(ctx, peer, msgID, getFileOptions...)
+	if err != nil {
+		return err
+	}
+
+	return r.downloadFiles(ctx, makeChannelFromSlice(ctx, files), opts)
 }
 
 func (r *Root) parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {

@@ -53,21 +53,16 @@ var _ UserService = (*userService)(nil)
 // GetUsersFromMessageHistory returns chan with users from message history. Sometimes chat doesn't provide list of users.
 // This method is a workaround for this problem.
 func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer peers.Peer) (<-chan peers.User, error) {
-	inputPeer, err := s.client.GetInputPeer(ctx, peer.TDLibPeerID())
-	if err != nil {
-		return nil, err
-	}
-
 	usersChan := make(chan peers.User)
 	go func() {
 		defer close(usersChan)
 
 		uniqueIDs := make(map[int64]struct{})
 
-		queryBuilder := query.Messages(s.client.API()).GetHistory(inputPeer)
+		queryBuilder := query.Messages(s.client.API()).GetHistory(peer.InputPeer())
 		queryBuilder = queryBuilder.BatchSize(100)
 
-		if err = queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
+		if err := queryBuilder.ForEach(ctx, func(ctx context.Context, elem messages.Elem) error {
 			users := elem.Entities.Users()
 			for _, user := range users {
 				if _, ok := uniqueIDs[user.GetID()]; ok {

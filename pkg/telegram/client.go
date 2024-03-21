@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/gotd/contrib/middleware/floodwait"
 	"github.com/gotd/contrib/middleware/ratelimit"
 	"github.com/gotd/contrib/storage"
-	"github.com/gotd/td/constant"
 	"github.com/gotd/td/session"
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
@@ -288,6 +288,81 @@ func (c *Client) API() *tg.Client {
 	return c.client.API()
 }
 
+// ParseMessageLink return peer, msgId, error
+func (c *Client) ParseMessageLink(ctx context.Context, s string) (peers.Peer, int, error) {
+	parse := func(from, msg string) (peers.Peer, int, error) {
+		ch, err := c.ResolvePeer(ctx, from)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		m, err := strconv.Atoi(msg)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		return ch, m, nil
+	}
+
+	u, err := url.Parse(s)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	paths := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+
+	// https://t.me/opencfdchannel/4434?comment=360409
+	if comment := u.Query().Get("comment"); comment != "" {
+		peer, err := c.ResolvePeer(ctx, paths[0])
+		if err != nil {
+			return nil, 0, err
+		}
+
+		ch, ok := peer.(peers.Channel)
+		if !ok || !ch.IsBroadcast() {
+			return nil, 0, err
+		}
+
+		raw, err := ch.FullRaw(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		linked, ok := raw.GetLinkedChatID()
+		if !ok {
+			return nil, 0, errors.New("no linked chat")
+		}
+
+		return parse(strconv.FormatInt(linked, 10), comment)
+	}
+
+	switch len(paths) {
+	case 2:
+		// https://t.me/telegram/193
+		// https://t.me/myhostloc/1485524?thread=1485523
+		return parse(paths[0], paths[1])
+	case 3:
+		// https://t.me/c/1697797156/151
+		// https://t.me/iFreeKnow/45662/55005
+		if paths[0] == "c" {
+			return parse(paths[1], paths[2])
+		}
+
+		// "45662" means topic id, we don't need it
+		return parse(paths[0], paths[2])
+	case 4:
+		// https://t.me/c/1492447836/251015/251021
+		if paths[0] != "c" {
+			return nil, 0, fmt.Errorf("invalid message link")
+		}
+
+		// "251015" means topic id, we don't need it
+		return parse(paths[1], paths[3])
+	default:
+		return nil, 0, fmt.Errorf("invalid message link: %s", s)
+	}
+}
+
 func (c *Client) ExtractPeer(ctx context.Context, ent peer.Entities, peerID tg.PeerClass) (peers.Peer, error) {
 	peer, err := ent.ExtractPeer(peerID)
 	if err != nil {
@@ -297,21 +372,29 @@ func (c *Client) ExtractPeer(ctx context.Context, ent peer.Entities, peerID tg.P
 	return c.peerMgr.FromInputPeer(ctx, peer)
 }
 
-func (c *Client) GetInputPeer(ctx context.Context, ID constant.TDLibPeerID) (tg.InputPeerClass, error) {
-	if peer, err := c.storage.Resolve(ctx, strconv.FormatInt(ID.ToPlain(), 10)); err == nil {
-		return peer.AsInputPeer(), nil
-	} else {
-		if !errors.Is(err, storage.ErrPeerNotFound) {
+func (c *Client) ResolvePeer(ctx context.Context, from string) (peers.Peer, error) {
+	id, err := strconv.ParseInt(from, 10, 64)
+	if err != nil {
+		p, err := c.peerMgr.Resolve(ctx, from)
+		if err != nil {
 			return nil, err
 		}
+
+		return p, nil
 	}
 
-	peer, err := c.peerMgr.ResolveTDLibID(ctx, ID)
-	if err != nil {
-		return nil, err
+	var p peers.Peer
+	if p, err = c.peerMgr.ResolveChannelID(ctx, id); err == nil {
+		return p, nil
+	}
+	if p, err = c.peerMgr.ResolveUserID(ctx, id); err == nil {
+		return p, nil
+	}
+	if p, err = c.peerMgr.ResolveChatID(ctx, id); err == nil {
+		return p, nil
 	}
 
-	return peer.InputPeer(), nil
+	return nil, fmt.Errorf("failed to get result from %d：%v", id, err)
 }
 
 func (c *Client) CacheDialog(ctx context.Context, elem dialogs.Elem) error {

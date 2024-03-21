@@ -46,8 +46,10 @@ func (f File) Metadata() map[string]interface{} {
 }
 
 type FileService interface {
-	GetFiles(ctx context.Context, peer peers.Peer, opts ...GetFileOption) (<-chan File, error)
-	GetFilesFromNewMessages(ctx context.Context, peer peers.Peer, opts ...GetFileOption) (<-chan File, error)
+	GetAllFiles(ctx context.Context, peer peers.Peer, opts ...GetAllFilesOption) (<-chan File, error)
+	GetAllFilesFromNewMessages(ctx context.Context, peer peers.Peer, opts ...GetAllFilesOption) (<-chan File, error)
+	GetFilesFromMessage(ctx context.Context, peer peers.Peer, msgID int, opts ...GetFileOption) ([]*File, error)
+	GetFilesFromGroupedMessage(ctx context.Context, peer peers.Peer, msg *tg.Message) ([]*File, error)
 	Download(ctx context.Context, file File, out io.Writer) error
 }
 
@@ -55,26 +57,26 @@ type fileService service
 
 var _ FileService = (*fileService)(nil)
 
-type getfileOptions struct {
+type getAllFilesOption struct {
 	userID     int64
 	limit      int
 	offsetDate int
 }
 
-type GetFileOption interface {
-	apply(*getfileOptions) error
+type GetAllFilesOption interface {
+	apply(*getAllFilesOption) error
 }
 
 type getfileUserIDOption struct {
 	userID int64
 }
 
-func (o getfileUserIDOption) apply(opts *getfileOptions) error {
+func (o getfileUserIDOption) apply(opts *getAllFilesOption) error {
 	opts.userID = o.userID
 	return nil
 }
 
-func GetFileWithUserID(userID int64) GetFileOption {
+func GetFileWithUserID(userID int64) GetAllFilesOption {
 	return getfileUserIDOption{userID: userID}
 }
 
@@ -82,12 +84,12 @@ type getfileLimitOption struct {
 	limit int
 }
 
-func (o getfileLimitOption) apply(opts *getfileOptions) error {
+func (o getfileLimitOption) apply(opts *getAllFilesOption) error {
 	opts.limit = o.limit
 	return nil
 }
 
-func GetFileWithLimit(limit int) GetFileOption {
+func GetFileWithLimit(limit int) GetAllFilesOption {
 	return getfileLimitOption{limit: limit}
 }
 
@@ -95,17 +97,38 @@ type getfileOffsetDateOption struct {
 	offsetDate int
 }
 
-func (o getfileOffsetDateOption) apply(opts *getfileOptions) error {
+func (o getfileOffsetDateOption) apply(opts *getAllFilesOption) error {
 	opts.offsetDate = o.offsetDate
 	return nil
 }
 
-func GetFileWithOffsetDate(offsetDate int) GetFileOption {
+func GetFileWithOffsetDate(offsetDate int) GetAllFilesOption {
 	return getfileOffsetDateOption{offsetDate: offsetDate}
 }
 
-func (s *fileService) extractFileFromMessage(ctx context.Context, elem messages.Elem) (*File, int64, error) {
-	file, err := getFileFromMessage(elem)
+type getFileOption struct {
+	grouped bool
+}
+
+type GetFileOption interface {
+	apply(*getFileOption) error
+}
+
+type getFileWithGrouped struct {
+	grouped bool
+}
+
+func (o getFileWithGrouped) apply(opts *getFileOption) error {
+	opts.grouped = o.grouped
+	return nil
+}
+
+func GetFileWithGrouped(grouped bool) GetFileOption {
+	return getFileWithGrouped{grouped: grouped}
+}
+
+func (s *fileService) extractFileFromMessageElem(ctx context.Context, elem messages.Elem) (*File, int64, error) {
+	file, err := getFileFromMessageElem(elem)
 	if err != nil {
 		if errors.Is(err, errNoFilesInMessage) {
 			return nil, 0, nil
@@ -152,9 +175,9 @@ func (s *fileService) extractFileFromMessage(ctx context.Context, elem messages.
 	return file, peer.ID(), nil
 }
 
-// GetFiles returns channel for file IDs and error channel.
-func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...GetFileOption) (<-chan File, error) {
-	options := getfileOptions{
+// GetAllFiles returns channel for file IDs and error channel.
+func (s *fileService) GetAllFiles(ctx context.Context, peer peers.Peer, opts ...GetAllFilesOption) (<-chan File, error) {
+	options := getAllFilesOption{
 		limit: int(^uint(0) >> 1), // MaxInt
 	}
 	for _, opt := range opts {
@@ -164,17 +187,11 @@ func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...Get
 	}
 
 	var fileCounter int64
-
-	inputPeer, err := s.client.GetInputPeer(ctx, peer.TDLibPeerID())
-	if err != nil {
-		return nil, err
-	}
-
 	fileChan := make(chan File)
 	go func() {
 		defer close(fileChan)
 
-		queryBuilder := query.Messages(s.client.API()).GetHistory(inputPeer)
+		queryBuilder := query.Messages(s.client.API()).GetHistory(peer.InputPeer())
 		queryBuilder = queryBuilder.OffsetDate(options.offsetDate)
 		queryBuilder = queryBuilder.BatchSize(100)
 
@@ -184,7 +201,7 @@ func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...Get
 				return errLimitReached
 			}
 
-			file, peerID, err := s.extractFileFromMessage(ctx, elem)
+			file, peerID, err := s.extractFileFromMessageElem(ctx, elem)
 			if err != nil {
 				return err
 			}
@@ -215,11 +232,27 @@ func (s *fileService) GetFiles(ctx context.Context, peer peers.Peer, opts ...Get
 	return fileChan, nil
 }
 
-// GetFilesFromNewChannelMessages returns files from new messages.
-func (s *fileService) GetFilesFromNewMessages(ctx context.Context, p peers.Peer, opts ...GetFileOption) (<-chan File, error) {
+// GetAllFilesFromNewMessages returns files from new messages.
+func (s *fileService) GetAllFilesFromNewMessages(ctx context.Context, p peers.Peer, opts ...GetAllFilesOption) (<-chan File, error) {
+	options := getAllFilesOption{
+		limit: int(^uint(0) >> 1), // MaxInt
+	}
+	for _, opt := range opts {
+		if err := opt.apply(&options); err != nil {
+			return nil, err
+		}
+	}
+
+	var fileCounter int64
+
 	fileChan := make(chan File)
 
 	onNewMessage := func(ctx context.Context, e tg.Entities, msg tg.MessageClass) error {
+		if atomic.LoadInt64(&fileCounter) >= int64(options.limit) {
+			s.logger.Info("limit reached", zap.Int64("limit", int64(options.limit)))
+			return errLimitReached
+		}
+
 		nonEmpty, ok := msg.AsNotEmpty()
 		if !ok {
 			s.logger.Debug("empty message")
@@ -233,7 +266,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, p peers.Peer,
 			msgPeer = &tg.InputPeerEmpty{}
 		}
 
-		file, peerID, err := s.extractFileFromMessage(ctx, messages.Elem{
+		file, peerID, err := s.extractFileFromMessageElem(ctx, messages.Elem{
 			Msg:      nonEmpty,
 			Peer:     msgPeer,
 			Entities: entities,
@@ -249,7 +282,7 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, p peers.Peer,
 
 		select {
 		case fileChan <- *file:
-			// pass
+			atomic.AddInt64(&fileCounter, 1)
 
 		case <-ctx.Done():
 			return ctx.Err()
@@ -267,6 +300,87 @@ func (s *fileService) GetFilesFromNewMessages(ctx context.Context, p peers.Peer,
 	})
 
 	return fileChan, nil
+}
+
+func (s *fileService) GetFilesFromMessage(ctx context.Context, peer peers.Peer, msgID int, opts ...GetFileOption) ([]*File, error) {
+	options := getFileOption{
+		grouped: true,
+	}
+	for _, opt := range opts {
+		if err := opt.apply(&options); err != nil {
+			return nil, err
+		}
+	}
+
+	queryBuilder := query.Messages(s.client.API()).GetHistory(peer.InputPeer())
+	queryBuilder = queryBuilder.OffsetID(msgID + 1).BatchSize(1)
+
+	iter := queryBuilder.Iter()
+	if !iter.Next(ctx) {
+		return nil, iter.Err()
+	}
+
+	elem := iter.Value()
+
+	msg, ok := elem.Msg.(*tg.Message)
+	if !ok {
+		return nil, errors.New("not a message")
+	}
+
+	if _, ok := msg.GetGroupedID(); ok && options.grouped {
+		files, err := s.GetFilesFromGroupedMessage(ctx, peer, msg)
+		if err != nil && !errors.Is(err, errNoFilesInMessage) {
+			return nil, err
+		}
+
+		return files, nil
+	}
+
+	file, _, err := s.extractFileFromMessageElem(ctx, iter.Value())
+	return []*File{file}, err
+}
+
+func (s *fileService) GetFilesFromGroupedMessage(ctx context.Context, peer peers.Peer, msg *tg.Message) ([]*File, error) {
+	group, ok := msg.GetGroupedID()
+	if !ok {
+		return nil, errors.New("not grouped message")
+	}
+
+	batchSize := 20
+
+	queryBuilder := query.Messages(s.client.API()).GetHistory(peer.InputPeer())
+	queryBuilder = queryBuilder.OffsetID(msg.ID + 11).BatchSize(batchSize) // 10 messages before and 10 after
+
+	files := make([]*File, 0, batchSize)
+
+	iter := queryBuilder.Iter()
+	for i := 0; iter.Next(ctx) && i < batchSize; i++ {
+		m, ok := iter.Value().Msg.(*tg.Message)
+		if !ok {
+			continue
+		}
+
+		groupID, ok := m.GetGroupedID()
+		if !ok {
+			continue
+		}
+
+		if groupID != group {
+			continue
+		}
+
+		file, _, err := s.extractFileFromMessageElem(ctx, iter.Value())
+		if err != nil {
+			if errors.Is(err, errNoFilesInMessage) {
+				continue
+			}
+
+			return nil, err
+		}
+		files = append(files, file)
+	}
+
+	return files, nil
 }
 
 func (s *fileService) Download(ctx context.Context, file File, out io.Writer) error {

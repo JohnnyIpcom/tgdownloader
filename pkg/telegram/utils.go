@@ -190,7 +190,7 @@ func getDocumentFromMessage(elem messages.Elem) (*File, error) {
 	}, nil
 }
 
-func getFileFromMessage(elem messages.Elem) (*File, error) {
+func getFileFromMessageElem(elem messages.Elem) (*File, error) {
 	msg, ok := elem.Msg.(*tg.Message)
 	if !ok {
 		return nil, errNoFilesInMessage
