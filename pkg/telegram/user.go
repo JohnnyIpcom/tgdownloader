@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/peers/members"
@@ -12,13 +13,32 @@ import (
 
 // Query is a query for channel members.
 type Query interface {
-	channelMembers(channel peers.Channel) *members.ChannelMembers
+	Members(ctx context.Context, peer peers.Peer) (members.Members, error)
 }
 
 type recent struct{}
 
-func (r recent) channelMembers(channel peers.Channel) *members.ChannelMembers {
-	return members.Channel(channel)
+func (r recent) Members(ctx context.Context, peer peers.Peer) (members.Members, error) {
+	switch {
+	case peer.TDLibPeerID().IsChannel():
+		channel, err := peer.Manager().ResolveChannelID(ctx, peer.ID())
+		if err != nil {
+			return nil, err
+		}
+
+		return members.Channel(channel), nil
+
+	case peer.TDLibPeerID().IsChat():
+		chat, err := peer.Manager().ResolveChatID(ctx, peer.ID())
+		if err != nil {
+			return nil, err
+		}
+
+		return members.Chat(chat), nil
+
+	default:
+		return nil, fmt.Errorf("unsupported peer type")
+	}
 }
 
 func QueryRecent() Query {
@@ -29,8 +49,27 @@ type querySearch struct {
 	query string
 }
 
-func (q querySearch) channelMembers(channel peers.Channel) *members.ChannelMembers {
-	return members.ChannelQuery{Channel: channel}.Search(q.query)
+func (q querySearch) Members(ctx context.Context, peer peers.Peer) (members.Members, error) {
+	switch {
+	case peer.TDLibPeerID().IsChannel():
+		channel, err := peer.Manager().ResolveChannelID(ctx, peer.ID())
+		if err != nil {
+			return nil, err
+		}
+
+		return members.ChannelQuery{Channel: channel}.Search(q.query), nil
+
+	case peer.TDLibPeerID().IsChat():
+		chat, err := peer.Manager().ResolveChatID(ctx, peer.ID())
+		if err != nil {
+			return nil, err
+		}
+
+		return members.Chat(chat), nil
+
+	default:
+		return nil, fmt.Errorf("unsupported peer type")
+	}
 }
 
 func QuerySearch(query string) Query {
@@ -42,8 +81,7 @@ type UserService interface {
 	GetUser(ctx context.Context, userID int64) (peers.User, error)
 
 	GetUsersFromMessageHistory(ctx context.Context, peer peers.Peer) (<-chan peers.User, error)
-	GetUsersFromChat(ctx context.Context, chatID int64) (<-chan peers.User, int, error)
-	GetUsersFromChannel(ctx context.Context, channelID int64, query Query) (<-chan peers.User, int, error)
+	GetUsers(ctx context.Context, peer peers.Peer, query Query) (<-chan peers.User, int, error)
 }
 
 type userService service
@@ -108,45 +146,14 @@ func (s *userService) GetSelf(ctx context.Context) (peers.User, error) {
 	return self, nil
 }
 
-// GetUsersFromChat returns all users from chat.
-func (s *userService) GetUsersFromChat(ctx context.Context, ID int64) (<-chan peers.User, int, error) {
-	chat, err := s.client.peerMgr.ResolveChatID(ctx, ID)
+// GetUsers returns users from channel.
+func (s *userService) GetUsers(ctx context.Context, peer peers.Peer, query Query) (<-chan peers.User, int, error) {
+	m, err := query.Members(ctx, peer)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	chatMembers := members.Chat(chat)
-
-	count, err := chatMembers.Count(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	usersChan := make(chan peers.User, count)
-	go func() {
-		defer func() {
-			close(usersChan)
-		}()
-
-		chatMembers.ForEach(ctx, func(m members.Member) error {
-			usersChan <- m.User()
-			return nil
-		})
-	}()
-
-	return usersChan, count, nil
-}
-
-// GetUsersFromChannel returns users from channel.
-func (s *userService) GetUsersFromChannel(ctx context.Context, ID int64, query Query) (<-chan peers.User, int, error) {
-	channel, err := s.client.peerMgr.ResolveChannelID(ctx, ID)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	channelMembers := query.channelMembers(channel)
-
-	count, err := channelMembers.Count(ctx)
+	count, err := m.Count(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -155,7 +162,7 @@ func (s *userService) GetUsersFromChannel(ctx context.Context, ID int64, query Q
 	go func() {
 		defer close(usersChan)
 
-		channelMembers.ForEach(ctx, func(m members.Member) error {
+		m.ForEach(ctx, func(m members.Member) error {
 			usersChan <- m.User()
 			return nil
 		})

@@ -28,15 +28,15 @@ func (r *Root) newPeerCmd() *cobra.Command {
 			"prompt_suggest": "chatorchannel",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tdLibPeerID, err := r.parseTDLibPeerID(args[0])
+			peer, err := r.resolvePeer(cmd.Context(), args[0])
 			if err != nil {
-				r.log.Error(err, "failed to convert peer ID")
+				r.log.Error(err, "failed to parse peer")
 				return err
 			}
 
 			switch {
-			case tdLibPeerID.IsChat():
-				users, total, err := r.client.UserService.GetUsersFromChat(cmd.Context(), tdLibPeerID.ToPlain())
+			case peer.TDLibPeerID().IsChat() || peer.TDLibPeerID().IsChannel():
+				users, total, err := r.client.UserService.GetUsers(cmd.Context(), peer, telegram.QueryRecent())
 				if err != nil {
 					r.log.Error(err, "failed to get users")
 					return err
@@ -44,17 +44,8 @@ func (r *Root) newPeerCmd() *cobra.Command {
 
 				return renderer.RenderUserTableAsync(cmd.Context(), users, total)
 
-			case tdLibPeerID.IsChannel():
-				users, total, err := r.client.UserService.GetUsersFromChannel(cmd.Context(), tdLibPeerID.ToPlain(), telegram.QueryRecent())
-				if err != nil {
-					r.log.Error(err, "failed to get users")
-					return err
-				}
-
-				return renderer.RenderUserTableAsync(cmd.Context(), users, total)
-
-			case tdLibPeerID.IsUser():
-				user, err := r.client.UserService.GetUser(cmd.Context(), tdLibPeerID.ToPlain())
+			case peer.TDLibPeerID().IsUser():
+				user, err := r.client.UserService.GetUser(cmd.Context(), peer.ID())
 				if err != nil {
 					r.log.Error(err, "failed to get user")
 					return err
@@ -82,9 +73,8 @@ func (r *Root) newPeerCmd() *cobra.Command {
 				return err
 			}
 
-			tdLibPeerID := peer.TDLibPeerID()
 			switch {
-			case tdLibPeerID.IsUser():
+			case peer.TDLibPeerID().IsUser():
 				user, err := r.client.UserService.GetUser(cmd.Context(), peer.ID())
 				if err != nil {
 					return err
@@ -93,7 +83,7 @@ func (r *Root) newPeerCmd() *cobra.Command {
 				renderer.RenderUser(user)
 				return nil
 
-			case tdLibPeerID.IsChat() || tdLibPeerID.IsChannel():
+			default:
 				renderer.RenderPeerTable([]peers.Peer{peer})
 			}
 
@@ -110,21 +100,21 @@ func (r *Root) newPeerCmd() *cobra.Command {
 			"prompt_suggest": "channel",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tdLibPeerID, err := r.parseTDLibPeerID(args[0])
-			if err != nil {
-				r.log.Error(err, "failed to convert peer ID")
-				return err
-			}
-
 			userQuery, err := cmd.Flags().GetString("user")
 			if err != nil {
 				r.log.Error(err, "failed to get user flag")
 				return err
 			}
 
+			peer, err := r.resolvePeer(cmd.Context(), args[0])
+			if err != nil {
+				r.log.Error(err, "failed to parse peer")
+				return err
+			}
+
 			switch {
-			case tdLibPeerID.IsChannel():
-				users, total, err := r.client.UserService.GetUsersFromChannel(cmd.Context(), tdLibPeerID.ToPlain(), telegram.QuerySearch(userQuery))
+			case peer.TDLibPeerID().IsChannel():
+				users, total, err := r.client.UserService.GetUsers(cmd.Context(), peer, telegram.QuerySearch(userQuery))
 				if err != nil {
 					r.log.Error(err, "failed to get users")
 					return err
@@ -132,11 +122,9 @@ func (r *Root) newPeerCmd() *cobra.Command {
 
 				return renderer.RenderUserTableAsync(cmd.Context(), users, total)
 
-			case tdLibPeerID.IsChat() || tdLibPeerID.IsUser():
+			default:
 				return fmt.Errorf("unsupported peer type")
 			}
-
-			return nil
 		},
 	}
 
@@ -151,15 +139,9 @@ func (r *Root) newPeerCmd() *cobra.Command {
 			"prompt_suggest": "any",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tdLibPeerID, err := r.parseTDLibPeerID(args[0])
+			peer, err := r.resolvePeer(cmd.Context(), args[0])
 			if err != nil {
-				r.log.Error(err, "failed to convert peer ID")
-				return err
-			}
-
-			peer, err := r.client.PeerService.ResolveTDLibID(cmd.Context(), tdLibPeerID)
-			if err != nil {
-				r.log.Error(err, "failed to resolve peer")
+				r.log.Error(err, "failed to parse peer")
 				return err
 			}
 

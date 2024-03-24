@@ -375,7 +375,7 @@ func (c *Client) ExtractPeer(ctx context.Context, ent peer.Entities, peerID tg.P
 func (c *Client) ResolvePeer(ctx context.Context, from string) (peers.Peer, error) {
 	id, err := strconv.ParseInt(from, 10, 64)
 	if err != nil {
-		p, err := c.peerMgr.Resolve(ctx, from)
+		p, err := c.PeerService.Resolve(ctx, from)
 		if err != nil {
 			return nil, err
 		}
@@ -383,18 +383,7 @@ func (c *Client) ResolvePeer(ctx context.Context, from string) (peers.Peer, erro
 		return p, nil
 	}
 
-	var p peers.Peer
-	if p, err = c.peerMgr.ResolveChannelID(ctx, id); err == nil {
-		return p, nil
-	}
-	if p, err = c.peerMgr.ResolveUserID(ctx, id); err == nil {
-		return p, nil
-	}
-	if p, err = c.peerMgr.ResolveChatID(ctx, id); err == nil {
-		return p, nil
-	}
-
-	return nil, fmt.Errorf("failed to get result from %d：%v", id, err)
+	return c.PeerService.ResolveID(ctx, id)
 }
 
 func (c *Client) CacheDialog(ctx context.Context, elem dialogs.Elem) error {

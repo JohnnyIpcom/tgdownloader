@@ -148,11 +148,20 @@ func (r *Root) downloadFilesFromMessage(ctx context.Context, peer peers.Peer, ms
 	return r.downloadFiles(ctx, makeChannelFromSlice(ctx, files), opts)
 }
 
-func (r *Root) parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {
+func parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {
 	parsed, err := strconv.ParseUint(strings.ToLower(strings.TrimPrefix(peerID, "0x")), 16, 64)
 	if err != nil {
 		return 0, err
 	}
 
 	return constant.TDLibPeerID(parsed), nil
+}
+
+func (r *Root) resolvePeer(ctx context.Context, arg string) (peers.Peer, error) {
+	tdLibPeerID, err := parseTDLibPeerID(arg)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.client.PeerService.ResolveTDLibID(ctx, tdLibPeerID)
 }

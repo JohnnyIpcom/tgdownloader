@@ -24,15 +24,9 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 			"prompt_suggest": "any",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tdLibPeerID, err := r.parseTDLibPeerID(args[0])
+			peer, err := r.resolvePeer(cmd.Context(), args[0])
 			if err != nil {
-				r.log.Error(err, "failed to convert user ID")
-				return err
-			}
-
-			peer, err := r.client.PeerService.ResolveTDLibID(cmd.Context(), tdLibPeerID)
-			if err != nil {
-				r.log.Error(err, "failed to resolve peer")
+				r.log.Error(err, "failed to parse peer")
 				return err
 			}
 
@@ -56,15 +50,9 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 			"prompt_suggest": "any",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tdLibPeerID, err := r.parseTDLibPeerID(args[0])
+			peer, err := r.resolvePeer(cmd.Context(), args[0])
 			if err != nil {
-				r.log.Error(err, "failed to convert user ID")
-				return err
-			}
-
-			peer, err := r.client.PeerService.ResolveTDLibID(cmd.Context(), tdLibPeerID)
-			if err != nil {
-				r.log.Error(err, "failed to resolve peer")
+				r.log.Error(err, "failed to parse peer")
 				return err
 			}
 
