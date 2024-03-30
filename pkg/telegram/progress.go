@@ -1,28 +1,23 @@
 package telegram
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 type Tracker interface {
 	Fail()
 	Done()
 }
 
-type ProgressRenderer interface {
-	NewTracker(message string) Tracker
-	Wait()
-	Stop()
+type Progress interface {
+	Tracker(message string) Tracker
+	Wait(ctx context.Context)
 }
 
-type progressRenderer struct{}
+type progress struct{}
 
-func (r *progressRenderer) NewTracker(message string) Tracker {
-	fmt.Println(message)
-	return &tracker{}
-}
-
-func (r *progressRenderer) Wait() {}
-
-func (r *progressRenderer) Stop() {}
+var _ Progress = (*progress)(nil)
 
 type tracker struct{}
 
@@ -33,3 +28,10 @@ func (t *tracker) Fail() {
 func (t *tracker) Done() {
 	fmt.Println("Done")
 }
+
+func (r *progress) Tracker(message string) Tracker {
+	fmt.Println(message)
+	return &tracker{}
+}
+
+func (r *progress) Wait(ctx context.Context) {}

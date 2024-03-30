@@ -1,6 +1,7 @@
 package renderer
 
 import (
+	"context"
 	"os"
 
 	"github.com/gotd/td/telegram/peers"
@@ -8,7 +9,7 @@ import (
 )
 
 // RenderPeerTable renders a list of peers.
-func RenderPeerTable(peers []peers.Peer) string {
+func RenderPeerTable(peers []peers.Peer) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAutoIndex(true)
@@ -39,5 +40,9 @@ func RenderPeerTable(peers []peers.Peer) string {
 		)
 	}
 
-	return t.Render()
+	t.Render()
+}
+
+func RenderPeerTableAsync(ctx context.Context, u <-chan peers.Peer, total int) error {
+	return renderAsync(ctx, u, "Fetching peers...", total, RenderPeerTable)
 }

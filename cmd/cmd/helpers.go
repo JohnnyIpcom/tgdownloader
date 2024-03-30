@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -79,14 +80,28 @@ func (r *Root) downloadFilesFromNewMessages(ctx context.Context, peer peers.Peer
 	return r.downloadFiles(ctx, files, opts)
 }
 
+type trackerAdapter struct {
+	renderer.Progress
+}
+
+var _ downloader.Tracker = (*trackerAdapter)(nil)
+
+func (pa *trackerAdapter) WrapWriter(w io.Writer, msg string, size int64) downloader.TrackedWriter {
+	return pa.BytesTracker(w, msg, size)
+}
+
+func newTrackerAdapter(p renderer.Progress) *trackerAdapter {
+	return &trackerAdapter{p}
+}
+
 func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, opts downloadOptions) error {
-	tracker := renderer.NewDownloadTracker()
-	defer tracker.Stop()
+	p := renderer.NewProgress()
+	p.EnablePS(ctx)
 
 	var downloaderOptions []downloader.Option
 	downloaderOptions = append(downloaderOptions, downloader.WithRewrite(opts.rewrite))
 	downloaderOptions = append(downloaderOptions, downloader.WithDryRun(opts.dryRun))
-	downloaderOptions = append(downloaderOptions, downloader.WithTracker(tracker))
+	downloaderOptions = append(downloaderOptions, downloader.WithTracker(newTrackerAdapter(p)))
 
 	d, err := r.newDownloader(downloaderOptions...)
 	if err != nil {
@@ -114,7 +129,7 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 
 	d.Start(ctx)
 	d.AddDownloadQueue(ctx, queue)
-	return d.Stop()
+	return d.Stop(ctx)
 }
 
 func makeChannelFromSlice(ctx context.Context, files []*telegram.File) <-chan telegram.File {

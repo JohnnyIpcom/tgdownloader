@@ -3,12 +3,9 @@ package renderer
 import (
 	"context"
 	"os"
-	"time"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
-	"golang.org/x/sync/errgroup"
 )
 
 type FilterDialogFunc func(telegram.Dialog) bool
@@ -64,71 +61,7 @@ func RenderDialogsTable(dialogs []telegram.Dialog, filterFuncs ...FilterDialogFu
 }
 
 func RenderDialogsTableAsync(ctx context.Context, d <-chan telegram.Dialog, total int, filterFunc ...FilterDialogFunc) error {
-	pw := progress.NewWriter()
-	pw.SetAutoStop(true)
-	pw.SetTrackerLength(25)
-	pw.SetTrackerPosition(progress.PositionRight)
-	pw.SetSortBy(progress.SortByPercentDsc)
-	pw.SetStyle(progress.StyleDefault)
-	pw.SetUpdateFrequency(time.Millisecond * 100)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.PercentFormat = "%4.1f%%"
-	pw.Style().Visibility.ETA = true
-	pw.Style().Visibility.ETAOverall = true
-
-	defer func() {
-		for pw.IsRenderInProgress() {
-			if pw.LengthActive() == 0 {
-				pw.Stop()
-				return
-			}
-
-			time.Sleep(time.Millisecond * 100)
-		}
-	}()
-
-	go pw.Render()
-
-	tracker := &progress.Tracker{
-		Total:   int64(total),
-		Message: "Fetching dialogs",
-		Units:   progress.UnitsDefault,
-	}
-
-	pw.AppendTracker(tracker)
-	var dialogs []telegram.Dialog
-
-	defer func() {
-		for pw.IsRenderInProgress() {
-			time.Sleep(time.Millisecond)
-		}
-
+	return renderAsync(ctx, d, "Fetching dialogs...", total, func(dialogs []telegram.Dialog) {
 		RenderDialogsTable(dialogs, filterFunc...)
-	}()
-
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-
-			case dialog, ok := <-d:
-				if !ok {
-					return nil
-				}
-
-				tracker.Increment(1)
-				dialogs = append(dialogs, dialog)
-			}
-		}
 	})
-
-	if err := g.Wait(); err != nil {
-		tracker.MarkAsErrored()
-		return err
-	}
-
-	tracker.MarkAsDone()
-	return nil
 }

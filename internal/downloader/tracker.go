@@ -1,6 +1,9 @@
 package downloader
 
-import "io"
+import (
+	"context"
+	"io"
+)
 
 type TrackedWriter interface {
 	io.Writer
@@ -11,7 +14,7 @@ type TrackedWriter interface {
 
 type Tracker interface {
 	WrapWriter(w io.Writer, msg string, size int64) TrackedWriter
-	Stop()
+	Wait(ctx context.Context)
 }
 
 type nullTrackedWriter struct {
@@ -36,4 +39,4 @@ func (nt *nullTracker) WrapWriter(w io.Writer, msg string, size int64) TrackedWr
 	return &nullTrackedWriter{w: w}
 }
 
-func (nt *nullTracker) Stop() {}
+func (nt *nullTracker) Wait(ctx context.Context) {}

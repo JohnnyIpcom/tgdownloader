@@ -29,7 +29,7 @@ type Root struct {
 	version   string
 	verbosity string
 	stopFunc  telegram.StopFunc
-	progress  telegram.ProgressRenderer
+	//progress  telegram.Progress
 
 	cfg    config.Config
 	client *telegram.Client
@@ -67,16 +67,16 @@ func NewRoot(version string) (*Root, error) {
 		return nil, err
 	}
 
-	progress := renderer.NewProgressRenderer()
-	client.SetProgressRenderer(progress)
+	//progress := renderer.NewProgress()
+	//client.SetProgressRenderer(progress)
 	return &Root{
-		version:  version,
-		cfg:      cfg,
-		client:   client,
-		zap:      zap,
-		log:      zapr.NewLogger(zap),
-		level:    level,
-		progress: progress,
+		version: version,
+		cfg:     cfg,
+		client:  client,
+		zap:     zap,
+		log:     zapr.NewLogger(zap),
+		level:   level,
+		//progress: progress,
 	}, nil
 }
 
@@ -97,9 +97,11 @@ func (r *Root) newVersionCmd() *cobra.Command {
 // newRootCmd returns the root command.
 func (r *Root) newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "tgdownloader",
-		Short: "Telegram CLI Downloader",
-		Long:  "Telegram CLI Downloader is a CLI tool to download Telegram files from a chat, channel or user, even if this chat, channel or user is not in private mode.",
+		Use:           "tgdownloader",
+		Short:         "Telegram CLI Downloader",
+		Long:          "Telegram CLI Downloader is a CLI tool to download Telegram files from a chat, channel or user, even if this chat, channel or user is not in private mode.",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.HelpFunc()(cmd, []string{})
 		},
@@ -171,7 +173,7 @@ func (r *Root) Execute() error {
 func (r *Root) Close() error {
 	r.Disconnect()
 
-	r.progress.Stop()
+	//r.progress.Stop()
 
 	renderer.RenderBye()
 	return r.zap.Sync()

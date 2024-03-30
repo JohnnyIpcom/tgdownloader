@@ -131,10 +131,11 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 }
 
 // Stop stops the pool of workers and waits for them to finish.
-func (p *Downloader) Stop() error {
+func (p *Downloader) Stop(ctx context.Context) error {
 	p.queueWG.Wait()
 
 	close(p.files)
+	p.settings.Tracker.Wait(ctx)
 	return p.workerG.Wait()
 }
 

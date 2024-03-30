@@ -44,7 +44,7 @@ type Client struct {
 	updMgr     *updates.Manager
 	dispatcher tg.UpdateDispatcher
 	storage    storage.PeerStorage
-	progress   ProgressRenderer
+	progress   Progress
 
 	common service // Reuse a single struct instead of allocating one for each service on the heap
 
@@ -133,7 +133,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		updMgr:     gaps,
 		dispatcher: dispatcher,
 		storage:    peerStorage,
-		progress:   &progressRenderer{},
+		progress:   &progress{},
 	}
 
 	// Set up services
@@ -159,12 +159,12 @@ func (c *codeAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode)
 	return strings.TrimSpace(code), nil
 }
 
-func (c *Client) SetProgressRenderer(r ProgressRenderer) {
+func (c *Client) SetProgress(r Progress) {
 	c.progress = r
 }
 
 func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
-	authTracker := c.progress.NewTracker("Authentication")
+	authTracker := c.progress.Tracker("Authentication")
 	flow := auth.NewFlow(
 		auth.Constant(
 			c.config.GetString("phone"),
@@ -179,14 +179,14 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	}
 
 	authTracker.Done()
-	c.progress.Wait()
+	c.progress.Wait(ctx)
 
 	user, err := c.client.Self(ctx)
 	if err != nil {
 		return func() error { return nil }, fmt.Errorf("fetch self: %w", err)
 	}
 
-	updateTracker := c.progress.NewTracker("Update tracker")
+	updateTracker := c.progress.Tracker("Update tracker")
 
 	updateStarted := make(chan struct{})
 	authOptions := updates.AuthOptions{
@@ -194,7 +194,7 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 		Forget: true,
 		OnStart: func(ctx context.Context) {
 			updateTracker.Done()
-			c.progress.Wait()
+			c.progress.Wait(ctx)
 			close(updateStarted)
 		},
 	}
@@ -209,7 +209,7 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 
 	<-updateStarted
 	return func() error {
-		logoutTracker := c.progress.NewTracker("Logout")
+		logoutTracker := c.progress.Tracker("Logout")
 		c.updMgr.Reset()
 		logoutTracker.Done()
 		return nil
