@@ -22,10 +22,9 @@
             "mode": "auto",
             "program": "${workspaceFolder}/main.go",
             "args": [
-                "channel",
                 "download",
                 "history",
-                "1452414804",
+                "0xFFFFFF16B82BB3E8",
             ]
         },
         {

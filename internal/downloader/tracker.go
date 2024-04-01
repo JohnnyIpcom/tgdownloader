@@ -14,7 +14,7 @@ type TrackedWriter interface {
 
 type Tracker interface {
 	WrapWriter(w io.Writer, msg string, size int64) TrackedWriter
-	Wait(ctx context.Context)
+	WaitAndStop(ctx context.Context)
 }
 
 type nullTrackedWriter struct {
@@ -39,4 +39,4 @@ func (nt *nullTracker) WrapWriter(w io.Writer, msg string, size int64) TrackedWr
 	return &nullTrackedWriter{w: w}
 }
 
-func (nt *nullTracker) Wait(ctx context.Context) {}
+func (nt *nullTracker) WaitAndStop(ctx context.Context) {}

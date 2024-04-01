@@ -179,7 +179,6 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	}
 
 	authTracker.Done()
-	c.progress.Wait(ctx)
 
 	user, err := c.client.Self(ctx)
 	if err != nil {
@@ -194,7 +193,6 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 		Forget: true,
 		OnStart: func(ctx context.Context) {
 			updateTracker.Done()
-			c.progress.Wait(ctx)
 			close(updateStarted)
 		},
 	}

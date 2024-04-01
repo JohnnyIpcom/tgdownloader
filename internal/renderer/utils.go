@@ -109,7 +109,7 @@ func renderAsync[T any](
 	}
 
 	t.Done()
-	p.Wait(ctx)
+	p.WaitAndStop(ctx)
 
 	renderSync(collection)
 	return nil

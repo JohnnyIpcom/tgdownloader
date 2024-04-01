@@ -135,7 +135,7 @@ func (p *Downloader) Stop(ctx context.Context) error {
 	p.queueWG.Wait()
 
 	close(p.files)
-	p.settings.Tracker.Wait(ctx)
+	p.settings.Tracker.WaitAndStop(ctx)
 	return p.workerG.Wait()
 }
 

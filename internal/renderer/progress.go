@@ -14,7 +14,7 @@ import (
 type Progress interface {
 	progress.Writer
 	EnablePS(ctx context.Context)
-	Wait(ctx context.Context)
+	WaitAndStop(ctx context.Context)
 
 	UnitsTracker(message string, total int) Tracker
 	BytesTracker(writer io.Writer, message string, total int64) BytesTracker
@@ -66,7 +66,7 @@ func (p *progressImpl) EnablePS(ctx context.Context) {
 	}()
 }
 
-func (p *progressImpl) Wait(ctx context.Context) {
+func (p *progressImpl) WaitAndStop(ctx context.Context) {
 	for p.IsRenderInProgress() {
 		if p.LengthActive() == 0 {
 			p.Stop()

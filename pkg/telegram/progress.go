@@ -12,7 +12,7 @@ type Tracker interface {
 
 type Progress interface {
 	Tracker(message string) Tracker
-	Wait(ctx context.Context)
+	WaitAndStop(ctx context.Context)
 }
 
 type progress struct{}
@@ -34,4 +34,4 @@ func (r *progress) Tracker(message string) Tracker {
 	return &tracker{}
 }
 
-func (r *progress) Wait(ctx context.Context) {}
+func (r *progress) WaitAndStop(ctx context.Context) {}
