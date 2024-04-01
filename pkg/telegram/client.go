@@ -179,6 +179,7 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	}
 
 	authTracker.Done()
+	c.progress.Wait(ctx)
 
 	user, err := c.client.Self(ctx)
 	if err != nil {
@@ -206,10 +207,12 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	}()
 
 	<-updateStarted
+	c.progress.Wait(ctx)
 	return func() error {
 		logoutTracker := c.progress.Tracker("Logout")
 		c.updMgr.Reset()
 		logoutTracker.Done()
+		c.progress.Wait(ctx)
 		return nil
 	}, nil
 }

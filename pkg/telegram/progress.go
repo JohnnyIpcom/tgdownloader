@@ -12,6 +12,7 @@ type Tracker interface {
 
 type Progress interface {
 	Tracker(message string) Tracker
+	Wait(ctx context.Context)
 	WaitAndStop(ctx context.Context)
 }
 
@@ -33,5 +34,7 @@ func (r *progress) Tracker(message string) Tracker {
 	fmt.Println(message)
 	return &tracker{}
 }
+
+func (r *progress) Wait(ctx context.Context) {}
 
 func (r *progress) WaitAndStop(ctx context.Context) {}
