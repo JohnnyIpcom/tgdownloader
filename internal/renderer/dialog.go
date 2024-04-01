@@ -3,17 +3,14 @@ package renderer
 import (
 	"context"
 	"os"
-	"time"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
-	"golang.org/x/sync/errgroup"
 )
 
-type FilterDialogFunc func(telegram.DialogInfo) bool
+type FilterDialogFunc func(telegram.Dialog) bool
 
-func RenderDialogsTable(dialogs []telegram.DialogInfo, filterFuncs ...FilterDialogFunc) string {
+func RenderDialogsTable(dialogs []telegram.Dialog, filterFuncs ...FilterDialogFunc) string {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAutoIndex(true)
@@ -21,9 +18,13 @@ func RenderDialogsTable(dialogs []telegram.DialogInfo, filterFuncs ...FilterDial
 		table.Row{
 			"Name",
 			"ID",
+			"TDLib Peer ID",
 			"Type",
 		},
 	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		getVisibleNameConfig("Name"),
+	})
 
 	t.SortBy([]table.SortBy{
 		{Name: "Name", Mode: table.Asc},
@@ -47,9 +48,10 @@ func RenderDialogsTable(dialogs []telegram.DialogInfo, filterFuncs ...FilterDial
 		if !skip {
 			t.AppendRow(
 				table.Row{
-					ReplaceAllEmojis(dialog.Peer.Name),
-					dialog.Peer.ID,
-					dialog.Peer.Type.String(),
+					getVisibleName(dialog.Peer),
+					dialog.Peer.ID(),
+					RenderTDLibPeerID(dialog.Peer.TDLibPeerID()),
+					getPeerTypename(dialog.Peer),
 				},
 			)
 		}
@@ -58,61 +60,8 @@ func RenderDialogsTable(dialogs []telegram.DialogInfo, filterFuncs ...FilterDial
 	return t.Render()
 }
 
-func RenderDialogsTableAsync(ctx context.Context, d <-chan telegram.DialogInfo, total int, filterFunc ...FilterDialogFunc) error {
-	pw := progress.NewWriter()
-	pw.SetAutoStop(true)
-	pw.SetTrackerLength(25)
-	pw.SetTrackerPosition(progress.PositionRight)
-	pw.SetSortBy(progress.SortByPercentDsc)
-	pw.SetStyle(progress.StyleDefault)
-	pw.SetUpdateFrequency(time.Millisecond * 100)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.PercentFormat = "%4.1f%%"
-	pw.Style().Visibility.ETA = true
-	pw.Style().Visibility.ETAOverall = true
-
-	go pw.Render()
-
-	tracker := &progress.Tracker{
-		Total:   int64(total),
-		Message: "Fetching dialogs",
-		Units:   progress.UnitsDefault,
-	}
-
-	pw.AppendTracker(tracker)
-	var dialogs []telegram.DialogInfo
-
-	defer func() {
-		for pw.IsRenderInProgress() {
-			time.Sleep(time.Millisecond)
-		}
-
+func RenderDialogsTableAsync(ctx context.Context, d <-chan telegram.Dialog, total int, filterFunc ...FilterDialogFunc) error {
+	return renderAsync(ctx, d, "Fetching dialogs...", total, func(dialogs []telegram.Dialog) {
 		RenderDialogsTable(dialogs, filterFunc...)
-	}()
-
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-
-			case dialog, ok := <-d:
-				if !ok {
-					return nil
-				}
-
-				tracker.Increment(1)
-				dialogs = append(dialogs, dialog)
-			}
-		}
 	})
-
-	if err := g.Wait(); err != nil {
-		tracker.MarkAsErrored()
-		return err
-	}
-
-	tracker.MarkAsDone()
-	return nil
 }

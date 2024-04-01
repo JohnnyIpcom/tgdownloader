@@ -5,31 +5,33 @@ import (
 	"os"
 	"time"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
+	"github.com/gotd/td/telegram/peers"
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"golang.org/x/sync/errgroup"
 )
 
 // RenderUser renders a single user.
-func RenderUser(user telegram.UserInfo) string {
+func RenderUser(user peers.User) string {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.AppendHeader(
 		table.Row{
 			"ID",
+			"TDLIB Peer ID",
 			"Username",
-			"First Name",
-			"Last Name",
+			"Visible Name",
 		},
 	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		getVisibleNameConfig("Visible Name"),
+	})
 
 	t.AppendRow(
 		table.Row{
-			user.ID,
-			user.Username,
-			ReplaceAllEmojis(user.FirstName),
-			ReplaceAllEmojis(user.LastName),
+			user.ID(),
+			RenderTDLibPeerID(user.TDLibPeerID()),
+			getUsername(user),
+			getVisibleName(user),
 		},
 	)
 
@@ -37,20 +39,65 @@ func RenderUser(user telegram.UserInfo) string {
 }
 
 // RenderUserAsync renders a user one by one asynchronously.
-func RenderUserAsync(ctx context.Context, u <-chan telegram.UserInfo) error {
+func RenderUsersAsync(ctx context.Context, u <-chan peers.User) error {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(
+		table.Row{
+			"ID",
+			"TDLIB Peer ID",
+			"Username",
+			"Visible Name",
+		},
+	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		{
+			Name:     "ID",
+			WidthMin: 10,
+			WidthMax: 10,
+		},
+		{
+			Name:     "Username",
+			WidthMin: 20,
+			WidthMax: 20,
+		},
+		getVisibleNameConfig("Visible Name"),
+	})
+
+	ticker := time.NewTicker(time.Second * 1)
+
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		for {
 			select {
 			case <-ctx.Done():
+				if t.Length() > 0 {
+					t.Render()
+				}
 				return ctx.Err()
+
+			case <-ticker.C:
+				if t.Length() > 0 {
+					t.Render()
+					t.ResetRows() // Reset rows to avoid duplicates
+				}
 
 			case user, ok := <-u:
 				if !ok {
+					if t.Length() > 0 {
+						t.Render()
+					}
 					return nil
 				}
 
-				RenderUser(user)
+				t.AppendRow(
+					table.Row{
+						user.ID(),
+						RenderTDLibPeerID(user.TDLibPeerID()),
+						getUsername(user),
+						getVisibleName(user),
+					},
+				)
 			}
 		}
 	})
@@ -59,18 +106,21 @@ func RenderUserAsync(ctx context.Context, u <-chan telegram.UserInfo) error {
 }
 
 // RenderUserTable renders a table of users.
-func RenderUserTable(users []telegram.UserInfo) string {
+func RenderUserTable(users []peers.User) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAutoIndex(true)
 	t.AppendHeader(
 		table.Row{
 			"ID",
+			"TDLIB Peer ID",
 			"Username",
-			"First Name",
-			"Last Name",
+			"Visible Name",
 		},
 	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		getVisibleNameConfig("Visible Name"),
+	})
 
 	t.SortBy([]table.SortBy{
 		{Name: "ID", Mode: table.AscNumeric},
@@ -79,73 +129,18 @@ func RenderUserTable(users []telegram.UserInfo) string {
 	for _, user := range users {
 		t.AppendRow(
 			table.Row{
-				user.ID,
-				user.Username,
-				ReplaceAllEmojis(user.FirstName),
-				ReplaceAllEmojis(user.LastName),
+				user.ID(),
+				RenderTDLibPeerID(user.TDLibPeerID()),
+				getUsername(user),
+				getVisibleName(user),
 			},
 		)
 	}
 
-	return t.Render()
+	t.Render()
 }
 
 // RenderUserTableAsync renders a table of users asynchronously.
-func RenderUserTableAsync(ctx context.Context, u <-chan telegram.UserInfo, total int) error {
-	pw := progress.NewWriter()
-	pw.SetAutoStop(true)
-	pw.SetTrackerLength(25)
-	pw.SetTrackerPosition(progress.PositionRight)
-	pw.SetSortBy(progress.SortByPercentDsc)
-	pw.SetStyle(progress.StyleDefault)
-	pw.SetUpdateFrequency(time.Millisecond * 100)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.PercentFormat = "%4.1f%%"
-	pw.Style().Visibility.ETA = true
-	pw.Style().Visibility.ETAOverall = true
-
-	go pw.Render()
-
-	tracker := &progress.Tracker{
-		Total:   int64(total),
-		Message: "Fetching users",
-		Units:   progress.UnitsDefault,
-	}
-
-	pw.AppendTracker(tracker)
-	var users []telegram.UserInfo
-
-	defer func() {
-		for pw.IsRenderInProgress() {
-			time.Sleep(time.Millisecond)
-		}
-
-		RenderUserTable(users)
-	}()
-
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-
-			case user, ok := <-u:
-				if !ok {
-					return nil
-				}
-
-				tracker.Increment(1)
-				users = append(users, user)
-			}
-		}
-	})
-
-	if err := g.Wait(); err != nil {
-		tracker.MarkAsErrored()
-		return err
-	}
-
-	tracker.MarkAsDone()
-	return nil
+func RenderUserTableAsync(ctx context.Context, u <-chan peers.User, total int) error {
+	return renderAsync(ctx, u, "Fetching users...", total, RenderUserTable)
 }

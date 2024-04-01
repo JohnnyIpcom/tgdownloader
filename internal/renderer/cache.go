@@ -3,95 +3,62 @@ package renderer
 import (
 	"context"
 	"os"
-	"time"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
+	"github.com/gotd/td/constant"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
-	"golang.org/x/sync/errgroup"
 )
 
-func RenderCachedPeerTable(cacheInfos []telegram.PeerCacheInfo) {
+func RenderCachedPeerTable(peers []telegram.CachedPeer) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAutoIndex(true)
 	t.AppendHeader(
 		table.Row{
 			"ID",
+			"TDLib Peer ID",
+			"Type",
 			"Name",
 			"Access Hash",
 		},
 	)
+	t.SetColumnConfigs([]table.ColumnConfig{
+		getVisibleNameConfig("Name"),
+	})
 
 	t.SortBy([]table.SortBy{
 		{Name: "ID", Mode: table.AscNumeric},
 	})
 
-	for _, cacheInfo := range cacheInfos {
+	for _, peer := range peers {
+		var tdLibPeerID constant.TDLibPeerID
+		peerType := "Unknown"
+		switch {
+		case peer.User != nil:
+			peerType = "User"
+			tdLibPeerID.User(peer.User.ID)
+
+		case peer.Chat != nil:
+			peerType = "Chat"
+			tdLibPeerID.Chat(peer.Chat.ID)
+
+		case peer.Channel != nil:
+			peerType = "Channel"
+			tdLibPeerID.Channel(peer.Channel.ID)
+		}
+
 		t.AppendRow(table.Row{
-			cacheInfo.ID,
-			ReplaceAllEmojis(cacheInfo.Peer.Name),
-			cacheInfo.AccessHash,
+			peer.Key.ID,
+			RenderTDLibPeerID(tdLibPeerID),
+			peerType,
+			RenderName(peer.Name()),
+			RenderAccessHash(peer.Key.AccessHash),
 		})
 	}
 
 	t.Render()
 }
 
-func RenderCachedPeerTableAsync(ctx context.Context, d <-chan telegram.PeerCacheInfo) error {
-	pw := progress.NewWriter()
-	pw.SetAutoStop(true)
-	pw.SetTrackerLength(25)
-	pw.SetTrackerPosition(progress.PositionRight)
-	pw.SetSortBy(progress.SortByPercentDsc)
-	pw.SetStyle(progress.StyleDefault)
-	pw.SetUpdateFrequency(time.Millisecond * 100)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.PercentFormat = "%4.1f%%"
-	pw.Style().Visibility.ETA = true
-	pw.Style().Visibility.ETAOverall = true
-
-	go pw.Render()
-
-	tracker := &progress.Tracker{
-		Message: "Fetching cached peers...",
-		Units:   progress.UnitsDefault,
-	}
-
-	pw.AppendTracker(tracker)
-	var cachedInfos []telegram.PeerCacheInfo
-
-	defer func() {
-		for pw.IsRenderInProgress() {
-			time.Sleep(time.Millisecond)
-		}
-
-		RenderCachedPeerTable(cachedInfos)
-	}()
-
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-
-			case cacheInfo, ok := <-d:
-				if !ok {
-					return nil
-				}
-
-				tracker.Increment(1)
-				cachedInfos = append(cachedInfos, cacheInfo)
-			}
-		}
-	})
-
-	if err := g.Wait(); err != nil {
-		tracker.MarkAsErrored()
-		return err
-	}
-
-	tracker.MarkAsDone()
-	return nil
+func RenderCachedPeerTableAsync(ctx context.Context, d <-chan telegram.CachedPeer, total int) error {
+	return renderAsync(ctx, d, "Fetching cached peers...", total, RenderCachedPeerTable)
 }

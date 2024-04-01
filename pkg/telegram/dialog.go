@@ -3,32 +3,33 @@ package telegram
 import (
 	"context"
 
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/dialogs"
 )
 
-type DialogInfo struct {
-	Peer PeerInfo
-	err  error
+type Dialog struct {
+	peers.Peer
+	err error
 }
 
-func (d DialogInfo) Err() error {
+func (d Dialog) Err() error {
 	return d.err
 }
 
 type DialogService interface {
-	GetAllDialogs(ctx context.Context) (<-chan DialogInfo, int, error)
+	GetAllDialogs(ctx context.Context) (<-chan Dialog, int, error)
 }
 
 type dialogService service
 
 var _ DialogService = (*dialogService)(nil)
 
-func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan DialogInfo, int, error) {
+func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan Dialog, int, error) {
 	queryBuilder := query.GetDialogs(s.client.API())
 	queryBuilder.BatchSize(100)
 
-	dialogsChan := make(chan DialogInfo)
+	dialogsChan := make(chan Dialog)
 
 	count, err := queryBuilder.Count(ctx)
 	if err != nil {
@@ -39,17 +40,15 @@ func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan DialogInfo, i
 		defer close(dialogsChan)
 
 		queryBuilder.ForEach(ctx, func(ctx context.Context, elem dialogs.Elem) error {
-			if err := s.client.storeDialog(ctx, elem); err != nil {
-				return err
-			}
-
 			peer, err := s.client.peerMgr.FromInputPeer(ctx, elem.Peer)
 			if err != nil {
-				dialogsChan <- DialogInfo{err: err}
+				dialogsChan <- Dialog{err: err}
 				return nil
 			}
 
-			dialogsChan <- DialogInfo{Peer: getPeerInfoFromPeer(peer)}
+			s.client.CacheDialog(ctx, elem)
+
+			dialogsChan <- Dialog{Peer: peer}
 			return nil
 		})
 	}()

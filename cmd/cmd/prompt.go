@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,26 +16,37 @@ import (
 )
 
 func (r *Root) getPeerSuggestions(ctx context.Context, word string, peerType string) []prompt.Suggest {
-	var filter telegram.PeerCacheInfoFilter
+	var filter telegram.CachedPeerFilter
 	switch peerType {
 	case "user":
-		filter = telegram.OnlyUsersPeerCacheInfoFilter()
+		filter = telegram.OnlyUsersCachedPeerFilter()
 	case "chat":
-		filter = telegram.OnlyChatsPeerCacheInfoFilter()
+		filter = telegram.OnlyChatsCachedPeerFilter()
 	case "channel":
-		filter = telegram.OnlyChannelsPeerCacheInfoFilter()
+		filter = telegram.OnlyChannelsCachedPeerFilter()
+	case "chatorchannel":
+		filter = telegram.OrCachedPeerFilter(
+			telegram.OnlyChatsCachedPeerFilter(),
+			telegram.OnlyChannelsCachedPeerFilter(),
+		)
+	case "any":
+		filter = telegram.OrCachedPeerFilter(
+			telegram.OnlyUsersCachedPeerFilter(),
+			telegram.OnlyChatsCachedPeerFilter(),
+			telegram.OnlyChannelsCachedPeerFilter(),
+		)
 	}
 
-	peers, err := r.client.CacheService.CollectPeersFromCache(ctx, filter)
+	peers, err := r.client.CacheService.GetCachedPeers(ctx, filter)
 	if err != nil {
-		return nil
+		return []prompt.Suggest{}
 	}
 
-	suggestions := make([]prompt.Suggest, 0, len(peers))
+	var suggestions []prompt.Suggest
 	for _, peer := range peers {
 		suggestions = append(suggestions, prompt.Suggest{
-			Text:        strconv.FormatInt(peer.ID, 10),
-			Description: renderer.ReplaceAllEmojis(peer.Peer.Name),
+			Text:        renderer.RenderTDLibPeerID(peer.TDLibPeerID()),
+			Description: renderer.RenderName(peer.Name()),
 		})
 	}
 
@@ -86,13 +96,13 @@ func (r *Root) newExecutor(rootCmd *cobra.Command) prompt.Executor {
 	return func(in string) {
 		args, err := s.Split(in)
 		if err != nil {
-			r.renderError(err)
+			renderer.RenderError(err)
 			return
 		}
 
 		rootCmd.SetArgs(args)
 		if err := rootCmd.ExecuteContext(rootCmd.Context()); err != nil {
-			r.renderError(err)
+			renderer.RenderError(err)
 		}
 	}
 }
@@ -152,7 +162,7 @@ func (r *Root) newCompleter(rootCmd *cobra.Command) prompt.Completer {
 		suggest, ok := currCmd.Annotations["prompt_suggest"]
 		if ok {
 			switch suggest {
-			case "user", "chat", "channel":
+			case "user", "chat", "channel", "chatorchannel", "any":
 				return r.getPeerSuggestions(currCmd.Context(), word, suggest)
 
 			default:
@@ -178,14 +188,11 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 	rootCmd.DisableSuggestions = true
 
 	rootCmd.AddCommand(&cobra.Command{
-		Use:     "exit",
-		Aliases: []string{"quit"},
-		Short:   "Exit the prompt",
-		Long:    `Exit the prompt`,
+		Use:   "exit",
+		Short: "Exit the prompt",
+		Long:  `Exit the prompt`,
 		Run: func(cmd *cobra.Command, args []string) {
-			r.stop()
-			r.renderBye()
-
+			r.Close()
 			os.Exit(0)
 		},
 	})
@@ -195,15 +202,23 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 		Short: "Start an interactive prompt",
 		Long:  `Start an interactive prompt`,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("Open prompt with autocompletion")
-			p := prompt.New(
+			if err := r.Connect(rootCmd.Context()); err != nil {
+				renderer.RenderError(err)
+				return
+			}
+
+			self, err := r.client.UserService.GetSelf(rootCmd.Context())
+			if err != nil {
+				renderer.RenderError(err)
+				return
+			}
+
+			prompt.New(
 				r.newExecutor(rootCmd),
 				r.newCompleter(rootCmd),
-				prompt.OptionPrefix(">> "),
+				prompt.OptionPrefix(fmt.Sprintf("%s> ", self.Raw().Username)),
 				prompt.OptionTitle("tgdownloader"),
-			)
-
-			p.Run()
+			).Run()
 		},
 	}
 

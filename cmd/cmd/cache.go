@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
+	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 
 	"github.com/spf13/cobra"
 )
@@ -20,26 +21,25 @@ func (r *Root) newCacheCmd() *cobra.Command {
 		Use:   "view",
 		Short: "view cache",
 		Long:  "view cache",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cachedPeers, err := r.client.CacheService.GetPeersFromCache(cmd.Context())
+			filterFuncs := []telegram.CachedPeerFilter{}
+			if len(args) > 0 {
+				filterFuncs = append(filterFuncs, telegram.NameCachedPeerFilter(args[0]))
+			}
+
+			cachedPeers, err := r.client.CacheService.GetCachedPeers(cmd.Context(), filterFuncs...)
 			if err != nil {
 				return err
 			}
 
-			return renderer.RenderCachedPeerTableAsync(cmd.Context(), cachedPeers)
-		},
-	}
-
-	cacheUpdateCmd := &cobra.Command{
-		Use:   "update",
-		Short: "update cache",
-		Long:  "update cache",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return r.client.CacheService.UpdateDialogCache(cmd.Context())
+			renderer.RenderCachedPeerTable(cachedPeers)
+			return nil
 		},
 	}
 
 	cacheCmd.AddCommand(cacheViewCmd)
-	cacheCmd.AddCommand(cacheUpdateCmd)
+
+	r.setupConnectionForCmd(cacheViewCmd)
 	return cacheCmd
 }

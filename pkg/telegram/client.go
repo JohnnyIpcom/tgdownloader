@@ -3,30 +3,27 @@ package telegram
 import (
 	"bufio"
 	"context"
-	"crypto/rsa"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 
-	"github.com/gotd/td/constant"
+	"github.com/gotd/contrib/bbolt"
+	"github.com/gotd/contrib/middleware/floodwait"
+	"github.com/gotd/contrib/middleware/ratelimit"
+	"github.com/gotd/contrib/storage"
 	"github.com/gotd/td/session"
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
-	"github.com/gotd/td/telegram/downloader"
+	"github.com/gotd/td/telegram/message/peer"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/telegram/updates/hook"
 	"github.com/gotd/td/tg"
-	"github.com/johnnyipcom/gotd-contrib/bbolt"
-	"github.com/johnnyipcom/gotd-contrib/middleware/floodwait"
-	"github.com/johnnyipcom/gotd-contrib/middleware/ratelimit"
-	"github.com/johnnyipcom/gotd-contrib/storage"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
-	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
-	"github.com/johnnyipcom/tgdownloader/pkg/key"
 	bboltdb "go.etcd.io/bbolt"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
@@ -42,11 +39,12 @@ type LogoutFunc func() error
 type Client struct {
 	config     config.Config
 	client     *tgclient.Client
+	logger     *zap.Logger
 	peerMgr    *peers.Manager
 	updMgr     *updates.Manager
-	downloader *downloader.Downloader
 	dispatcher tg.UpdateDispatcher
 	storage    storage.PeerStorage
+	progress   Progress
 
 	common service // Reuse a single struct instead of allocating one for each service on the heap
 
@@ -60,19 +58,27 @@ type Client struct {
 
 type service struct {
 	client *Client
-}
-
-func newPublicKey(key *rsa.PublicKey) tgclient.PublicKey {
-	return tgclient.PublicKey{
-		RSA: key,
-	}
+	logger *zap.Logger
 }
 
 // NewClient creates new Telegram client.
 func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	dispatcher := tg.NewUpdateDispatcher()
+
+	db, err := bboltdb.Open(cfg.GetString("cache.path"), 0600, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	peerStorage := bbolt.NewPeerStorage(db, []byte("peers"))
+
+	var handler tgclient.UpdateHandler = dispatcher
+	if peerStorage != nil {
+		handler = storage.UpdateHook(dispatcher, peerStorage)
+	}
+
 	gaps := updates.New(updates.Config{
-		Handler: dispatcher,
+		Handler: handler,
 		Logger:  log.Named("gaps"),
 	})
 
@@ -89,41 +95,28 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		},
 	}
 
-	var storage storage.PeerStorage
-	if cfg.IsSet("cache.path") {
-		db, err := bboltdb.Open(cfg.GetString("cache.path"), 0600, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		storage = bbolt.NewPeerStorage(db, []byte("peers"))
-	}
-
 	if cfg.IsSet("session.path") {
 		options.SessionStorage = &session.FileStorage{
 			Path: cfg.GetString("session.path"),
 		}
 	}
 
-	if cfg.IsSet("mtproto.public_keys") {
-		var keys []tgclient.PublicKey
+	keys, err := getPublicKeys(cfg)
+	if err != nil {
+		return nil, err
+	}
 
-		publicKeys := cfg.GetStringSlice("mtproto.public_keys")
-		for _, publicKey := range publicKeys {
-			publicKeyData, err := os.ReadFile(publicKey)
-			if err != nil {
-				return nil, err
-			}
-
-			k, err := key.ParsePublicKey(publicKeyData)
-			if err != nil {
-				return nil, err
-			}
-
-			keys = append(keys, newPublicKey(k))
-		}
-
+	if len(keys) > 0 {
 		options.PublicKeys = keys
+	}
+
+	clock, err := getClock(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if clock != nil {
+		options.Clock = clock
 	}
 
 	c := tgclient.NewClient(cfg.GetInt("app.id"), cfg.GetString("app.hash"), options)
@@ -135,15 +128,17 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	cli := &Client{
 		config:     cfg,
 		client:     c,
+		logger:     log,
 		peerMgr:    peerMgr,
 		updMgr:     gaps,
-		downloader: downloader.NewDownloader(),
 		dispatcher: dispatcher,
-		storage:    storage,
+		storage:    peerStorage,
+		progress:   &progress{},
 	}
 
 	// Set up services
 	cli.common.client = cli
+	cli.common.logger = log.Named("service")
 	cli.UserService = (*userService)(&cli.common)
 	cli.PeerService = (*peerService)(&cli.common)
 	cli.FileService = (*fileService)(&cli.common)
@@ -164,8 +159,12 @@ func (c *codeAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode)
 	return strings.TrimSpace(code), nil
 }
 
+func (c *Client) SetProgress(r Progress) {
+	c.progress = r
+}
+
 func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
-	fmt.Println("Authenticating...")
+	authTracker := c.progress.Tracker("Authentication")
 	flow := auth.NewFlow(
 		auth.Constant(
 			c.config.GetString("phone"),
@@ -175,30 +174,42 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	)
 
 	if err := c.client.Auth().IfNecessary(ctx, flow); err != nil {
+		authTracker.Fail()
 		return func() error { return nil }, fmt.Errorf("auth: %w", err)
 	}
+
+	authTracker.Done()
 
 	user, err := c.client.Self(ctx)
 	if err != nil {
 		return func() error { return nil }, fmt.Errorf("fetch self: %w", err)
 	}
 
-	username, _ := user.GetUsername()
-	fmt.Printf("Authenticated as '%s'\n", username)
+	updateTracker := c.progress.Tracker("Update tracker")
 
-	fmt.Println("Notifying updates manager...")
-	if err := c.updMgr.Auth(ctx, c.client.API(), user.GetID(), false, true); err != nil {
-		return func() error { return nil }, fmt.Errorf("auth updates: %w", err)
+	updateStarted := make(chan struct{})
+	authOptions := updates.AuthOptions{
+		IsBot:  true,
+		Forget: true,
+		OnStart: func(ctx context.Context) {
+			updateTracker.Done()
+			close(updateStarted)
+		},
 	}
 
-	fmt.Println("Done")
-	return func() error {
-		fmt.Println("\nLogging out...")
-		if err := c.updMgr.Logout(); err != nil {
-			return err
+	go func() {
+		updErr := c.updMgr.Run(ctx, c.client.API(), user.GetID(), authOptions)
+		if updErr != nil && !errors.Is(updErr, context.Canceled) {
+			updateTracker.Fail()
+			fmt.Printf("auth updates error: %s\n", err)
 		}
+	}()
 
-		fmt.Println("Done")
+	<-updateStarted
+	return func() error {
+		logoutTracker := c.progress.Tracker("Logout")
+		c.updMgr.Reset()
+		logoutTracker.Done()
 		return nil
 	}, nil
 }
@@ -218,9 +229,8 @@ func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 			}
 
 			defer func() {
-				logger := ctxlogger.FromContext(ctx)
 				if err := logout(); err != nil {
-					logger.Error("logout", zap.Error(err))
+					c.logger.Error("logout", zap.Error(err))
 				}
 			}()
 			close(initDone)
@@ -263,9 +273,8 @@ func (c *Client) Run(ctx context.Context, f func(context.Context, *Client) error
 		}
 
 		defer func() {
-			logger := ctxlogger.FromContext(ctx)
 			if err := logout(); err != nil {
-				logger.Error("logout", zap.Error(err))
+				c.logger.Error("logout", zap.Error(err))
 			}
 		}()
 
@@ -277,55 +286,136 @@ func (c *Client) API() *tg.Client {
 	return c.client.API()
 }
 
-func (c *Client) getInputPeer(ctx context.Context, ID constant.TDLibPeerID) (tg.InputPeerClass, error) {
-	if c.storage != nil {
-		if peer, err := c.storage.Resolve(ctx, strconv.FormatInt(ID.ToPlain(), 10)); err == nil {
-			return peer.AsInputPeer(), nil
-		} else {
-			if !errors.Is(err, storage.ErrPeerNotFound) {
-				return nil, err
-			}
+// ParseMessageLink return peer, msgId, error
+func (c *Client) ParseMessageLink(ctx context.Context, s string) (peers.Peer, int, error) {
+	parse := func(from, msg string) (peers.Peer, int, error) {
+		ch, err := c.ResolvePeer(ctx, from)
+		if err != nil {
+			return nil, 0, err
 		}
+
+		m, err := strconv.Atoi(msg)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		return ch, m, nil
 	}
 
-	peer, err := c.peerMgr.ResolveTDLibID(ctx, ID)
+	u, err := url.Parse(s)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return peer.InputPeer(), nil
+	paths := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+
+	// https://t.me/opencfdchannel/4434?comment=360409
+	if comment := u.Query().Get("comment"); comment != "" {
+		peer, err := c.ResolvePeer(ctx, paths[0])
+		if err != nil {
+			return nil, 0, err
+		}
+
+		ch, ok := peer.(peers.Channel)
+		if !ok || !ch.IsBroadcast() {
+			return nil, 0, err
+		}
+
+		raw, err := ch.FullRaw(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		linked, ok := raw.GetLinkedChatID()
+		if !ok {
+			return nil, 0, errors.New("no linked chat")
+		}
+
+		return parse(strconv.FormatInt(linked, 10), comment)
+	}
+
+	switch len(paths) {
+	case 2:
+		// https://t.me/telegram/193
+		// https://t.me/myhostloc/1485524?thread=1485523
+		return parse(paths[0], paths[1])
+	case 3:
+		// https://t.me/c/1697797156/151
+		// https://t.me/iFreeKnow/45662/55005
+		if paths[0] == "c" {
+			return parse(paths[1], paths[2])
+		}
+
+		// "45662" means topic id, we don't need it
+		return parse(paths[0], paths[2])
+	case 4:
+		// https://t.me/c/1492447836/251015/251021
+		if paths[0] != "c" {
+			return nil, 0, fmt.Errorf("invalid message link")
+		}
+
+		// "251015" means topic id, we don't need it
+		return parse(paths[1], paths[3])
+	default:
+		return nil, 0, fmt.Errorf("invalid message link: %s", s)
+	}
 }
 
-func (c *Client) storeDialog(ctx context.Context, elem dialogs.Elem) error {
-	if c.storage == nil {
-		return nil
+func (c *Client) ExtractPeer(ctx context.Context, ent peer.Entities, peerID tg.PeerClass) (peers.Peer, error) {
+	peer, err := ent.ExtractPeer(peerID)
+	if err != nil {
+		return nil, fmt.Errorf("extract peer: %w", err)
 	}
 
-	var key string
+	return c.peerMgr.FromInputPeer(ctx, peer)
+}
 
+func (c *Client) ResolvePeer(ctx context.Context, from string) (peers.Peer, error) {
+	id, err := strconv.ParseInt(from, 10, 64)
+	if err != nil {
+		p, err := c.PeerService.Resolve(ctx, from)
+		if err != nil {
+			return nil, err
+		}
+
+		return p, nil
+	}
+
+	return c.PeerService.ResolveID(ctx, id)
+}
+
+func (c *Client) CacheDialog(ctx context.Context, elem dialogs.Elem) error {
 	var p storage.Peer
+
 	switch dlg := elem.Dialog.GetPeer().(type) {
 	case *tg.PeerUser:
-		key = strconv.FormatInt(dlg.UserID, 10)
 		user, ok := elem.Entities.User(dlg.UserID)
 		if !ok || !p.FromUser(user) {
-			return fmt.Errorf("user not found: %d", dlg.UserID)
+			return nil
 		}
 
 	case *tg.PeerChat:
-		key = strconv.FormatInt(dlg.ChatID, 10)
 		chat, ok := elem.Entities.Chat(dlg.ChatID)
 		if !ok || !p.FromChat(chat) {
-			return fmt.Errorf("chat not found: %d", dlg.ChatID)
+			return nil
 		}
 
 	case *tg.PeerChannel:
-		key = strconv.FormatInt(dlg.ChannelID, 10)
 		channel, ok := elem.Entities.Channel(dlg.ChannelID)
 		if !ok || !p.FromChat(channel) {
-			return fmt.Errorf("channel not found: %d", dlg.ChannelID)
+			return nil
 		}
 	}
 
-	return c.storage.Assign(ctx, key, p)
+	return c.storage.Add(ctx, p)
+}
+
+func (c *Client) CacheInputPeer(ctx context.Context, inputPeer tg.InputPeerClass) error {
+	var p storage.Peer
+
+	if err := p.FromInputPeer(inputPeer); err != nil {
+		return err
+	}
+
+	return c.storage.Add(ctx, p)
 }

@@ -1,131 +1,207 @@
 package telegram
 
 import (
-	"context"
 	"fmt"
+	"os"
+	"regexp"
+	"strings"
 	"time"
 
-	"github.com/gotd/td/telegram/message/peer"
-	"github.com/gotd/td/telegram/peers"
-	"github.com/gotd/td/telegram/query/dialogs"
+	"github.com/johnnyipcom/tgdownloader/pkg/config"
+	"github.com/johnnyipcom/tgdownloader/pkg/key"
+
+	"github.com/gotd/td/clock"
+	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
-	"github.com/johnnyipcom/gotd-contrib/storage"
 )
 
-func getUserInfoFromUser(user peers.User) UserInfo {
-	username := "<empty>"
-	if uname, ok := user.Username(); ok {
-		username = uname
+func extractHashtags(input string) []string {
+	hashtags := []string{}
+	regex := regexp.MustCompile(`#[^\s#]+`)
+
+	matches := regex.FindAllString(input, -1)
+	for _, match := range matches {
+		trimmedTag := strings.TrimPrefix(match, "#")
+		hashtags = append(hashtags, trimmedTag)
 	}
 
-	firstName := "<empty>"
-	if fname, ok := user.FirstName(); ok {
-		firstName = fname
-	}
-
-	lastName := "<empty>"
-	if lname, ok := user.LastName(); ok {
-		lastName = lname
-	}
-
-	return UserInfo{
-		ID:        user.ID(),
-		Username:  username,
-		FirstName: firstName,
-		LastName:  lastName,
-	}
+	return hashtags
 }
 
-func getPeerInfoFromPeer(peer peers.Peer) PeerInfo {
-	var peerType PeerType
-	switch peer.(type) {
-	case peers.User:
-		peerType = PeerTypeUser
-	case peers.Chat:
-		peerType = PeerTypeChat
-	case peers.Channel:
-		peerType = PeerTypeChannel
+func getPublicKeys(cfg config.Config) ([]tgclient.PublicKey, error) {
+	if !cfg.IsSet("mtproto.public_keys") {
+		return nil, nil
 	}
 
-	return PeerInfo{
-		Type: peerType,
-		ID:   peer.ID(),
-		Name: peer.VisibleName(),
-	}
-}
+	var keys []tgclient.PublicKey
 
-func extractPeer(ctx context.Context, mgr *peers.Manager, ent peer.Entities, peerID tg.PeerClass) (peers.Peer, error) {
-	peer, err := ent.ExtractPeer(peerID)
-	if err != nil {
-		return nil, fmt.Errorf("extract peer: %w", err)
-	}
-
-	return mgr.FromInputPeer(ctx, peer)
-}
-
-func getFileInfoFromElem(ctx context.Context, mgr *peers.Manager, elem messages.Elem) (FileInfo, error) {
-	var peer peers.Peer
-	fromID, ok := elem.Msg.GetFromID()
-	if ok {
-		from, err := extractPeer(ctx, mgr, elem.Entities, fromID)
+	publicKeys := cfg.GetStringSlice("mtproto.public_keys")
+	for _, publicKey := range publicKeys {
+		publicKeyData, err := os.ReadFile(publicKey)
 		if err != nil {
-			return FileInfo{}, fmt.Errorf("extract fromID: %w", err)
+			return nil, err
 		}
 
-		peer = from
-	}
-
-	if peer == nil {
-		p, err := extractPeer(ctx, mgr, elem.Entities, elem.Msg.GetPeerID())
+		key, err := key.ParsePublicKey(publicKeyData)
 		if err != nil {
-			return FileInfo{}, fmt.Errorf("extract peerID: %w", err)
+			return nil, err
 		}
 
-		peer = p
+		keys = append(keys, tgclient.PublicKey{
+			RSA: key,
+		})
 	}
 
-	file, ok := elem.File()
+	return keys, nil
+}
+
+func getClock(cfg config.Config) (clock.Clock, error) {
+	if !cfg.IsSet("clock.ntp.host") {
+		return clock.System, nil
+	}
+
+	ntpHost := cfg.GetString("clock.ntp.host")
+	return NewNTPClock(ntpHost)
+}
+
+func getPhotoSize(sizes []tg.PhotoSizeClass) (string, int, bool) {
+	size := sizes[len(sizes)-1]
+	switch s := size.(type) {
+	case *tg.PhotoSize:
+		return s.Type, s.Size, true
+	case *tg.PhotoSizeProgressive:
+		return s.Type, s.Sizes[len(s.Sizes)-1], true
+	}
+
+	return "", 0, false
+}
+
+const dateLayout = "2006-01-02_15-04-05"
+
+func getPhotoFromMessage(elem messages.Elem) (*File, error) {
+	photo, ok := elem.Photo()
 	if !ok {
-		return FileInfo{}, errNoFilesInMessage
+		return nil, errNoFilesInMessage
 	}
 
-	var size int64
-	if doc, ok := elem.Document(); ok {
-		size = doc.Size
+	thumbSize, size, ok := getPhotoSize(photo.Sizes)
+	if !ok {
+		return nil, errNoFilesInMessage
 	}
 
-	return FileInfo{
-		file: file,
-		peer: peer,
-		size: size,
+	name := fmt.Sprintf(
+		"photo%d_%s.jpg",
+		photo.GetID(), time.Unix(int64(photo.Date), 0).Format(dateLayout),
+	)
+
+	return &File{
+		name: name,
+		size: int64(size),
+		dc:   photo.DCID,
+
+		location: &tg.InputPhotoFileLocation{
+			ID:            photo.ID,
+			AccessHash:    photo.AccessHash,
+			FileReference: photo.FileReference,
+			ThumbSize:     thumbSize,
+		},
+
+		metadata: map[string]interface{}{
+			"mime_type":  "image/jpeg",
+			"thumb_size": thumbSize,
+		},
 	}, nil
 }
 
-func getPeerCacheInfoFromStoragePeer(p storage.Peer) PeerCacheInfo {
-	var peer PeerInfo
-
-	switch p.Key.Kind {
-	case dialogs.User:
-		peer.ID = p.User.GetID()
-		peer.Name = p.User.Username
-		peer.Type = PeerTypeUser
-
-	case dialogs.Chat:
-		peer.ID = p.Chat.GetID()
-		peer.Name = p.Chat.GetTitle()
-		peer.Type = PeerTypeChat
-
-	case dialogs.Channel:
-		peer.ID = p.Channel.GetID()
-		peer.Name = p.Channel.GetTitle()
-		peer.Type = PeerTypeChannel
+func getDocumentFromMessage(elem messages.Elem) (*File, error) {
+	doc, ok := elem.Document()
+	if !ok {
+		return nil, errNoFilesInMessage
 	}
 
-	return PeerCacheInfo{
-		ID:         p.Key.ID,
-		AccessHash: p.Key.AccessHash,
-		Peer:       peer,
-		CreatedAt:  time.Unix(p.CreatedAt, 0),
+	var name, ext string
+	for _, attr := range doc.Attributes {
+		switch v := attr.(type) {
+		case *tg.DocumentAttributeImageSize:
+			switch doc.MimeType {
+			case "image/png":
+				ext = ".png"
+			case "image/webp":
+				ext = ".webp"
+			case "image/tiff":
+				ext = ".tif"
+			default:
+				ext = ".jpg"
+			}
+		case *tg.DocumentAttributeAnimated:
+			ext = ".gif"
+		case *tg.DocumentAttributeSticker:
+			ext = ".webp"
+		case *tg.DocumentAttributeVideo:
+			switch doc.MimeType {
+			case "video/mpeg":
+				ext = ".mpeg"
+			case "video/webm":
+				ext = ".webm"
+			case "video/ogg":
+				ext = ".ogg"
+			default:
+				ext = ".mp4"
+			}
+		case *tg.DocumentAttributeAudio:
+			switch doc.MimeType {
+			case "audio/webm":
+				ext = ".webm"
+			case "audio/aac":
+				ext = ".aac"
+			case "audio/ogg":
+				ext = ".ogg"
+			default:
+				ext = ".mp3"
+			}
+		case *tg.DocumentAttributeFilename:
+			name = v.FileName
+		}
 	}
+
+	if name == "" {
+		name = fmt.Sprintf(
+			"doc%d_%s%s", doc.GetID(),
+			time.Unix(int64(doc.Date), 0).Format(dateLayout),
+			ext,
+		)
+	}
+
+	return &File{
+		name: name,
+		size: doc.Size,
+		dc:   doc.DCID,
+
+		location: &tg.InputDocumentFileLocation{
+			ID:            doc.ID,
+			AccessHash:    doc.AccessHash,
+			FileReference: doc.FileReference,
+		},
+
+		metadata: map[string]interface{}{
+			"mime_type": doc.MimeType,
+		},
+	}, nil
+}
+
+func getFileFromMessageElem(elem messages.Elem) (*File, error) {
+	msg, ok := elem.Msg.(*tg.Message)
+	if !ok {
+		return nil, errNoFilesInMessage
+	}
+
+	switch msg.Media.(type) {
+	case *tg.MessageMediaPhoto:
+		return getPhotoFromMessage(elem)
+	case *tg.MessageMediaDocument:
+		return getDocumentFromMessage(elem)
+	}
+
+	return nil, errNoFilesInMessage
 }

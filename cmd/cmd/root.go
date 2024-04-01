@@ -2,26 +2,23 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
-	"runtime"
-	"strings"
 
+	"github.com/go-logr/logr"
+	"github.com/go-logr/zapr"
 	"github.com/johnnyipcom/tgdownloader/cmd/version"
-	"github.com/johnnyipcom/tgdownloader/internal/dwpool"
+	"github.com/johnnyipcom/tgdownloader/internal/downloader"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/config/viper"
-	"github.com/johnnyipcom/tgdownloader/pkg/ctxlogger"
-	"github.com/johnnyipcom/tgdownloader/pkg/dropbox"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 
 	cc "github.com/ivanpirog/coloredcobra"
 
-	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -31,12 +28,24 @@ import (
 type Root struct {
 	version   string
 	verbosity string
+	stopFunc  telegram.StopFunc
+	progress  telegram.Progress
 
 	cfg    config.Config
 	client *telegram.Client
-	stop   telegram.StopFunc
-	log    *zap.Logger
+	zap    *zap.Logger
+	log    logr.Logger
 	level  zap.AtomicLevel
+}
+
+type progressAdapter struct {
+	renderer.Progress
+}
+
+var _ telegram.Progress = (*progressAdapter)(nil)
+
+func (p *progressAdapter) Tracker(msg string) telegram.Tracker {
+	return p.Progress.UnitsTracker(msg, 0)
 }
 
 // NewRoot creates a new root command.
@@ -58,22 +67,26 @@ func NewRoot(version string) (*Root, error) {
 	level := zap.NewAtomicLevelAt(zapcore.InfoLevel)
 	zapConfig.Level = level
 
-	log, err := zapConfig.Build(zap.AddStacktrace(zapcore.ErrorLevel))
+	zap, err := zapConfig.Build(zap.AddStacktrace(zapcore.ErrorLevel))
 	if err != nil {
 		return nil, err
 	}
 
-	client, err := telegram.NewClient(cfg.Sub("telegram"), log.Named("telegram"))
+	client, err := telegram.NewClient(cfg.Sub("telegram"), zap.Named("telegram"))
 	if err != nil {
 		return nil, err
 	}
 
+	progress := &progressAdapter{Progress: renderer.NewProgress()}
+	client.SetProgress(progress)
 	return &Root{
-		version: version,
-		cfg:     cfg,
-		client:  client,
-		log:     log,
-		level:   level,
+		version:  version,
+		cfg:      cfg,
+		client:   client,
+		zap:      zap,
+		log:      zapr.NewLogger(zap),
+		level:    level,
+		progress: progress,
 	}, nil
 }
 
@@ -97,8 +110,8 @@ func (r *Root) newRootCmd() *cobra.Command {
 		Use:           "tgdownloader",
 		Short:         "Telegram CLI Downloader",
 		Long:          "Telegram CLI Downloader is a CLI tool to download Telegram files from a chat, channel or user, even if this chat, channel or user is not in private mode.",
-		SilenceUsage:  true,
 		SilenceErrors: true,
+		SilenceUsage:  true,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.HelpFunc()(cmd, []string{})
 		},
@@ -108,7 +121,7 @@ func (r *Root) newRootCmd() *cobra.Command {
 		&r.verbosity,
 		"verbosity",
 		"v",
-		"info",
+		"debug",
 		"verbosity level (debug, info, warn, error, fatal, panic)",
 	)
 
@@ -119,10 +132,12 @@ func (r *Root) newRootCmd() *cobra.Command {
 		ctx, cancel := context.WithCancel(context.Background())
 		go func() {
 			<-stop
+
 			cancel()
+			signal.Stop(stop)
 		}()
 
-		cmd.SetContext(ctxlogger.WithLogger(ctx, r.log))
+		cmd.SetContext(logr.NewContext(ctx, r.log))
 		level, err := zap.ParseAtomicLevel(r.verbosity)
 		if err != nil {
 			return err
@@ -132,17 +147,18 @@ func (r *Root) newRootCmd() *cobra.Command {
 		return nil
 	}
 
-	rootCmd.PersistentPostRun = func(cmd *cobra.Command, args []string) {
-		r.log.Sync()
+	rootCmd.PersistentPostRunE = func(cmd *cobra.Command, args []string) error {
+		cmd.Flags().VisitAll(func(f *pflag.Flag) {
+			f.Value.Set(f.DefValue)
+		})
+		return nil
 	}
 
 	rootCmd.AddCommand(r.newVersionCmd())
 	rootCmd.AddCommand(r.newPeerCmd())
-	rootCmd.AddCommand(r.newChatCmd())
-	rootCmd.AddCommand(r.newChannelCmd())
-	rootCmd.AddCommand(r.newUserCmd())
 	rootCmd.AddCommand(r.newDialogsCmd())
 	rootCmd.AddCommand(r.newCacheCmd())
+	rootCmd.AddCommand(r.newDownloadCmd())
 
 	// Prompt command must be the last one to initialize all other commands first.
 	rootCmd.AddCommand(r.newPromptCmd(rootCmd))
@@ -161,79 +177,88 @@ func (r *Root) Execute() error {
 		Flags:    cc.Bold,
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	return rootCmd.Execute()
+}
+
+func (r *Root) Close() error {
+	r.Disconnect()
+
+	//r.progress.Stop()
+
+	renderer.RenderBye()
+	return r.zap.Sync()
+}
+
+func (r *Root) IsConnected() bool {
+	return r.stopFunc != nil
+}
+
+func (r *Root) Connect(ctx context.Context) error {
+	if r.IsConnected() {
+		return nil
+	}
 
 	stop, err := r.client.Connect(ctx)
 	if err != nil {
 		return err
 	}
 
-	defer func() {
-		stop()
-		r.renderBye()
-	}()
-
-	r.stop = stop
-	return rootCmd.ExecuteContext(ctx)
+	r.stopFunc = stop
+	return nil
 }
 
-func (r *Root) getDownloaderFS() (afero.Fs, error) {
-	switch strings.ToLower(r.cfg.GetString("downloader.type")) {
-	case "local":
-		return afero.NewOsFs(), nil
+func (r *Root) Disconnect() {
+	if r.stopFunc != nil {
+		r.stopFunc()
+		r.stopFunc = nil
+	}
+}
 
-	case "dropbox":
-		logger, err := zap.NewStdLogAt(r.log, zap.InfoLevel)
-		if err != nil {
-			return nil, err
+type needCloseKey struct{}
+
+func (r *Root) setupConnectionForCmd(cmds ...*cobra.Command) {
+	for _, cmd := range cmds {
+		cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+			ctx := context.WithValue(cmd.Context(), needCloseKey{}, !r.IsConnected())
+			cmd.SetContext(ctx)
+
+			return r.Connect(ctx)
 		}
 
-		client := <-dropbox.RunOauth2Server(r.cfg.Sub("downloader.dropbox"), r.log)
-		return dropbox.NewFs(client, logger)
-	}
+		cmd.PostRunE = func(cmd *cobra.Command, args []string) error {
+			if needDisconnect, ok := cmd.Context().Value(needCloseKey{}).(bool); ok && needDisconnect {
+				return r.Close()
+			}
 
-	return nil, fmt.Errorf("invalid downloader type: %s", r.cfg.GetString("downloader.type"))
+			return nil
+		}
+	}
 }
 
-func (r *Root) newDownloader() (*dwpool.Downloader, error) {
-	fs, err := r.getDownloaderFS()
-	if err != nil {
-		return nil, err
+func (r *Root) newDownloader(opts ...downloader.Option) (*downloader.Downloader, error) {
+	dCfg := r.cfg.Sub("downloader")
+
+	workers := dCfg.GetInt("workers")
+	if workers > 1 {
+		opts = append(opts, downloader.WithNumWorkers(workers))
 	}
 
-	threads := r.cfg.GetInt("downloader.threads")
-	if threads <= 0 {
-		threads = runtime.NumCPU()
-	}
+	loader := downloader.New(
+		downloader.GetFS(dCfg, zap.NewStdLog(r.zap)),
+		r.client.FileService,
+		opts...,
+	)
 
-	loader := dwpool.NewDownloader(fs, r.client.FileService, threads)
 	loader.SetOutputDir(r.cfg.GetString("downloader.dir.output"))
 	return loader, nil
-}
-
-func (r *Root) renderBye() {
-	renderer.Println(renderer.Colors{renderer.FgCyan}, "Bye! ^_^")
-}
-
-func (r *Root) renderError(err error) {
-	if errors.Is(err, context.Canceled) {
-		renderer.Println(renderer.Colors{renderer.FgYellow}, "Interrupted")
-		return
-	}
-
-	renderer.Printf(renderer.Colors{renderer.FgRed}, "Error: %s\n", err)
 }
 
 func Run() {
 	root, err := NewRoot(version.Version())
 	if err != nil {
-		root.renderError(err)
-		root.log.Panic("failed to create root", zap.Error(err))
+		renderer.RenderError(err)
+		return
 	}
 
-	if err := root.Execute(); err != nil {
-		root.renderError(err)
-		root.log.Panic("failed to execute root", zap.Error(err))
-	}
+	renderer.RenderError(root.Execute())
 }

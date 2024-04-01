@@ -2,99 +2,54 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gotd/td/constant"
+	"github.com/gotd/td/telegram/peers"
 )
-
-type PeerType int
-
-func (t PeerType) String() string {
-	switch t {
-	case PeerTypeChat:
-		return "Chat"
-	case PeerTypeChannel:
-		return "Channel"
-	case PeerTypeUser:
-		return "User"
-	default:
-		return "Unknown"
-	}
-}
-
-const (
-	PeerTypeChat PeerType = iota
-	PeerTypeChannel
-	PeerTypeUser
-)
-
-type PeerInfo struct {
-	Type PeerType
-	ID   int64
-	Name string
-}
-
-func (p PeerInfo) TDLibPeerID() constant.TDLibPeerID {
-	var id constant.TDLibPeerID
-	switch p.Type {
-	case PeerTypeChat:
-		id.Chat(p.ID)
-
-	case PeerTypeChannel:
-		id.Channel(p.ID)
-
-	case PeerTypeUser:
-		id.User(p.ID)
-
-	default:
-		return 0
-	}
-
-	return id
-}
 
 type PeerService interface {
-	GetAllPeers(ctx context.Context) ([]PeerInfo, error)
-	PeerSelf(ctx context.Context) (PeerInfo, error)
-	ResolvePeer(ctx context.Context, from string) (PeerInfo, error)
+	Resolve(ctx context.Context, from string) (peers.Peer, error)
+	ResolveID(ctx context.Context, ID int64) (peers.Peer, error)
+	ResolveTDLibID(ctx context.Context, ID constant.TDLibPeerID) (peers.Peer, error)
 }
 
 type peerService service
 
 var _ PeerService = (*peerService)(nil)
 
-// GetAllPeers returns all peers.
-func (s *peerService) GetAllPeers(ctx context.Context) ([]PeerInfo, error) {
-	chats, err := s.client.peerMgr.GetAllChats(ctx)
+func (s *peerService) Resolve(ctx context.Context, from string) (peers.Peer, error) {
+	peer, err := s.client.peerMgr.Resolve(ctx, from)
 	if err != nil {
 		return nil, err
 	}
 
-	var result []PeerInfo
-	for _, chat := range chats.Chats {
-		result = append(result, getPeerInfoFromPeer(chat))
-	}
-
-	for _, channel := range chats.Channels {
-		result = append(result, getPeerInfoFromPeer(channel))
-	}
-
-	return result, nil
+	return peer, nil
 }
 
-func (s *peerService) PeerSelf(ctx context.Context) (PeerInfo, error) {
-	user, err := s.client.peerMgr.Self(ctx)
-	if err != nil {
-		return PeerInfo{}, err
+func (s *peerService) ResolveID(ctx context.Context, ID int64) (peers.Peer, error) {
+	var (
+		p   peers.Peer
+		err error
+	)
+	if p, err = s.client.peerMgr.ResolveChannelID(ctx, ID); err == nil {
+		return p, nil
+	}
+	if p, err = s.client.peerMgr.ResolveUserID(ctx, ID); err == nil {
+		return p, nil
+	}
+	if p, err = s.client.peerMgr.ResolveChatID(ctx, ID); err == nil {
+		return p, nil
 	}
 
-	return getPeerInfoFromPeer(user), nil
+	return nil, fmt.Errorf("failed to get result from %d：%v", ID, err)
 }
 
-func (s *peerService) ResolvePeer(ctx context.Context, from string) (PeerInfo, error) {
-	peer, err := s.client.peerMgr.Resolve(ctx, from)
+func (c *peerService) ResolveTDLibID(ctx context.Context, ID constant.TDLibPeerID) (peers.Peer, error) {
+	peer, err := c.client.peerMgr.ResolveTDLibID(ctx, ID)
 	if err != nil {
-		return PeerInfo{}, err
+		return nil, err
 	}
 
-	return getPeerInfoFromPeer(peer), nil
+	return peer, nil
 }

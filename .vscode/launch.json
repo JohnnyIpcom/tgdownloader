@@ -16,29 +16,15 @@
             ]
         },
         {
-            "name": "Peer List",
-            "type": "go",
-            "request": "launch",
-            "mode": "auto",
-            "program": "${workspaceFolder}/main.go",
-            "args": [
-                "peer",
-                "list"
-            ]
-        },
-        {
             "name": "Download",
             "type": "go",
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/main.go",
             "args": [
-                "channel",
                 "download",
                 "history",
-                "--limit",
-                "5",
-                "1745633015",
+                "0xFFFFFF16B82BB3E8",
             ]
         },
         {
@@ -53,25 +39,16 @@
             ]
         },
         {
-            "name": "Cache view",
+            "name": "Peer find",
             "type": "go",
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/main.go",
             "args": [
-                "cache",
-                "view",
+                "peer",
+                "find",
+                "0xFFFFFF16CA46930B"
             ]
         },
-        {
-            "name": "Prompt",
-            "type": "go",
-            "request": "launch",
-            "mode": "auto",
-            "program": "${workspaceFolder}/main.go",
-            "args": [
-                "prompt",
-            ]
-        }
     ]
 }
