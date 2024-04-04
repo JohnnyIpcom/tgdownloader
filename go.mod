@@ -8,6 +8,7 @@ require (
 	github.com/beevik/ntp v1.0.0
 	github.com/c-bata/go-prompt v0.2.6
 	github.com/dropbox/dropbox-sdk-go-unofficial/v6 v6.0.5
+	github.com/fatih/color v1.16.0
 	github.com/go-andiamo/splitter v1.2.5
 	github.com/go-logr/logr v1.4.1
 	github.com/go-logr/zapr v1.3.0
@@ -24,6 +25,7 @@ require (
 	github.com/spf13/cobra v1.7.0
 	github.com/spf13/pflag v1.0.5
 	github.com/spf13/viper v1.16.0
+	github.com/vbauerster/mpb/v8 v8.7.2
 	go.etcd.io/bbolt v1.3.7
 	go.uber.org/zap v1.26.0
 	golang.org/x/oauth2 v0.10.0
@@ -32,8 +34,9 @@ require (
 )
 
 require (
+	github.com/VividCortex/ewma v1.2.0 // indirect
+	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d // indirect
 	github.com/cenkalti/backoff/v4 v4.2.1 // indirect
-	github.com/fatih/color v1.15.0 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/go-faster/jx v1.1.0 // indirect
@@ -48,8 +51,8 @@ require (
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.19 // indirect
-	github.com/mattn/go-runewidth v0.0.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/mattn/go-tty v0.0.5 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.9 // indirect

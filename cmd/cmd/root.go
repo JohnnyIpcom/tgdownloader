@@ -29,7 +29,6 @@ type Root struct {
 	version   string
 	verbosity string
 	stopFunc  telegram.StopFunc
-	progress  telegram.Progress
 
 	cfg    config.Config
 	client *telegram.Client
@@ -45,7 +44,18 @@ type progressAdapter struct {
 var _ telegram.Progress = (*progressAdapter)(nil)
 
 func (p *progressAdapter) Tracker(msg string) telegram.Tracker {
-	return p.Progress.UnitsTracker(msg, 0)
+	return p.Progress.UnitsTracker(msg, 1)
+}
+
+type progressProvider struct{}
+
+var _ telegram.ProgressProvider = (*progressProvider)(nil)
+
+func (p *progressProvider) NewProgress() telegram.Progress {
+	return &progressAdapter{
+		Progress: renderer.NewProgress(
+			context.TODO(),
+		)}
 }
 
 // NewRoot creates a new root command.
@@ -77,16 +87,14 @@ func NewRoot(version string) (*Root, error) {
 		return nil, err
 	}
 
-	progress := &progressAdapter{Progress: renderer.NewProgress()}
-	client.SetProgress(progress)
+	client.SetProgressProvider(&progressProvider{})
 	return &Root{
-		version:  version,
-		cfg:      cfg,
-		client:   client,
-		zap:      zap,
-		log:      zapr.NewLogger(zap),
-		level:    level,
-		progress: progress,
+		version: version,
+		cfg:     cfg,
+		client:  client,
+		zap:     zap,
+		log:     zapr.NewLogger(zap),
+		level:   level,
 	}, nil
 }
 

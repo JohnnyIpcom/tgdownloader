@@ -80,7 +80,7 @@ func renderAsync[T any](
 	total int,
 	renderSync func([]T),
 ) error {
-	p := NewProgress()
+	p := NewProgress(ctx)
 	t := p.UnitsTracker(msg, total)
 
 	var collection []T

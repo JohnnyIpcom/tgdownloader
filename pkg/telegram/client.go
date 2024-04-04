@@ -44,7 +44,7 @@ type Client struct {
 	updMgr     *updates.Manager
 	dispatcher tg.UpdateDispatcher
 	storage    storage.PeerStorage
-	progress   Progress
+	prProvider ProgressProvider
 
 	common service // Reuse a single struct instead of allocating one for each service on the heap
 
@@ -133,7 +133,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		updMgr:     gaps,
 		dispatcher: dispatcher,
 		storage:    peerStorage,
-		progress:   &progress{},
+		prProvider: &progressProvider{},
 	}
 
 	// Set up services
@@ -159,12 +159,13 @@ func (c *codeAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode)
 	return strings.TrimSpace(code), nil
 }
 
-func (c *Client) SetProgress(r Progress) {
-	c.progress = r
+func (c *Client) SetProgressProvider(r ProgressProvider) {
+	c.prProvider = r
 }
 
 func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
-	authTracker := c.progress.Tracker("Authentication")
+	progress := c.prProvider.NewProgress()
+	authTracker := progress.Tracker("Authentication")
 	flow := auth.NewFlow(
 		auth.Constant(
 			c.config.GetString("phone"),
@@ -179,14 +180,14 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	}
 
 	authTracker.Done()
-	c.progress.Wait(ctx)
+	progress.Wait(ctx)
 
 	user, err := c.client.Self(ctx)
 	if err != nil {
 		return func() error { return nil }, fmt.Errorf("fetch self: %w", err)
 	}
 
-	updateTracker := c.progress.Tracker("Update tracker")
+	updateTracker := progress.Tracker("Update tracker")
 
 	updateStarted := make(chan struct{})
 	authOptions := updates.AuthOptions{
@@ -207,12 +208,13 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	}()
 
 	<-updateStarted
-	c.progress.Wait(ctx)
+	progress.WaitAndStop(ctx)
 	return func() error {
-		logoutTracker := c.progress.Tracker("Logout")
+		progress := c.prProvider.NewProgress()
+		logoutTracker := progress.Tracker("Logout")
 		c.updMgr.Reset()
 		logoutTracker.Done()
-		c.progress.Wait(ctx)
+		progress.WaitAndStop(ctx)
 		return nil
 	}, nil
 }

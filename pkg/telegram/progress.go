@@ -16,6 +16,10 @@ type Progress interface {
 	WaitAndStop(ctx context.Context)
 }
 
+type ProgressProvider interface {
+	NewProgress() Progress
+}
+
 type progress struct{}
 
 var _ Progress = (*progress)(nil)
@@ -38,3 +42,15 @@ func (r *progress) Tracker(message string) Tracker {
 func (r *progress) Wait(ctx context.Context) {}
 
 func (r *progress) WaitAndStop(ctx context.Context) {}
+
+type progressProvider struct{}
+
+var _ ProgressProvider = (*progressProvider)(nil)
+
+func NewProgressProvider() ProgressProvider {
+	return &progressProvider{}
+}
+
+func (p *progressProvider) NewProgress() Progress {
+	return &progress{}
+}

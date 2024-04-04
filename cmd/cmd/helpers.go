@@ -95,7 +95,7 @@ func newTrackerAdapter(p renderer.Progress) *trackerAdapter {
 }
 
 func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, opts downloadOptions) error {
-	p := renderer.NewProgress()
+	p := renderer.NewProgress(ctx)
 	p.EnablePS(ctx)
 
 	var downloaderOptions []downloader.Option
