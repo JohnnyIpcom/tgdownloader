@@ -40,6 +40,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 	downloadHistoryCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
 	downloadHistoryCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
 	downloadHistoryCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
+	downloadHistoryCmd.Flags().BoolVar(&opts.ps, "ps", false, "Enable status information")
 
 	downloadWatcherCmd := &cobra.Command{
 		Use:   "watcher",
@@ -63,6 +64,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 	downloadWatcherCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
 	downloadWatcherCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
 	downloadWatcherCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
+	downloadWatcherCmd.Flags().BoolVar(&opts.ps, "ps", false, "Enable status information")
 
 	downloadMessageCmd := &cobra.Command{
 		Use:   "message",
@@ -84,6 +86,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 	downloadMessageCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
 	downloadMessageCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
 	downloadMessageCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
+	downloadMessageCmd.Flags().BoolVar(&opts.ps, "ps", false, "Enable status information")
 
 	downloadCmd.AddCommand(
 		downloadHistoryCmd,

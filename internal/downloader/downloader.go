@@ -135,8 +135,10 @@ func (p *Downloader) Stop(ctx context.Context) error {
 	p.queueWG.Wait()
 
 	close(p.files)
+	p.workerG.Wait()
+
 	p.settings.Tracker.WaitAndStop(ctx)
-	return p.workerG.Wait()
+	return nil
 }
 
 // AddDownloadQueue adds a channel of files to the download queue.

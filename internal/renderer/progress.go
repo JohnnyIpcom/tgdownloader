@@ -131,17 +131,19 @@ type bytesTracker struct {
 	writer io.Writer
 }
 
-var _ io.Writer = (*bytesTracker)(nil)
-var _ Tracker = (*bytesTracker)(nil)
+var (
+	_ io.Writer = (*bytesTracker)(nil)
+	_ Tracker   = (*bytesTracker)(nil)
+)
 
 func (bt *bytesTracker) Write(p []byte) (int, error) {
 	n, err := bt.writer.Write(p)
 	if err != nil {
-		bt.tracker.MarkAsErrored()
+		bt.Fail()
 		return n, err
 	}
 
-	bt.tracker.Increment(int64(n))
+	bt.Increment(int64(n))
 	return n, nil
 }
 

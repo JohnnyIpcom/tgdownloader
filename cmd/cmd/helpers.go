@@ -22,6 +22,7 @@ type downloadOptions struct {
 	hashtags   bool
 	rewrite    bool
 	dryRun     bool
+	ps         bool
 }
 
 func (o *downloadOptions) newGetAllFilesOptions() ([]telegram.GetAllFilesOption, error) {
@@ -96,7 +97,9 @@ func newTrackerAdapter(p renderer.Progress) *trackerAdapter {
 
 func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, opts downloadOptions) error {
 	p := renderer.NewProgress()
-	p.EnablePS(ctx)
+	if opts.ps {
+		p.EnablePS(ctx)
+	}
 
 	var downloaderOptions []downloader.Option
 	downloaderOptions = append(downloaderOptions, downloader.WithRewrite(opts.rewrite))
@@ -132,14 +135,14 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 	return d.Stop(ctx)
 }
 
-func makeChannelFromSlice(ctx context.Context, files []*telegram.File) <-chan telegram.File {
-	ch := make(chan telegram.File)
+func sendSliceToChannel[T any](ctx context.Context, slice []*T) <-chan T {
+	ch := make(chan T)
 	go func() {
 		defer close(ch)
 
-		for _, file := range files {
+		for _, elem := range slice {
 			select {
-			case ch <- *file:
+			case ch <- *elem:
 			case <-ctx.Done():
 				return
 			}
@@ -160,7 +163,7 @@ func (r *Root) downloadFilesFromMessage(ctx context.Context, peer peers.Peer, ms
 		return err
 	}
 
-	return r.downloadFiles(ctx, makeChannelFromSlice(ctx, files), opts)
+	return r.downloadFiles(ctx, sendSliceToChannel(ctx, files), opts)
 }
 
 func parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {
