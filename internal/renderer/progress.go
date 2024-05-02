@@ -30,7 +30,7 @@ var _ Progress = (*progressImpl)(nil)
 func NewProgress() Progress {
 	pw := progress.NewWriter()
 	pw.SetAutoStop(false)
-	pw.SetMessageWidth(50)
+	pw.SetMessageLength(50)
 	pw.SetTrackerLength(25)
 	pw.SetTrackerPosition(progress.PositionRight)
 	pw.SetSortBy(progress.SortByNone)

@@ -14,42 +14,42 @@ import (
 )
 
 type settings struct {
-	NumWorkers int
-	Tracker    Tracker
-	Rewrite    bool
-	DryRun     bool
+	numWorkers int
+	tracker    Tracker
+	rewrite    bool
+	dryRun     bool
 }
 
 func (s *settings) setDefaults() {
-	s.NumWorkers = runtime.NumCPU()
-	s.Tracker = NewNullTracker()
-	s.Rewrite = false
-	s.DryRun = false
+	s.numWorkers = runtime.NumCPU()
+	s.tracker = NewNullTracker()
+	s.rewrite = false
+	s.dryRun = false
 }
 
 type Option func(*settings)
 
 func WithNumWorkers(numWorkers int) Option {
 	return func(s *settings) {
-		s.NumWorkers = numWorkers
+		s.numWorkers = numWorkers
 	}
 }
 
 func WithRewrite(rewrite bool) Option {
 	return func(s *settings) {
-		s.Rewrite = rewrite
+		s.rewrite = rewrite
 	}
 }
 
 func WithDryRun(dryRun bool) Option {
 	return func(s *settings) {
-		s.DryRun = dryRun
+		s.dryRun = dryRun
 	}
 }
 
 func WithTracker(tracker Tracker) Option {
 	return func(s *settings) {
-		s.Tracker = tracker
+		s.tracker = tracker
 	}
 }
 
@@ -58,28 +58,35 @@ type Downloader struct {
 	fs      afero.Fs
 	service telegram.FileService
 
-	outputDir string
+	outputDir  string
+	numWorkers int
+	tracker    Tracker
+	rewrite    bool
+	dryRun     bool
 
-	files    chan File
-	queueWG  sync.WaitGroup
-	workerG  *errgroup.Group
-	settings settings
+	files   chan File
+	queueWG sync.WaitGroup
+	workerG *errgroup.Group
 }
 
 // NewDownloader creates a new pool of workers.
 func New(fs afero.Fs, service telegram.FileService, opts ...Option) *Downloader {
-	settings := settings{}
-	settings.setDefaults()
+	s := settings{}
+	s.setDefaults()
 
 	for _, opt := range opts {
-		opt(&settings)
+		opt(&s)
 	}
 
 	return &Downloader{
-		fs:       fs,
-		files:    make(chan File),
-		settings: settings,
-		service:  service,
+		numWorkers: s.numWorkers,
+		tracker:    s.tracker,
+		rewrite:    s.rewrite,
+		dryRun:     s.dryRun,
+
+		fs:      fs,
+		files:   make(chan File),
+		service: service,
 	}
 }
 
@@ -92,10 +99,10 @@ func (p *Downloader) SetOutputDir(dir string) {
 // Start starts the pool of workers.
 func (d *Downloader) Start(ctx context.Context) {
 	log := logr.FromContextOrDiscard(ctx).WithName("downloader")
-	log.Info("Downloader started", "workers", d.settings.NumWorkers)
+	log.Info("Downloader started", "workers", d.numWorkers)
 
 	d.workerG, ctx = errgroup.WithContext(ctx)
-	for i := 0; i < d.settings.NumWorkers; i++ {
+	for i := 0; i < d.numWorkers; i++ {
 		func(i int) {
 			d.workerG.Go(func() error {
 				return d.worker(ctx, log.WithName(fmt.Sprintf("worker-%d", i)))
@@ -137,7 +144,7 @@ func (p *Downloader) Stop(ctx context.Context) error {
 	close(p.files)
 	p.workerG.Wait()
 
-	p.settings.Tracker.WaitAndStop(ctx)
+	p.tracker.WaitAndStop(ctx)
 	return nil
 }
 
@@ -166,7 +173,7 @@ func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan File) {
 // downloadFile downloads a file.
 func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logger) {
 	saver := NewAferoSaver(p.fs)
-	if p.settings.DryRun {
+	if p.dryRun {
 		saver = NewNullSaver()
 	}
 
@@ -195,7 +202,7 @@ func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logge
 		return
 	}
 
-	writer := p.settings.Tracker.WrapWriter(saver, file.Name(), file.Size())
+	writer := p.tracker.WrapWriter(saver, file.Name(), file.Size())
 	if err := p.service.Download(ctx, file.File, writerFunc(func(p []byte) (int, error) {
 		select {
 		case <-ctx.Done():
@@ -226,7 +233,7 @@ func (p *Downloader) addFileToSaver(ms MultiSaver, filepath string) error {
 		return err
 	}
 
-	if exists && !p.settings.Rewrite {
+	if exists && !p.rewrite {
 		return nil
 	}
 
@@ -235,7 +242,7 @@ func (p *Downloader) addFileToSaver(ms MultiSaver, filepath string) error {
 
 // createDirectoryIfNotExists creates a directory and all parent directories if it does not exist
 func (p *Downloader) createDirectoryIfNotExists(dir string) error {
-	if p.settings.DryRun {
+	if p.dryRun {
 		return nil
 	}
 
