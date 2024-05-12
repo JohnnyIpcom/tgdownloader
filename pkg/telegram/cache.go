@@ -137,6 +137,8 @@ func (s *cacheService) GetCachedPeers(ctx context.Context, filters ...CachedPeer
 		return nil, err
 	}
 
+	defer iter.Close()
+
 	peers := make([]CachedPeer, 0)
 	storage.ForEach(ctx, iter, func(p storage.Peer) error {
 		peer := CachedPeer{p}
