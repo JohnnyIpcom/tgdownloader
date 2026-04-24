@@ -206,6 +206,7 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 				renderer.RenderError(err)
 				return
 			}
+			defer r.Disconnect()
 
 			self, err := r.client.UserService.GetSelf(rootCmd.Context())
 			if err != nil {

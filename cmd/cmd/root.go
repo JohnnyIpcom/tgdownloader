@@ -263,4 +263,5 @@ func Run() {
 	}
 
 	renderer.RenderError(root.Execute())
+	type contextCleanupKey struct{}
 }
