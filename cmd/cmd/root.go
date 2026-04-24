@@ -181,6 +181,9 @@ func (r *Root) Execute() error {
 
 func (r *Root) Close() error {
 	r.Disconnect()
+	if err := r.client.Close(); err != nil {
+		return err
+	}
 
 	//r.progress.Stop()
 

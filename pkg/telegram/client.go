@@ -29,6 +29,12 @@ import (
 	"golang.org/x/time/rate"
 )
 
+type linkedChatPeer interface {
+	peers.Peer
+	IsBroadcast() bool
+	FullRaw(ctx context.Context) (*tg.ChannelFull, error)
+}
+
 // StopFunc is a function that stops service.
 type StopFunc func() error
 
@@ -40,6 +46,7 @@ type Client struct {
 	config     config.Config
 	client     *tgclient.Client
 	logger     *zap.Logger
+	db         *bboltdb.DB
 	peerMgr    *peers.Manager
 	updMgr     *updates.Manager
 	dispatcher tg.UpdateDispatcher
@@ -129,6 +136,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		config:     cfg,
 		client:     c,
 		logger:     log,
+		db:         db,
 		peerMgr:    peerMgr,
 		updMgr:     gaps,
 		dispatcher: dispatcher,
@@ -190,8 +198,7 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 
 	updateStarted := make(chan struct{})
 	authOptions := updates.AuthOptions{
-		IsBot:  true,
-		Forget: true,
+		IsBot: user.GetBot(),
 		OnStart: func(ctx context.Context) {
 			updateTracker.Done()
 			close(updateStarted)
@@ -202,7 +209,7 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 		updErr := c.updMgr.Run(ctx, c.client.API(), user.GetID(), authOptions)
 		if updErr != nil && !errors.Is(updErr, context.Canceled) {
 			updateTracker.Fail()
-			fmt.Printf("auth updates error: %s\n", err)
+			fmt.Printf("auth updates error: %s\n", updErr)
 		}
 	}()
 
@@ -289,6 +296,16 @@ func (c *Client) API() *tg.Client {
 	return c.client.API()
 }
 
+func (c *Client) Close() error {
+	if c.db == nil {
+		return nil
+	}
+
+	err := c.db.Close()
+	c.db = nil
+	return err
+}
+
 // ParseMessageLink return peer, msgId, error
 func (c *Client) ParseMessageLink(ctx context.Context, s string) (peers.Peer, int, error) {
 	parse := func(from, msg string) (peers.Peer, int, error) {
@@ -319,9 +336,9 @@ func (c *Client) ParseMessageLink(ctx context.Context, s string) (peers.Peer, in
 			return nil, 0, err
 		}
 
-		ch, ok := peer.(peers.Channel)
+		ch, ok := peer.(linkedChatPeer)
 		if !ok || !ch.IsBroadcast() {
-			return nil, 0, err
+			return nil, 0, fmt.Errorf("comment links require a broadcast channel")
 		}
 
 		raw, err := ch.FullRaw(ctx)

@@ -35,6 +35,9 @@ func GetFS(cfg config.Config, log *log.Logger) afero.Fs {
 					TokenURL: "https://api.dropboxapi.com/oauth2/token",
 				},
 			})
+			if client == nil {
+				panic("oauth2 authorization failed: no client returned")
+			}
 
 			dfs, err := dropbox.NewFs(client, log)
 			if err != nil {

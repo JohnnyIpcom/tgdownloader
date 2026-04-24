@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/gotd/td/telegram/peers"
@@ -88,6 +89,15 @@ type userService service
 
 var _ UserService = (*userService)(nil)
 
+func (s *userService) sendUser(ctx context.Context, out chan<- peers.User, user peers.User) error {
+	select {
+	case out <- user:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // GetUsersFromMessageHistory returns chan with users from message history. Sometimes chat doesn't provide list of users.
 // This method is a workaround for this problem.
 func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer peers.Peer) (<-chan peers.User, error) {
@@ -115,12 +125,16 @@ func (s *userService) GetUsersFromMessageHistory(ctx context.Context, peer peers
 					continue
 				}
 
-				usersChan <- peerUser
+				if err := s.sendUser(ctx, usersChan, peerUser); err != nil {
+					return err
+				}
 			}
 
 			return nil
 		}); err != nil {
-			s.logger.Error("failed to get users from message history", zap.Error(err))
+			if !errors.Is(err, context.Canceled) {
+				s.logger.Error("failed to get users from message history", zap.Error(err))
+			}
 			return
 		}
 	}()
@@ -162,10 +176,11 @@ func (s *userService) GetUsers(ctx context.Context, peer peers.Peer, query Query
 	go func() {
 		defer close(usersChan)
 
-		m.ForEach(ctx, func(m members.Member) error {
-			usersChan <- m.User()
-			return nil
-		})
+		if err := m.ForEach(ctx, func(m members.Member) error {
+			return s.sendUser(ctx, usersChan, m.User())
+		}); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Error("failed to get users", zap.Error(err))
+		}
 	}()
 
 	return usersChan, count, nil

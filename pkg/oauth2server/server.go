@@ -42,7 +42,12 @@ func RunOAuth2Server(port int, cfg oauth2.Config) <-chan *http.Client {
 
 		mux.HandleFunc("/oauth2/callback", func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie("oauthstate")
-			if err != nil && !errors.Is(err, http.ErrNoCookie) {
+			if err != nil {
+				if errors.Is(err, http.ErrNoCookie) {
+					http.Error(w, "Invalid OAuth2 state", http.StatusBadRequest)
+					return
+				}
+
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -77,7 +82,12 @@ func RunOAuth2Server(port int, cfg oauth2.Config) <-chan *http.Client {
 			Handler: mux,
 		}
 
-		go srv.ListenAndServe()
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				fmt.Fprintf(os.Stderr, "oauth2 server failed: %v\n", err)
+				stop()
+			}
+		}()
 
 		<-ctx.Done()
 		srv.Shutdown(ctx)
