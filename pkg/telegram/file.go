@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"sync/atomic"
 
-	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/message/peer"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/query"
@@ -388,7 +387,7 @@ func (s *fileService) GetFilesFromGroupedMessage(ctx context.Context, peer peers
 }
 
 func (s *fileService) Download(ctx context.Context, file File, out io.Writer) error {
-	builder := downloader.NewDownloader().Download(s.client.API(), file.location)
+	builder := s.client.client.Download(file.location)
 	_, err := builder.Stream(ctx, out)
 	if err != nil {
 		return err

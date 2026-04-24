@@ -3,13 +3,17 @@ package telegram
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	backoff "github.com/cenkalti/backoff/v4"
 	"github.com/gotd/contrib/bbolt"
 	"github.com/gotd/contrib/middleware/floodwait"
 	"github.com/gotd/contrib/middleware/ratelimit"
@@ -17,6 +21,7 @@ import (
 	"github.com/gotd/td/session"
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/telegram/message/peer"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/telegram/query/dialogs"
@@ -26,6 +31,7 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	bboltdb "go.etcd.io/bbolt"
 	"go.uber.org/zap"
+	"golang.org/x/net/proxy"
 	"golang.org/x/time/rate"
 )
 
@@ -43,15 +49,16 @@ type LogoutFunc func() error
 
 // Client is a Telegram client.
 type Client struct {
-	config     config.Config
-	client     *tgclient.Client
-	logger     *zap.Logger
-	db         *bboltdb.DB
-	peerMgr    *peers.Manager
-	updMgr     *updates.Manager
-	dispatcher tg.UpdateDispatcher
-	storage    storage.PeerStorage
-	progress   Progress
+	config         config.Config
+	client         *tgclient.Client
+	disableUpdates bool
+	logger         *zap.Logger
+	db             *bboltdb.DB
+	peerMgr        *peers.Manager
+	updMgr         *updates.Manager
+	dispatcher     tg.UpdateDispatcher
+	storage        storage.PeerStorage
+	progress       Progress
 
 	common service // Reuse a single struct instead of allocating one for each service on the heap
 
@@ -71,6 +78,7 @@ type service struct {
 // NewClient creates new Telegram client.
 func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	dispatcher := tg.NewUpdateDispatcher()
+	disableUpdates := cfg.GetBool("updates.disable")
 
 	db, err := bboltdb.Open(cfg.GetString("cache.path"), 0600, nil)
 	if err != nil {
@@ -79,27 +87,35 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 
 	peerStorage := bbolt.NewPeerStorage(db, []byte("peers"))
 
-	var handler tgclient.UpdateHandler = dispatcher
-	if peerStorage != nil {
-		handler = storage.UpdateHook(dispatcher, peerStorage)
+	middlewares := []tgclient.Middleware{
+		ratelimit.New(
+			rate.Every(cfg.GetDuration("rate.limit")),
+			cfg.GetInt("rate.burst"),
+		),
+		floodwait.NewSimpleWaiter(),
 	}
 
-	gaps := updates.New(updates.Config{
-		Handler: handler,
-		Logger:  log.Named("gaps"),
-	})
-
 	options := tgclient.Options{
-		Logger:        log.Named("client"),
-		UpdateHandler: gaps,
-		Middlewares: []tgclient.Middleware{
-			ratelimit.New(
-				rate.Every(cfg.GetDuration("rate.limit")),
-				cfg.GetInt("rate.burst"),
-			),
-			floodwait.NewSimpleWaiter(),
-			hook.UpdateHook(gaps.Handle),
-		},
+		Logger:      log.Named("client"),
+		AllowCDN:    true,
+		NoUpdates:   disableUpdates,
+		Middlewares: middlewares,
+	}
+
+	var gaps *updates.Manager
+	if !disableUpdates {
+		var handler tgclient.UpdateHandler = dispatcher
+		if peerStorage != nil {
+			handler = storage.UpdateHook(dispatcher, peerStorage)
+		}
+
+		gaps = updates.New(updates.Config{
+			Handler: handler,
+			Logger:  log.Named("gaps"),
+		})
+
+		options.UpdateHandler = gaps
+		options.Middlewares = append(options.Middlewares, hook.UpdateHook(gaps.Handle))
 	}
 
 	if cfg.IsSet("session.path") {
@@ -126,6 +142,16 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		options.Clock = clock
 	}
 
+	if cfg.IsSet("download.allow_cdn") {
+		options.AllowCDN = cfg.GetBool("download.allow_cdn")
+	}
+
+	if err := applyNetworkOptions(cfg, &options); err != nil {
+		return nil, err
+	}
+
+	applyReliabilityOptions(cfg, log, &options)
+
 	c := tgclient.NewClient(cfg.GetInt("app.id"), cfg.GetString("app.hash"), options)
 
 	peerMgr := peers.Options{
@@ -133,15 +159,16 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	}.Build(c.API())
 
 	cli := &Client{
-		config:     cfg,
-		client:     c,
-		logger:     log,
-		db:         db,
-		peerMgr:    peerMgr,
-		updMgr:     gaps,
-		dispatcher: dispatcher,
-		storage:    peerStorage,
-		progress:   &progress{},
+		config:         cfg,
+		client:         c,
+		disableUpdates: disableUpdates,
+		logger:         log,
+		db:             db,
+		peerMgr:        peerMgr,
+		updMgr:         gaps,
+		dispatcher:     dispatcher,
+		storage:        peerStorage,
+		progress:       &progress{},
 	}
 
 	// Set up services
@@ -153,6 +180,187 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	cli.DialogService = (*dialogService)(&cli.common)
 	cli.CacheService = (*cacheService)(&cli.common)
 	return cli, nil
+}
+
+func applyNetworkOptions(cfg config.Config, options *tgclient.Options) error {
+	if cfg.IsSet("network.dc") {
+		options.DC = cfg.GetInt("network.dc")
+	}
+
+	if cfg.GetBool("network.test_dc") {
+		options.DCList = dcs.Test()
+	}
+
+	if cfg.IsSet("network.dial_timeout") {
+		options.DialTimeout = cfg.GetDuration("network.dial_timeout")
+	}
+
+	resolver, err := buildResolver(cfg, options.DialTimeout)
+	if err != nil {
+		return err
+	}
+	if resolver != nil {
+		options.Resolver = resolver
+	}
+
+	return nil
+}
+
+func applyReliabilityOptions(cfg config.Config, log *zap.Logger, options *tgclient.Options) {
+	if cfg.IsSet("connection.migration_timeout") {
+		options.MigrationTimeout = cfg.GetDuration("connection.migration_timeout")
+	}
+
+	if cfg.GetBool("connection.log_on_dead") {
+		onDeadLogger := log.Named("telegram-conn")
+		options.OnDead = func(err error) {
+			onDeadLogger.Warn("connection dead", zap.Error(err))
+		}
+	}
+
+	if hasReconnectBackoffConfig(cfg) {
+		options.ReconnectionBackoff = func() backoff.BackOff {
+			exponential := backoff.NewExponentialBackOff()
+			if cfg.IsSet("connection.reconnect.initial_interval") {
+				exponential.InitialInterval = cfg.GetDuration("connection.reconnect.initial_interval")
+			}
+			if cfg.IsSet("connection.reconnect.max_interval") {
+				exponential.MaxInterval = cfg.GetDuration("connection.reconnect.max_interval")
+			}
+			if cfg.IsSet("connection.reconnect.max_elapsed_time") {
+				exponential.MaxElapsedTime = cfg.GetDuration("connection.reconnect.max_elapsed_time")
+			}
+			if cfg.IsSet("connection.reconnect.multiplier") {
+				exponential.Multiplier = cfg.GetFloat64("connection.reconnect.multiplier")
+			}
+			if cfg.IsSet("connection.reconnect.randomization_factor") {
+				exponential.RandomizationFactor = cfg.GetFloat64("connection.reconnect.randomization_factor")
+			}
+			exponential.Reset()
+			return exponential
+		}
+	}
+}
+
+func hasReconnectBackoffConfig(cfg config.Config) bool {
+	return cfg.IsSet("connection.reconnect.initial_interval") ||
+		cfg.IsSet("connection.reconnect.max_interval") ||
+		cfg.IsSet("connection.reconnect.max_elapsed_time") ||
+		cfg.IsSet("connection.reconnect.multiplier") ||
+		cfg.IsSet("connection.reconnect.randomization_factor")
+}
+
+func buildResolver(cfg config.Config, dialTimeout time.Duration) (dcs.Resolver, error) {
+	resolverName := strings.ToLower(strings.TrimSpace(cfg.GetString("network.resolver")))
+	needsPlainResolver := resolverName == "plain" || resolverName == "direct" || resolverName == "env" || resolverName == "socks5" ||
+		cfg.IsSet("network.prefer_ipv6") || cfg.IsSet("network.no_obfuscated")
+
+	if resolverName == "" && !needsPlainResolver {
+		return nil, nil
+	}
+
+	baseDialer := &net.Dialer{Timeout: dialTimeout}
+
+	switch resolverName {
+	case "", "default", "plain", "direct":
+		return dcs.Plain(plainResolverOptions(cfg, baseDialer.DialContext)), nil
+
+	case "env":
+		envDialer := proxy.FromEnvironmentUsing(baseDialer)
+		return dcs.Plain(plainResolverOptions(cfg, proxyDialContext(envDialer))), nil
+
+	case "socks5":
+		proxyAddress := strings.TrimSpace(cfg.GetString("network.proxy.address"))
+		if proxyAddress == "" {
+			return nil, errors.New("telegram.network.proxy.address is required for socks5 resolver")
+		}
+
+		var auth *proxy.Auth
+		proxyUser := cfg.GetString("network.proxy.user")
+		if proxyUser != "" || cfg.IsSet("network.proxy.password") {
+			auth = &proxy.Auth{
+				User:     proxyUser,
+				Password: cfg.GetString("network.proxy.password"),
+			}
+		}
+
+		socksDialer, err := proxy.SOCKS5("tcp", proxyAddress, auth, baseDialer)
+		if err != nil {
+			return nil, fmt.Errorf("create socks5 dialer: %w", err)
+		}
+
+		return dcs.Plain(plainResolverOptions(cfg, proxyDialContext(socksDialer))), nil
+
+	case "mtproxy":
+		proxyAddress := strings.TrimSpace(cfg.GetString("network.mtproxy.address"))
+		if proxyAddress == "" {
+			return nil, errors.New("telegram.network.mtproxy.address is required for mtproxy resolver")
+		}
+
+		secretHex := strings.TrimSpace(cfg.GetString("network.mtproxy.secret"))
+		if secretHex == "" {
+			return nil, errors.New("telegram.network.mtproxy.secret is required for mtproxy resolver")
+		}
+
+		secret, err := hex.DecodeString(secretHex)
+		if err != nil {
+			return nil, fmt.Errorf("decode mtproxy secret: %w", err)
+		}
+
+		return dcs.MTProxy(proxyAddress, secret, dcs.MTProxyOptions{
+			Dial:    baseDialer.DialContext,
+			Network: cfg.GetString("network.mtproxy.network"),
+		})
+	default:
+		return nil, fmt.Errorf("unsupported telegram.network.resolver %q", resolverName)
+	}
+}
+
+func plainResolverOptions(cfg config.Config, dial dcs.DialFunc) dcs.PlainOptions {
+	return dcs.PlainOptions{
+		Dial:         dial,
+		PreferIPv6:   cfg.GetBool("network.prefer_ipv6"),
+		NoObfuscated: cfg.GetBool("network.no_obfuscated"),
+	}
+}
+
+func proxyDialContext(dialer proxy.Dialer) dcs.DialFunc {
+	if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+		return contextDialer.DialContext
+	}
+
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		type dialResult struct {
+			conn net.Conn
+			err  error
+		}
+
+		result := make(chan dialResult)
+		go func() {
+			conn, err := dialer.Dial(network, address)
+			res := dialResult{conn: conn, err: err}
+			select {
+			case result <- res:
+			case <-ctx.Done():
+				if conn != nil {
+					_ = conn.Close()
+				}
+			}
+		}()
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case res := <-result:
+			if ctx.Err() != nil {
+				if res.conn != nil {
+					_ = res.conn.Close()
+				}
+				return nil, ctx.Err()
+			}
+			return res.conn, res.err
+		}
+	}
 }
 
 type codeAuthenticator struct{}
@@ -188,6 +396,10 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 
 	authTracker.Done()
 	c.progress.Wait(ctx)
+
+	if c.disableUpdates || c.updMgr == nil {
+		return func() error { return nil }, nil
+	}
 
 	user, err := c.client.Self(ctx)
 	if err != nil {

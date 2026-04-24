@@ -24,6 +24,38 @@ telegram:
     limit: 100ms
     burst: 3
 
+  download:
+    allow_cdn: true
+
+  network:
+    resolver: "plain" # plain, env, socks5, mtproxy
+    # dc: 2
+    # test_dc: false
+    # dial_timeout: 35s
+    # prefer_ipv6: false
+    # no_obfuscated: false
+    # proxy:
+    #   address: "127.0.0.1:1080"
+    #   user: ""
+    #   password: ""
+    # mtproxy:
+    #   address: "127.0.0.1:443"
+    #   secret: "hex-encoded-secret"
+    #   network: "tcp"
+
+  updates:
+    disable: false
+
+  connection:
+    log_on_dead: true
+    # migration_timeout: 15s
+    # reconnect:
+    #   initial_interval: 500ms
+    #   max_interval: 30s
+    #   max_elapsed_time: 0s
+    #   multiplier: 1.5
+    #   randomization_factor: 0.5
+
 downloader:
   type: "local" # local, dropbox
   dir:
