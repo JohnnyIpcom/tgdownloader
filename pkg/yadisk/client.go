@@ -1,20 +1,25 @@
 package yadisk
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
 const defaultAPIBaseURL = "https://cloud-api.yandex.net"
+const yadiskBaseURL = "https://disk.yandex.ru"
 
 type downloadResponse struct {
 	Href string `json:"href"`
@@ -70,6 +75,14 @@ type ResolvedPublicResource struct {
 	Name  string
 	Type  string
 	Files []PublicDownload
+}
+
+// VideoStream represents a single quality stream for a video on Yandex Disk.
+type VideoStream struct {
+	Dimension string // e.g. "720p", "480p", "360p", "240p", "adaptive"
+	Width     int
+	Height    int
+	URL       string // HLS playlist URL (.m3u8)
 }
 
 func NewClient(httpClient *http.Client) *Client {
@@ -419,6 +432,319 @@ func (c *Client) ResolvePublicFileDownloadURL(ctx context.Context, publicURL str
 
 	return c.resolveFileDirectURL(ctx, publicURL, *meta)
 }
+
+// ============================================================================
+// NEW: GetVideoStreams - Bypass read_without_download via HLS API
+// ============================================================================
+
+var (
+	reYadiskSk       = regexp.MustCompile(`"sk"\s*:\s*"([^"]+)"`)
+	reYadiskRootHash = regexp.MustCompile(`"path"\s*:\s*"([A-Za-z0-9+/]+=+):/`)
+)
+
+// GetVideoStreams fetches HLS video stream URLs for a video file in a Yandex Disk
+// public folder. It uses the undocumented get-video-streams browser API, which
+// bypasses read_without_download restrictions.
+func (c *Client) GetVideoStreams(ctx context.Context, publicURL string, itemPath string) ([]VideoStream, error) {
+	publicURL = strings.TrimSpace(publicURL)
+	itemPath = strings.TrimSpace(itemPath)
+	if publicURL == "" || itemPath == "" {
+		return nil, fmt.Errorf("yadisk GetVideoStreams: empty publicURL or itemPath")
+	}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("create cookie jar: %w", err)
+	}
+	pageClient := &http.Client{
+		Jar:     jar,
+		Timeout: c.httpClient.Timeout,
+	}
+
+	pageReq, err := http.NewRequestWithContext(ctx, http.MethodGet, publicURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	pageReq.Header.Set("User-Agent", browserUserAgent)
+	pageReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	pageReq.Header.Set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")
+
+	pageResp, err := pageClient.Do(pageReq)
+	if err != nil {
+		return nil, fmt.Errorf("fetch yadisk public page: %w", err)
+	}
+	defer pageResp.Body.Close()
+
+	pageBody, err := io.ReadAll(io.LimitReader(pageResp.Body, 4*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("read yadisk public page: %w", err)
+	}
+	pageText := string(pageBody)
+
+	skMatch := reYadiskSk.FindStringSubmatch(pageText)
+	if len(skMatch) < 2 {
+		return nil, fmt.Errorf("yadisk page: could not extract sk token")
+	}
+	sk := skMatch[1]
+
+	rootHashMatch := reYadiskRootHash.FindStringSubmatch(pageText)
+	if len(rootHashMatch) < 2 {
+		return nil, fmt.Errorf("yadisk page: could not extract root hash")
+	}
+	rootHash := rootHashMatch[1]
+
+	if !strings.HasPrefix(itemPath, "/") {
+		itemPath = "/" + itemPath
+	}
+	compositeHash := rootHash + ":" + itemPath
+
+	apiURL := yadiskBaseURL + "/public/api/get-video-streams"
+	bodyJSON, err := json.Marshal(map[string]string{"hash": compositeHash, "sk": sk})
+	if err != nil {
+		return nil, err
+	}
+	bodyEncoded := url.QueryEscape(string(bodyJSON))
+
+	apiReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewBufferString(bodyEncoded))
+	if err != nil {
+		return nil, err
+	}
+	apiReq.Header.Set("Content-Type", "text/plain")
+	apiReq.Header.Set("X-Requested-With", "XMLHttpRequest")
+	apiReq.Header.Set("User-Agent", browserUserAgent)
+	apiReq.Header.Set("Referer", publicURL)
+	apiReq.Header.Set("Accept", "*/*")
+
+	apiResp, err := pageClient.Do(apiReq)
+	if err != nil {
+		return nil, fmt.Errorf("get-video-streams request: %w", err)
+	}
+	defer apiResp.Body.Close()
+
+	if apiResp.StatusCode != http.StatusOK {
+		return nil, formatHTTPError("get-video-streams api", apiResp)
+	}
+
+	var result videoStreamsResponse
+	if err := json.NewDecoder(apiResp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode get-video-streams response: %w", err)
+	}
+	if result.Error {
+		return nil, fmt.Errorf("get-video-streams api returned error (statusCode=%d)", result.StatusCode)
+	}
+
+	streams := make([]VideoStream, 0, len(result.Data.Videos))
+	for _, v := range result.Data.Videos {
+		streams = append(streams, VideoStream{
+			Dimension: v.Dimension,
+			Width:     v.Size.Width,
+			Height:    v.Size.Height,
+			URL:       v.URL,
+		})
+	}
+	return streams, nil
+}
+
+type videoStreamsResponse struct {
+	Error      bool   `json:"error"`
+	StatusCode int    `json:"statusCode"`
+	Data       struct {
+		StreamID string             `json:"streamId"`
+		Duration int64              `json:"duration"`
+		Videos   []videoStreamEntry `json:"videos"`
+	} `json:"data"`
+}
+
+type videoStreamEntry struct {
+	Dimension string `json:"dimension"`
+	Size      struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"size"`
+	URL string `json:"url"`
+}
+
+// ChooseBestVideoStream returns the stream with the highest resolution.
+func ChooseBestVideoStream(streams []VideoStream) *VideoStream {
+	if len(streams) == 0 {
+		return nil
+	}
+	best := &streams[0]
+	for i := range streams[1:] {
+		s := &streams[i+1]
+		if s.Dimension == "adaptive" {
+			continue
+		}
+		if best.Dimension == "adaptive" || s.Height > best.Height {
+			best = s
+		}
+	}
+	return best
+}
+
+// DownloadHLSStream downloads an HLS stream from a .m3u8 playlist URL and
+// writes the concatenated MPEG-TS data to w.
+func (c *Client) DownloadHLSStream(ctx context.Context, m3u8URL string, w io.Writer) error {
+	segURLs, err := c.resolveHLSSegments(ctx, m3u8URL)
+	if err != nil {
+		return err
+	}
+	for _, segURL := range segURLs {
+		if err := c.downloadSegment(ctx, segURL, w); err != nil {
+			return fmt.Errorf("download HLS segment %s: %w", segURL, err)
+		}
+	}
+	return nil
+}
+
+func (c *Client) resolveHLSSegments(ctx context.Context, m3u8URL string) ([]string, error) {
+	playlist, baseURL, err := c.fetchM3U8(ctx, m3u8URL)
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.Contains(playlist, "#EXT-X-STREAM-INF") {
+		subURL, err := parseMasterPlaylist(playlist, baseURL)
+		if err != nil {
+			return nil, err
+		}
+		playlist, baseURL, err = c.fetchM3U8(ctx, subURL)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return parseMediaPlaylist(playlist, baseURL)
+}
+
+func (c *Client) fetchM3U8(ctx context.Context, m3u8URL string) (string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m3u8URL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("Referer", yadiskBaseURL+"/")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("fetch m3u8 %s: %w", m3u8URL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", formatHTTPError("fetch m3u8", resp)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return "", "", err
+	}
+
+	parsedURL, err := url.Parse(m3u8URL)
+	if err != nil {
+		return "", "", err
+	}
+	parsedURL.RawQuery = ""
+	lastSlash := strings.LastIndex(parsedURL.Path, "/")
+	if lastSlash >= 0 {
+		parsedURL.Path = parsedURL.Path[:lastSlash+1]
+	}
+	baseURL := parsedURL.String()
+
+	return string(body), baseURL, nil
+}
+
+func parseMasterPlaylist(playlist, baseURL string) (string, error) {
+	type entry struct {
+		bandwidth int
+		uri       string
+	}
+
+	var entries []entry
+	var curBandwidth int
+
+	scanner := bufio.NewScanner(strings.NewReader(playlist))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "#EXT-X-STREAM-INF") {
+			curBandwidth = 0
+			for _, part := range strings.Split(line, ",") {
+				if strings.HasPrefix(part, "BANDWIDTH=") {
+					fmt.Sscanf(strings.TrimPrefix(part, "BANDWIDTH="), "%d", &curBandwidth)
+				}
+			}
+		} else if line != "" && !strings.HasPrefix(line, "#") && curBandwidth > 0 {
+			uri := resolveURL(baseURL, line)
+			entries = append(entries, entry{curBandwidth, uri})
+			curBandwidth = 0
+		}
+	}
+
+	if len(entries) == 0 {
+		return "", fmt.Errorf("no sub-playlists found in HLS master playlist")
+	}
+
+	best := entries[0]
+	for _, e := range entries[1:] {
+		if e.bandwidth > best.bandwidth {
+			best = e
+		}
+	}
+	return best.uri, nil
+}
+
+func parseMediaPlaylist(playlist, baseURL string) ([]string, error) {
+	var segments []string
+	scanner := bufio.NewScanner(strings.NewReader(playlist))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		segments = append(segments, resolveURL(baseURL, line))
+	}
+	if len(segments) == 0 {
+		return nil, fmt.Errorf("no segments found in HLS media playlist")
+	}
+	return segments, nil
+}
+
+func resolveURL(baseURL, ref string) string {
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return ref
+	}
+	if !strings.HasSuffix(baseURL, "/") {
+		baseURL += "/"
+	}
+	return baseURL + ref
+}
+
+func (c *Client) downloadSegment(ctx context.Context, segURL string, w io.Writer) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, segURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", browserUserAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return formatHTTPError("download segment", resp)
+	}
+
+	_, err = io.Copy(w, resp.Body)
+	return err
+}
+
+const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+// ============================================================================
+// ORIGINAL: Helper functions
+// ============================================================================
 
 func directURLFromResourceMeta(meta publicResourceResponse) string {
 	if fileURL := strings.TrimSpace(meta.File); fileURL != "" {

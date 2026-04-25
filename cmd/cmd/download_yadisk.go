@@ -154,6 +154,17 @@ func (r *Root) downloadSingleYandexDiskLink(
 					continue
 				}
 
+				// For videos with read_without_download restriction, fall back to HLS streaming.
+				if strings.Contains(err.Error(), "forbids file download") && isVideoFile(item.Name) {
+					r.log.Info("attempting HLS fallback for restricted video", "item", item.Name, "path", item.Path)
+					hlsErr := r.downloadYandexDiskHLS(ctx, ydClient, externalLink.URL, item, targetPath, p)
+					if hlsErr == nil {
+						tracker.Increment(1)
+						continue
+					}
+					r.log.Error(hlsErr, "HLS fallback failed", "item", item.Name)
+				}
+
 				tracker.Fail()
 				return fmt.Errorf("resolve yadisk file url for msg_id=%d link=%q item=%q path=%q: %w", externalLink.MessageID, externalLink.URL, item.Name, item.Path, err)
 			}
@@ -307,6 +318,48 @@ func (r *Root) downloadSingleYandexDiskLink(
 	return nil
 }
 
+func (r *Root) downloadYandexDiskHLS(
+	ctx context.Context,
+	ydClient *yadisk.Client,
+	publicURL string,
+	item yadisk.PublicDownload,
+	targetPath string,
+	p renderer.Progress,
+) error {
+	streams, err := ydClient.GetVideoStreams(ctx, publicURL, item.Path)
+	if err != nil {
+		return fmt.Errorf("get video streams: %w", err)
+	}
+	if len(streams) == 0 {
+		return fmt.Errorf("no video streams available")
+	}
+
+	best := yadisk.ChooseBestVideoStream(streams)
+	r.log.Info("downloading HLS stream", "item", item.Name, "quality", best.Dimension, "url", best.URL)
+
+	file, err := os.Create(targetPath)
+	if err != nil {
+		return fmt.Errorf("create target file %q: %w", targetPath, err)
+	}
+
+	bytesTracker := p.BytesTracker(file, item.Name, 0)
+	hlsErr := ydClient.DownloadHLSStream(ctx, best.URL, bytesTracker)
+	fileCloseErr := file.Close()
+
+	if hlsErr != nil {
+		bytesTracker.Fail()
+		_ = os.Remove(targetPath)
+		return fmt.Errorf("download HLS stream: %w", hlsErr)
+	}
+	if fileCloseErr != nil {
+		bytesTracker.Fail()
+		_ = os.Remove(targetPath)
+		return fmt.Errorf("close target file: %w", fileCloseErr)
+	}
+	bytesTracker.Done()
+	return nil
+}
+
 func yandexDiskSubdirs(metadata map[string]interface{}, saveByHashtags bool) []string {
 	if metadata == nil {
 		return nil
@@ -339,6 +392,16 @@ func isSkippableYandexItem(name string, err error) bool {
 	fileName := strings.ToLower(strings.TrimSpace(name))
 	switch fileName {
 	case "thumbs.db", ".ds_store", "desktop.ini":
+		return true
+	default:
+		return false
+	}
+}
+
+func isVideoFile(name string) bool {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(name)))
+	switch ext {
+	case ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg", ".3gp":
 		return true
 	default:
 		return false
