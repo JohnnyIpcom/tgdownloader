@@ -66,6 +66,7 @@ type Client struct {
 	UserService   UserService
 	PeerService   PeerService
 	FileService   FileService
+	LinkService   LinkService
 	DialogService DialogService
 	CacheService  CacheService
 }
@@ -177,6 +178,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	cli.UserService = (*userService)(&cli.common)
 	cli.PeerService = (*peerService)(&cli.common)
 	cli.FileService = (*fileService)(&cli.common)
+	cli.LinkService = (*linkService)(&cli.common)
 	cli.DialogService = (*dialogService)(&cli.common)
 	cli.CacheService = (*cacheService)(&cli.common)
 	return cli, nil

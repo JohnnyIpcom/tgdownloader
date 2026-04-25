@@ -88,16 +88,45 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 	downloadMessageCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
 	downloadMessageCmd.Flags().BoolVar(&opts.ps, "ps", false, "Enable status information")
 
+	downloadYandexDiskCmd := &cobra.Command{
+		Use:   "yadisk",
+		Short: "Download files from Yandex Disk links in peer history",
+		Long:  `Download files from Yandex Disk links found in message text of chat, channel or user history.`,
+		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_suggest": "any",
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			peer, err := r.resolvePeer(cmd.Context(), args[0])
+			if err != nil {
+				r.log.Error(err, "failed to parse peer")
+				return err
+			}
+
+			return r.downloadYandexDiskFromPeer(cmd.Context(), peer, opts)
+		},
+	}
+
+	downloadYandexDiskCmd.Flags().IntVarP(&opts.limit, "limit", "l", 0, "Limit of links to download")
+	downloadYandexDiskCmd.Flags().Int64VarP(&opts.user, "user", "u", 0, "User ID to download from")
+	downloadYandexDiskCmd.Flags().StringVarP(&opts.offsetDate, "offset-date", "d", "", "Offset date to download from, format: 2006-01-02 15:04:05")
+	downloadYandexDiskCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
+	downloadYandexDiskCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
+	downloadYandexDiskCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
+	downloadYandexDiskCmd.Flags().BoolVar(&opts.ps, "ps", false, "Enable status information")
+
 	downloadCmd.AddCommand(
 		downloadHistoryCmd,
 		downloadWatcherCmd,
 		downloadMessageCmd,
+		downloadYandexDiskCmd,
 	)
 
 	r.setupConnectionForCmd(
 		downloadHistoryCmd,
 		downloadWatcherCmd,
 		downloadMessageCmd,
+		downloadYandexDiskCmd,
 	)
 	return downloadCmd
 }
