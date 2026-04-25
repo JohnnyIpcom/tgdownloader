@@ -40,7 +40,10 @@ downloads/
 *.pem
 
 # Database
-*.db/api_inspect_report.txt
+*.db
+storage.db
+
+/api_inspect_report.txt
 /probe_hls.ps1
 /tmp_yadisk_page.html
 /tmp_yadisk_public_bundle.js

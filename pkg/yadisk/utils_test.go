@@ -1,11 +1,11 @@
-package cmd
+package yadisk
 
 import (
 	"errors"
 	"testing"
 )
 
-func TestYandexDiskSubdirs(t *testing.T) {
+func TestBuildSubdirectories(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -44,9 +44,9 @@ func TestYandexDiskSubdirs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := yandexDiskSubdirs(tt.metadata, tt.hashtags)
+			got := BuildSubdirectories(tt.metadata, tt.hashtags)
 			if len(got) != tt.wantLen {
-				t.Fatalf("yandexDiskSubdirs() length = %d, want %d", len(got), tt.wantLen)
+				t.Fatalf("BuildSubdirectories() length = %d, want %d", len(got), tt.wantLen)
 			}
 		})
 	}
@@ -92,8 +92,8 @@ func TestIsSkippableYandexItem(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := isSkippableYandexItem(tt.fileName, tt.err); got != tt.want {
-				t.Fatalf("isSkippableYandexItem() = %v, want %v", got, tt.want)
+			if got := IsSkippableYandexItem(tt.fileName, tt.err); got != tt.want {
+				t.Fatalf("IsSkippableYandexItem() = %v, want %v", got, tt.want)
 			}
 		})
 	}
