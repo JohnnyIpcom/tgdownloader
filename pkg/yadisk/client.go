@@ -546,8 +546,8 @@ func (c *Client) GetVideoStreams(ctx context.Context, publicURL string, itemPath
 }
 
 type videoStreamsResponse struct {
-	Error      bool   `json:"error"`
-	StatusCode int    `json:"statusCode"`
+	Error      bool `json:"error"`
+	StatusCode int  `json:"statusCode"`
 	Data       struct {
 		StreamID string             `json:"streamId"`
 		Duration int64              `json:"duration"`

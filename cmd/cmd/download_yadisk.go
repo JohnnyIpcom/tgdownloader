@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/yadisk"
 )
 
+// downloadYandexDiskFromPeer downloads all Yandex Disk links from a peer's messages.
 func (r *Root) downloadYandexDiskFromPeer(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
 	getFileOptions, err := opts.newGetAllFilesOptions()
 	if err != nil {
@@ -31,19 +31,10 @@ func (r *Root) downloadYandexDiskFromPeer(ctx context.Context, peer peers.Peer, 
 	return r.downloadYandexDiskLinks(ctx, links, opts)
 }
 
+// downloadYandexDiskLinks orchestrates downloading multiple Yandex Disk links.
 func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegram.ExternalLink, opts downloadOptions) error {
 	outputDir := r.cfg.GetString("downloader.dir.output")
-	httpClient := &http.Client{
-		Timeout: 45 * time.Second,
-		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 12 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			TLSHandshakeTimeout:   12 * time.Second,
-			ResponseHeaderTimeout: 20 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			IdleConnTimeout:       60 * time.Second,
-		},
-	}
+	httpClient := createYadiskHTTPClient()
 	ydClient := yadisk.NewClient(httpClient)
 
 	p := renderer.NewProgress()
@@ -73,6 +64,7 @@ func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegra
 	}
 }
 
+// downloadSingleYandexDiskLink downloads a single Yandex Disk resource (file or directory).
 func (r *Root) downloadSingleYandexDiskLink(
 	ctx context.Context,
 	ydClient *yadisk.Client,
@@ -81,12 +73,14 @@ func (r *Root) downloadSingleYandexDiskLink(
 	opts downloadOptions,
 	p renderer.Progress,
 ) error {
-	subdirs := yandexDiskSubdirs(externalLink.Metadata, opts.hashtags)
+	// Build target directory
+	subdirs := yadisk.BuildSubdirectories(externalLink.Metadata, opts.hashtags)
 	targetDir := outputDir
 	for _, subdir := range subdirs {
 		targetDir = filepath.Join(targetDir, subdir)
 	}
 
+	// Resolve the Yandex Disk resource
 	resolveTracker := p.UnitsTracker(fmt.Sprintf("yadisk:msg:%d:resolve", externalLink.MessageID), 1)
 	resource, err := ydClient.ResolvePublicResourceDownloads(ctx, externalLink.URL)
 	if err != nil {
@@ -108,25 +102,40 @@ func (r *Root) downloadSingleYandexDiskLink(
 
 	tracker := p.UnitsTracker(fmt.Sprintf("yadisk:msg:%d", externalLink.MessageID), len(resource.Files))
 
+	// Handle dry-run mode
 	if opts.dryRun {
 		for _, item := range resource.Files {
 			dir := targetDir
 			if strings.TrimSpace(item.RelativeDir) != "" {
 				dir = filepath.Join(targetDir, filepath.FromSlash(item.RelativeDir))
 			}
-
-			r.log.Info("dry-run yandex disk file", "link", externalLink.URL, "direct_url", item.DirectURL, "dir", dir, "name", item.Name)
+			r.log.Info("dry-run yandex disk file", "link", externalLink.URL, "dir", dir, "name", item.Name)
 			tracker.Increment(1)
 		}
 		tracker.Done()
 		return nil
 	}
 
+	// Prepare target directory
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		tracker.Fail()
-		return fmt.Errorf("prepare target dir %q for msg_id=%d: %w", targetDir, externalLink.MessageID, err)
+		return fmt.Errorf("prepare target dir %q: %w", targetDir, err)
 	}
 
+	// Create downloader service
+	dlOpts := yadisk.FileDownloadOptions{
+		AllowRewrite: opts.rewrite,
+		DryRun:       opts.dryRun,
+	}
+	downloader := yadisk.NewFileDownloader(ydClient, dlOpts)
+	downloader.SetLogCallback(func(msg string, fields ...interface{}) {
+		r.log.Info(msg, fields...)
+	})
+	downloader.SetErrorCallback(func(err error) {
+		r.log.Error(err, "download error")
+	})
+
+	// Download each file
 	for _, item := range resource.Files {
 		itemDir := targetDir
 		if strings.TrimSpace(item.RelativeDir) != "" {
@@ -135,182 +144,33 @@ func (r *Root) downloadSingleYandexDiskLink(
 
 		if err := os.MkdirAll(itemDir, 0755); err != nil {
 			tracker.Fail()
-			return fmt.Errorf("prepare target dir %q for msg_id=%d: %w", itemDir, externalLink.MessageID, err)
+			return fmt.Errorf("prepare item dir %q: %w", itemDir, err)
 		}
 
 		targetPath := filepath.Join(itemDir, item.Name)
-		if _, err := os.Stat(targetPath); err == nil && !opts.rewrite {
-			r.log.Info("skip existing yandex disk file", "file", targetPath)
+
+		// Create progress writer for this file
+		fileSize := item.Size
+		if fileSize <= 0 {
+			fileSize = 0
+		}
+		bytesTracker := p.BytesTracker(nil, item.Name, fileSize)
+
+		// Download the file
+		downloaded, err := downloader.DownloadFile(ctx, externalLink.URL, item, targetPath, bytesTracker)
+		if err != nil {
+			bytesTracker.Fail()
+			tracker.Fail()
+			return fmt.Errorf("download file %q: %w", item.Name, err)
+		}
+
+		// Skip if the file was skipped (not an error)
+		if downloaded == nil {
 			tracker.Increment(1)
 			continue
 		}
 
-		if strings.TrimSpace(item.DirectURL) == "" {
-			directURL, err := ydClient.ResolvePublicFileDownloadURL(ctx, externalLink.URL, item)
-			if err != nil {
-				if isSkippableYandexItem(item.Name, err) {
-					r.log.Info("skip non-critical yadisk item", "item", item.Name, "path", item.Path, "reason", err.Error())
-					tracker.Increment(1)
-					continue
-				}
-
-				// For videos with read_without_download restriction, fall back to HLS streaming.
-				if strings.Contains(err.Error(), "forbids file download") && isVideoFile(item.Name) {
-					r.log.Info("attempting HLS fallback for restricted video", "item", item.Name, "path", item.Path)
-					hlsErr := r.downloadYandexDiskHLS(ctx, ydClient, externalLink.URL, item, targetPath, p)
-					if hlsErr == nil {
-						tracker.Increment(1)
-						continue
-					}
-					r.log.Error(hlsErr, "HLS fallback failed", "item", item.Name)
-				}
-
-				tracker.Fail()
-				return fmt.Errorf("resolve yadisk file url for msg_id=%d link=%q item=%q path=%q: %w", externalLink.MessageID, externalLink.URL, item.Name, item.Path, err)
-			}
-			item.DirectURL = directURL
-		}
-
-		publicFile, err := ydClient.OpenDirectFile(ctx, item)
-		if err != nil {
-			tracker.Fail()
-			return fmt.Errorf("open yadisk file for msg_id=%d link=%q item=%q: %w", externalLink.MessageID, externalLink.URL, item.Name, err)
-		}
-
-		file, err := os.Create(targetPath)
-		if err != nil {
-			_ = publicFile.Body.Close()
-			tracker.Fail()
-			return fmt.Errorf("create target file %q for msg_id=%d: %w", targetPath, externalLink.MessageID, err)
-		}
-
-		total := publicFile.Size
-		if total < 0 {
-			total = 0
-		}
-
-		bytesTracker := p.BytesTracker(file, publicFile.Name, total)
-		written, copyErr := io.Copy(bytesTracker, publicFile.Body)
-		closeErr := publicFile.Body.Close()
-		if copyErr != nil {
-			bytesTracker.Fail()
-			tracker.Fail()
-			_ = file.Close()
-			_ = os.Remove(targetPath)
-			return fmt.Errorf("download yadisk body for msg_id=%d link=%q into %q: %w", externalLink.MessageID, externalLink.URL, targetPath, copyErr)
-		}
-		if closeErr != nil {
-			bytesTracker.Fail()
-			tracker.Fail()
-			_ = file.Close()
-			_ = os.Remove(targetPath)
-			return fmt.Errorf("close yadisk response body for msg_id=%d link=%q into %q: %w", externalLink.MessageID, externalLink.URL, targetPath, closeErr)
-		}
-
-		if total > 0 && written < total {
-			const maxRangeParts = 256
-			for part := 0; written < total && part < maxRangeParts; part++ {
-				rangeFile, err := ydClient.OpenDirectFileRange(ctx, item, written)
-				if err != nil {
-					bytesTracker.Fail()
-					tracker.Fail()
-					_ = file.Close()
-					_ = os.Remove(targetPath)
-					return fmt.Errorf("resume yadisk download for msg_id=%d link=%q item=%q offset=%d: %w", externalLink.MessageID, externalLink.URL, item.Name, written, err)
-				}
-
-				if rangeFile.Offset == 0 && written > 0 {
-					// Server ignored Range and returned full body from the beginning.
-					if err := file.Truncate(0); err != nil {
-						_ = rangeFile.Body.Close()
-						bytesTracker.Fail()
-						tracker.Fail()
-						_ = file.Close()
-						_ = os.Remove(targetPath)
-						return fmt.Errorf("truncate file before full restart for msg_id=%d link=%q item=%q: %w", externalLink.MessageID, externalLink.URL, item.Name, err)
-					}
-					if _, err := file.Seek(0, 0); err != nil {
-						_ = rangeFile.Body.Close()
-						bytesTracker.Fail()
-						tracker.Fail()
-						_ = file.Close()
-						_ = os.Remove(targetPath)
-						return fmt.Errorf("seek file before full restart for msg_id=%d link=%q item=%q: %w", externalLink.MessageID, externalLink.URL, item.Name, err)
-					}
-
-					rewritten, restartErr := io.Copy(file, rangeFile.Body)
-					rangeCloseErr := rangeFile.Body.Close()
-					if restartErr != nil {
-						bytesTracker.Fail()
-						tracker.Fail()
-						_ = file.Close()
-						_ = os.Remove(targetPath)
-						return fmt.Errorf("restart full yadisk copy for msg_id=%d link=%q item=%q: %w", externalLink.MessageID, externalLink.URL, item.Name, restartErr)
-					}
-					if rangeCloseErr != nil {
-						bytesTracker.Fail()
-						tracker.Fail()
-						_ = file.Close()
-						_ = os.Remove(targetPath)
-						return fmt.Errorf("close restarted yadisk response body for msg_id=%d link=%q item=%q: %w", externalLink.MessageID, externalLink.URL, item.Name, rangeCloseErr)
-					}
-					if rewritten <= 0 {
-						bytesTracker.Fail()
-						tracker.Fail()
-						_ = file.Close()
-						_ = os.Remove(targetPath)
-						return fmt.Errorf("restart full yadisk copy made no progress for msg_id=%d link=%q item=%q", externalLink.MessageID, externalLink.URL, item.Name)
-					}
-
-					written = rewritten
-					continue
-				}
-
-				chunkWritten, chunkErr := io.Copy(bytesTracker, rangeFile.Body)
-				rangeCloseErr := rangeFile.Body.Close()
-				if chunkErr != nil {
-					bytesTracker.Fail()
-					tracker.Fail()
-					_ = file.Close()
-					_ = os.Remove(targetPath)
-					return fmt.Errorf("resume copy yadisk body for msg_id=%d link=%q item=%q offset=%d: %w", externalLink.MessageID, externalLink.URL, item.Name, written, chunkErr)
-				}
-				if rangeCloseErr != nil {
-					bytesTracker.Fail()
-					tracker.Fail()
-					_ = file.Close()
-					_ = os.Remove(targetPath)
-					return fmt.Errorf("close resumed yadisk response body for msg_id=%d link=%q item=%q offset=%d: %w", externalLink.MessageID, externalLink.URL, item.Name, written, rangeCloseErr)
-				}
-				if chunkWritten <= 0 {
-					bytesTracker.Fail()
-					tracker.Fail()
-					_ = file.Close()
-					_ = os.Remove(targetPath)
-					return fmt.Errorf("resume made no progress for msg_id=%d link=%q item=%q offset=%d", externalLink.MessageID, externalLink.URL, item.Name, written)
-				}
-
-				written += chunkWritten
-			}
-
-			if written < total {
-				bytesTracker.Fail()
-				tracker.Fail()
-				_ = file.Close()
-				_ = os.Remove(targetPath)
-				return fmt.Errorf("incomplete yadisk download for msg_id=%d link=%q item=%q: got %d bytes of %d", externalLink.MessageID, externalLink.URL, item.Name, written, total)
-			}
-		}
-
-		fileCloseErr := file.Close()
-		if fileCloseErr != nil {
-			bytesTracker.Fail()
-			tracker.Fail()
-			_ = os.Remove(targetPath)
-			return fmt.Errorf("close target file %q for msg_id=%d: %w", targetPath, externalLink.MessageID, fileCloseErr)
-		}
 		bytesTracker.Done()
-
 		tracker.Increment(1)
 	}
 
@@ -318,92 +178,17 @@ func (r *Root) downloadSingleYandexDiskLink(
 	return nil
 }
 
-func (r *Root) downloadYandexDiskHLS(
-	ctx context.Context,
-	ydClient *yadisk.Client,
-	publicURL string,
-	item yadisk.PublicDownload,
-	targetPath string,
-	p renderer.Progress,
-) error {
-	streams, err := ydClient.GetVideoStreams(ctx, publicURL, item.Path)
-	if err != nil {
-		return fmt.Errorf("get video streams: %w", err)
-	}
-	if len(streams) == 0 {
-		return fmt.Errorf("no video streams available")
-	}
-
-	best := yadisk.ChooseBestVideoStream(streams)
-	r.log.Info("downloading HLS stream", "item", item.Name, "quality", best.Dimension, "url", best.URL)
-
-	file, err := os.Create(targetPath)
-	if err != nil {
-		return fmt.Errorf("create target file %q: %w", targetPath, err)
-	}
-
-	bytesTracker := p.BytesTracker(file, item.Name, 0)
-	hlsErr := ydClient.DownloadHLSStream(ctx, best.URL, bytesTracker)
-	fileCloseErr := file.Close()
-
-	if hlsErr != nil {
-		bytesTracker.Fail()
-		_ = os.Remove(targetPath)
-		return fmt.Errorf("download HLS stream: %w", hlsErr)
-	}
-	if fileCloseErr != nil {
-		bytesTracker.Fail()
-		_ = os.Remove(targetPath)
-		return fmt.Errorf("close target file: %w", fileCloseErr)
-	}
-	bytesTracker.Done()
-	return nil
-}
-
-func yandexDiskSubdirs(metadata map[string]interface{}, saveByHashtags bool) []string {
-	if metadata == nil {
-		return nil
-	}
-
-	var subdirs []string
-	if peerName, ok := metadata["peername"].(string); ok && peerName != "" {
-		subdirs = append(subdirs, peerName)
-	}
-
-	if saveByHashtags {
-		if hashtags, ok := metadata["hashtags"].([]string); ok {
-			subdirs = append(subdirs, hashtags...)
-		}
-	}
-
-	return subdirs
-}
-
-func isSkippableYandexItem(name string, err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errText := strings.ToLower(err.Error())
-	if !strings.Contains(errText, "empty href") {
-		return false
-	}
-
-	fileName := strings.ToLower(strings.TrimSpace(name))
-	switch fileName {
-	case "thumbs.db", ".ds_store", "desktop.ini":
-		return true
-	default:
-		return false
-	}
-}
-
-func isVideoFile(name string) bool {
-	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(name)))
-	switch ext {
-	case ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg", ".3gp":
-		return true
-	default:
-		return false
+// createYadiskHTTPClient creates an HTTP client with proper timeouts and transport settings.
+func createYadiskHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 45 * time.Second,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 12 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   12 * time.Second,
+			ResponseHeaderTimeout: 20 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			IdleConnTimeout:       60 * time.Second,
+		},
 	}
 }
