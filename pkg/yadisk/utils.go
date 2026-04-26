@@ -37,6 +37,21 @@ func IsSkippableYandexItem(name string, err error) bool {
 	}
 }
 
+// ShouldUseHLSFallback checks if we should try HLS fallback for a file.
+// We use it for video files when the direct URL API is blocked or empty.
+func ShouldUseHLSFallback(name string, err error) bool {
+	if err == nil || !IsVideoFile(name) {
+		return false
+	}
+
+	errText := strings.ToLower(err.Error())
+	if strings.Contains(errText, "forbids file download") {
+		return true
+	}
+
+	return strings.Contains(errText, "empty href")
+}
+
 // BuildSubdirectories constructs subdirectories from metadata.
 // saveByHashtags indicates whether to include hashtags as subdirectories.
 func BuildSubdirectories(metadata map[string]interface{}, saveByHashtags bool) []string {
@@ -45,7 +60,7 @@ func BuildSubdirectories(metadata map[string]interface{}, saveByHashtags bool) [
 	}
 
 	var subdirs []string
-	
+
 	if peerName, ok := metadata["peername"].(string); ok && peerName != "" {
 		subdirs = append(subdirs, peerName)
 	}

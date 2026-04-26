@@ -148,6 +148,10 @@ func (bt *bytesTracker) Write(p []byte) (int, error) {
 }
 
 func (p *progressImpl) BytesTracker(writer io.Writer, message string, total int64) BytesTracker {
+	if writer == nil {
+		writer = io.Discard
+	}
+
 	tracker := &bytesTracker{
 		writer: writer,
 		tracker: &tracker{

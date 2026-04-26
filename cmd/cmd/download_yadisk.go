@@ -148,6 +148,11 @@ func (r *Root) downloadSingleYandexDiskLink(
 		}
 
 		targetPath := filepath.Join(itemDir, item.Name)
+		if _, err := os.Stat(targetPath); err == nil && !opts.rewrite {
+			r.log.Info("skip existing yandex disk file", "file", targetPath)
+			tracker.Increment(1)
+			continue
+		}
 
 		// Create progress writer for this file
 		fileSize := item.Size

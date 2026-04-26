@@ -27,7 +27,7 @@ type DownloadedFile struct {
 type FileDownloader struct {
 	client  *Client
 	opts    FileDownloadOptions
-	onError func(error)  // optional error callback
+	onError func(error)                                 // optional error callback
 	onLog   func(message string, fields ...interface{}) // optional logging callback
 }
 
@@ -77,15 +77,17 @@ func (fd *FileDownloader) DownloadFile(
 		var err error
 		directURL, err = fd.client.ResolvePublicFileDownloadURL(ctx, publicURL, file)
 		if err != nil {
-			// Try HLS fallback for videos
-			if strings.Contains(err.Error(), "forbids file download") && IsVideoFile(file.Name) {
+			// Try HLS fallback for videos when direct URL is restricted or unavailable.
+			if ShouldUseHLSFallback(file.Name, err) {
 				fd.log("attempting HLS fallback", "file", file.Name)
 				downloaded, hlsErr := fd.downloadViaHLS(ctx, publicURL, file, targetPath, progressWriter)
 				if hlsErr == nil {
 					fd.log("successfully downloaded via HLS", "file", file.Name)
 					return downloaded, nil
 				}
-				fd.onError(fmt.Errorf("HLS fallback failed for %s: %w", file.Name, hlsErr))
+				if fd.onError != nil {
+					fd.onError(fmt.Errorf("HLS fallback failed for %s: %w", file.Name, hlsErr))
+				}
 			}
 
 			// Check if error is skippable
@@ -98,15 +100,40 @@ func (fd *FileDownloader) DownloadFile(
 		}
 	}
 
+	file.DirectURL = directURL
+
 	// Download via direct URL
-	return fd.downloadViaDirect(ctx, file, directURL, targetPath, progressWriter)
+	downloaded, err := fd.downloadViaDirect(ctx, file, targetPath, progressWriter)
+	if err == nil {
+		return downloaded, nil
+	}
+
+	if strings.TrimSpace(file.Path) == "" {
+		return nil, err
+	}
+
+	fd.log("retrying direct download with refreshed URL", "file", file.Name, "path", file.Path)
+	refreshedURL, refreshErr := fd.client.ResolvePublicFileDownloadURL(ctx, publicURL, PublicDownload{
+		Name: file.Name,
+		Path: file.Path,
+		Size: file.Size,
+	})
+	if refreshErr != nil {
+		return nil, err
+	}
+
+	file.DirectURL = strings.TrimSpace(refreshedURL)
+	if file.DirectURL == "" {
+		return nil, err
+	}
+
+	return fd.downloadViaDirect(ctx, file, targetPath, progressWriter)
 }
 
 // downloadViaDirect downloads a file from a direct URL with resume support.
 func (fd *FileDownloader) downloadViaDirect(
 	ctx context.Context,
 	file PublicDownload,
-	directURL string,
 	targetPath string,
 	progressWriter io.Writer,
 ) (*DownloadedFile, error) {
@@ -128,7 +155,11 @@ func (fd *FileDownloader) downloadViaDirect(
 	}
 
 	// Download with progress tracking
-	written, copyErr := io.Copy(progressWriter, publicFile.Body)
+	var writer io.Writer = out
+	if progressWriter != nil {
+		writer = io.MultiWriter(out, progressWriter)
+	}
+	written, copyErr := io.Copy(writer, publicFile.Body)
 	if copyErr != nil {
 		out.Close()
 		os.Remove(targetPath)
@@ -137,7 +168,7 @@ func (fd *FileDownloader) downloadViaDirect(
 
 	// Handle resume if not all bytes were downloaded
 	if total > 0 && written < total {
-		written, err = fd.resumeDownload(ctx, file, out, written, total)
+		written, err = fd.resumeDownload(ctx, file, out, written, total, progressWriter)
 		if err != nil {
 			out.Close()
 			os.Remove(targetPath)
@@ -160,6 +191,7 @@ func (fd *FileDownloader) resumeDownload(
 	out *os.File,
 	currentOffset int64,
 	total int64,
+	progressWriter io.Writer,
 ) (int64, error) {
 	const maxRangeParts = 256
 
@@ -169,22 +201,31 @@ func (fd *FileDownloader) resumeDownload(
 		if err != nil {
 			return written, fmt.Errorf("open range at offset %d: %w", written, err)
 		}
-		defer rangeFile.Body.Close()
 
 		// Handle server ignoring Range and returning full body
 		if rangeFile.Offset == 0 && written > 0 {
 			if err := out.Truncate(0); err != nil {
+				_ = rangeFile.Body.Close()
 				return written, fmt.Errorf("truncate file: %w", err)
 			}
 			if _, err := out.Seek(0, 0); err != nil {
+				_ = rangeFile.Body.Close()
 				return written, fmt.Errorf("seek to start: %w", err)
 			}
 			written = 0
 		}
 
-		chunkWritten, err := io.Copy(out, rangeFile.Body)
+		var chunkWriter io.Writer = out
+		if progressWriter != nil {
+			chunkWriter = io.MultiWriter(out, progressWriter)
+		}
+		chunkWritten, err := io.Copy(chunkWriter, rangeFile.Body)
+		closeErr := rangeFile.Body.Close()
 		if err != nil {
 			return written, fmt.Errorf("copy range: %w", err)
+		}
+		if closeErr != nil {
+			return written, fmt.Errorf("close range body: %w", closeErr)
 		}
 
 		if chunkWritten <= 0 {

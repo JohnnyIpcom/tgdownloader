@@ -98,3 +98,56 @@ func TestIsSkippableYandexItem(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldUseHLSFallback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		fileName string
+		err      error
+		want     bool
+	}{
+		{
+			name:     "VideoForbidsDownload",
+			fileName: "movie.mp4",
+			err:      errors.New("yandex disk public link forbids file download"),
+			want:     true,
+		},
+		{
+			name:     "VideoEmptyHref",
+			fileName: "movie.mp4",
+			err:      errors.New("yandex disk api returned empty href (type=\"file\")"),
+			want:     true,
+		},
+		{
+			name:     "ImageEmptyHref",
+			fileName: "image.jpg",
+			err:      errors.New("yandex disk api returned empty href"),
+			want:     false,
+		},
+		{
+			name:     "VideoOtherError",
+			fileName: "movie.mp4",
+			err:      errors.New("unexpected yandex disk api status: 403"),
+			want:     false,
+		},
+		{
+			name:     "NoError",
+			fileName: "movie.mp4",
+			err:      nil,
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := ShouldUseHLSFallback(tt.fileName, tt.err); got != tt.want {
+				t.Fatalf("ShouldUseHLSFallback() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

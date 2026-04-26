@@ -1,1 +1,2 @@
-tgdownloader.exe prompt
+@echo off
+"%~dp0tgdownloader.exe" prompt

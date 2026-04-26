@@ -284,10 +284,12 @@ func (c *Client) collectDirectoryFiles(ctx context.Context, publicURL, rootPath,
 			}
 
 			files = append(files, PublicDownload{
-				Name:        fileName,
-				Size:        item.Size,
-				Path:        item.Path,
-				DirectURL:   directURLFromResourceMeta(item),
+				Name: fileName,
+				Size: item.Size,
+				Path: item.Path,
+				// Always resolve direct URL lazily per-file via file path to avoid
+				// stale/preview URLs from directory listing metadata.
+				DirectURL:   "",
 				RelativeDir: relDir,
 			})
 		}
@@ -800,6 +802,8 @@ func chooseResourceSizeURL(meta publicResourceResponse) string {
 
 func sizeRank(name string) int {
 	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "original":
+		return 110
 	case "orig":
 		return 100
 	case "xxxl":
@@ -879,10 +883,7 @@ func (c *Client) openDirectFileAt(ctx context.Context, file PublicDownload, offs
 	}
 
 	name := FilenameFromResponse(resp, file.Name)
-	size := file.Size
-	if size <= 0 {
-		size = resp.ContentLength
-	}
+	size := resolveDownloadSize(file.Size, resp.ContentLength, offset)
 
 	actualOffset := int64(0)
 	if offset > 0 && resp.StatusCode == http.StatusPartialContent {
@@ -896,6 +897,16 @@ func (c *Client) openDirectFileAt(ctx context.Context, file PublicDownload, offs
 		DirectURL: directURL,
 		Body:      resp.Body,
 	}, nil
+}
+
+func resolveDownloadSize(fileSize, contentLength, offset int64) int64 {
+	if offset == 0 && contentLength > 0 {
+		return contentLength
+	}
+	if fileSize > 0 {
+		return fileSize
+	}
+	return contentLength
 }
 
 func FilenameFromResponse(resp *http.Response, fallback string) string {

@@ -312,8 +312,14 @@ func TestResolvePublicResourceDownloadsDirectory(t *testing.T) {
 	if resource.Files[0].Name != "a.jpg" || resource.Files[0].RelativeDir != "" {
 		t.Fatalf("unexpected first file: %+v", resource.Files[0])
 	}
+	if resource.Files[0].DirectURL != "" {
+		t.Fatalf("expected empty direct url for lazy resolution, got: %q", resource.Files[0].DirectURL)
+	}
 	if resource.Files[1].Name != "b.jpg" || resource.Files[1].RelativeDir != "nested" {
 		t.Fatalf("unexpected second file: %+v", resource.Files[1])
+	}
+	if resource.Files[1].DirectURL != "" {
+		t.Fatalf("expected empty direct url for lazy resolution, got: %q", resource.Files[1].DirectURL)
 	}
 }
 
@@ -564,6 +570,66 @@ func TestFilenameFromResponse(t *testing.T) {
 	noMeta := &http.Response{Header: http.Header{}, Request: &http.Request{URL: mustParseURL("https://host/")}}
 	if got := FilenameFromResponse(noMeta, "fallback.bin"); got != "fallback.bin" {
 		t.Fatalf("expected fallback filename, got %q", got)
+	}
+}
+
+func TestResolveDownloadSize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		fileSize      int64
+		contentLength int64
+		offset        int64
+		want          int64
+	}{
+		{
+			name:          "InitialPrefersContentLength",
+			fileSize:      5974172,
+			contentLength: 57072,
+			offset:        0,
+			want:          57072,
+		},
+		{
+			name:          "InitialFallsBackToMetadata",
+			fileSize:      5974172,
+			contentLength: -1,
+			offset:        0,
+			want:          5974172,
+		},
+		{
+			name:          "RangeKeepsOriginalTotal",
+			fileSize:      5974172,
+			contentLength: 1024,
+			offset:        2048,
+			want:          5974172,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := resolveDownloadSize(tt.fileSize, tt.contentLength, tt.offset); got != tt.want {
+				t.Fatalf("resolveDownloadSize() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChooseResourceSizeURLPrefersOriginal(t *testing.T) {
+	t.Parallel()
+
+	meta := publicResourceResponse{
+		Sizes: []resourceSize{
+			{Name: "XXXL", URL: "https://example.com/preview.jpg"},
+			{Name: "ORIGINAL", URL: "https://example.com/original.jpg"},
+		},
+	}
+
+	if got := chooseResourceSizeURL(meta); got != "https://example.com/original.jpg" {
+		t.Fatalf("chooseResourceSizeURL() = %q, want original URL", got)
 	}
 }
 
