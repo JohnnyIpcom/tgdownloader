@@ -126,19 +126,6 @@ func GetFileWithGrouped(grouped bool) GetFileOption {
 	return getFileWithGrouped{grouped: grouped}
 }
 
-func (s *fileService) extractFileFromMessageElem(ctx context.Context, elem messages.Elem) (*File, int64, error) {
-	files, peerID, err := s.extractFilesFromMessageElem(ctx, elem)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	if len(files) == 0 {
-		return nil, peerID, errNoFilesInMessage
-	}
-
-	return files[0], peerID, nil
-}
-
 func (s *fileService) extractFilesFromMessageElem(ctx context.Context, elem messages.Elem) ([]*File, int64, error) {
 	files, err := getFilesFromMessageElem(elem)
 	if err != nil {

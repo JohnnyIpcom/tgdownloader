@@ -115,15 +115,6 @@ func getPhotoFile(photoClass tg.PhotoClass) (*File, error) {
 	}, nil
 }
 
-func getPhotoFromMessage(elem messages.Elem) (*File, error) {
-	photo, ok := elem.Photo()
-	if !ok {
-		return nil, errNoFilesInMessage
-	}
-
-	return getPhotoFile(photo)
-}
-
 func getDocumentFile(docClass tg.DocumentClass) (*File, error) {
 	doc, ok := docClass.(*tg.Document)
 	if !ok {
@@ -202,15 +193,6 @@ func getDocumentFile(docClass tg.DocumentClass) (*File, error) {
 			"mime_type": doc.MimeType,
 		},
 	}, nil
-}
-
-func getDocumentFromMessage(elem messages.Elem) (*File, error) {
-	doc, ok := elem.Document()
-	if !ok {
-		return nil, errNoFilesInMessage
-	}
-
-	return getDocumentFile(doc)
 }
 
 func getFilesFromMessageMedia(media tg.MessageMediaClass) ([]*File, error) {
@@ -309,19 +291,6 @@ func isSkippableTelegramDocumentName(name string) bool {
 
 	base := strings.ToLower(path.Base(normalized))
 	return base == "thumbs.db" || base == ".ds_store" || base == "desktop.ini"
-}
-
-func getFileFromMessageElem(elem messages.Elem) (*File, error) {
-	files, err := getFilesFromMessageElem(elem)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(files) == 0 {
-		return nil, errNoFilesInMessage
-	}
-
-	return files[0], nil
 }
 
 func getFilesFromMessageElem(elem messages.Elem) ([]*File, error) {
