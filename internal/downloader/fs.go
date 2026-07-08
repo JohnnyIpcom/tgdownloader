@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	"github.com/johnnyipcom/tgdownloader/pkg/dropbox"
 	"github.com/johnnyipcom/tgdownloader/pkg/oauth2server"
@@ -16,9 +17,10 @@ import (
 var (
 	fsOnce sync.Once
 	fs     afero.Fs
+	fsErr  error
 )
 
-func GetFS(cfg config.Config, log *log.Logger) afero.Fs {
+func GetFS(cfg config.Config, log *log.Logger) (afero.Fs, error) {
 	fsOnce.Do(func() {
 		switch strings.ToLower(cfg.GetString("type")) {
 		case "local":
@@ -36,20 +38,31 @@ func GetFS(cfg config.Config, log *log.Logger) afero.Fs {
 				},
 			})
 			if client == nil {
-				panic("oauth2 authorization failed: no client returned")
+				fsErr = apperr.New("downloader.get_fs.oauth2", apperr.KindAuth, fmt.Errorf("oauth2 authorization failed: no client returned"))
+				return
 			}
 
 			dfs, err := dropbox.NewFs(client, log)
 			if err != nil {
-				panic(err)
+				fsErr = apperr.New("downloader.get_fs.dropbox", apperr.KindConfig, fmt.Errorf("create dropbox filesystem: %w", err))
+				return
 			}
 
 			fs = dfs
 
 		default:
-			panic("invalid downloader type")
+			fsErr = apperr.New("downloader.get_fs.type", apperr.KindConfig, fmt.Errorf("invalid downloader type %q", cfg.GetString("type")))
+			return
 		}
 	})
 
-	return fs
+	if fsErr != nil {
+		return nil, fsErr
+	}
+
+	if fs == nil {
+		return nil, apperr.New("downloader.get_fs.init", apperr.KindInternal, fmt.Errorf("downloader filesystem is not initialized"))
+	}
+
+	return fs, nil
 }

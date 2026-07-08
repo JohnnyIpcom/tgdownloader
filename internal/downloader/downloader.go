@@ -2,12 +2,15 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/afero"
 	"golang.org/x/sync/errgroup"
@@ -18,6 +21,8 @@ type settings struct {
 	tracker    Tracker
 	rewrite    bool
 	dryRun     bool
+	retryCount int
+	retryDelay time.Duration
 }
 
 func (s *settings) setDefaults() {
@@ -25,6 +30,8 @@ func (s *settings) setDefaults() {
 	s.tracker = NewNullTracker()
 	s.rewrite = false
 	s.dryRun = false
+	s.retryCount = 3
+	s.retryDelay = 400 * time.Millisecond
 }
 
 type Option func(*settings)
@@ -53,6 +60,18 @@ func WithTracker(tracker Tracker) Option {
 	}
 }
 
+func WithRetry(count int, delay time.Duration) Option {
+	return func(s *settings) {
+		if count > 0 {
+			s.retryCount = count
+		}
+
+		if delay > 0 {
+			s.retryDelay = delay
+		}
+	}
+}
+
 // Pool is a pool of workers that download files
 type Downloader struct {
 	fs      afero.Fs
@@ -63,10 +82,15 @@ type Downloader struct {
 	tracker    Tracker
 	rewrite    bool
 	dryRun     bool
+	retryCount int
+	retryDelay time.Duration
 
 	files   chan File
 	queueWG sync.WaitGroup
 	workerG *errgroup.Group
+
+	errMu       sync.Mutex
+	downloadErr error
 }
 
 // NewDownloader creates a new pool of workers.
@@ -83,6 +107,8 @@ func New(fs afero.Fs, service telegram.FileService, opts ...Option) *Downloader 
 		tracker:    s.tracker,
 		rewrite:    s.rewrite,
 		dryRun:     s.dryRun,
+		retryCount: s.retryCount,
+		retryDelay: s.retryDelay,
 
 		fs:      fs,
 		files:   make(chan File),
@@ -132,7 +158,9 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 			}
 
 			log.Info("found job", "file", f.String())
-			d.downloadFile(ctx, f, log)
+			if err := d.downloadFile(ctx, f, log); err != nil {
+				d.recordError(err)
+			}
 		}
 	}
 }
@@ -142,10 +170,31 @@ func (p *Downloader) Stop(ctx context.Context) error {
 	p.queueWG.Wait()
 
 	close(p.files)
-	p.workerG.Wait()
+	if err := p.workerG.Wait(); err != nil {
+		p.recordError(err)
+	}
 
 	p.tracker.WaitAndStop(ctx)
-	return nil
+
+	p.errMu.Lock()
+	defer p.errMu.Unlock()
+	return p.downloadErr
+}
+
+func (d *Downloader) recordError(err error) {
+	if err == nil {
+		return
+	}
+
+	d.errMu.Lock()
+	defer d.errMu.Unlock()
+
+	if d.downloadErr == nil {
+		d.downloadErr = err
+		return
+	}
+
+	d.downloadErr = errors.Join(d.downloadErr, err)
 }
 
 // AddDownloadQueue adds a channel of files to the download queue.
@@ -171,7 +220,7 @@ func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan File) {
 }
 
 // downloadFile downloads a file.
-func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logger) {
+func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logger) error {
 	saver := NewAferoSaver(p.fs)
 	if p.dryRun {
 		saver = NewNullSaver()
@@ -181,49 +230,76 @@ func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logge
 		outputDir := path.Join(p.outputDir, subdir)
 		if err := p.createDirectoryIfNotExists(outputDir); err != nil {
 			log.Error(err, "failed to create directory", "directory", outputDir)
-			return
+			return apperr.New("downloader.create_directory", apperr.KindIO, fmt.Errorf("create output directory %q: %w", outputDir, err))
 		}
 
 		if err := p.addFileToSaver(saver, path.Join(outputDir, file.Name())); err != nil {
 			log.Error(err, "failed to add file to saver", "filename", file.Name())
-			return
+			return apperr.New("downloader.prepare_output", apperr.KindIO, fmt.Errorf("prepare output file %q: %w", file.Name(), err))
 		}
 	}
 
 	if !saver.IsValid() {
 		if err := p.addFileToSaver(saver, path.Join(p.outputDir, file.Name())); err != nil {
 			log.Error(err, "failed to add file to saver", "filename", file.Name())
-			return
+			return apperr.New("downloader.prepare_output", apperr.KindIO, fmt.Errorf("prepare output file %q: %w", file.Name(), err))
 		}
 	}
 
 	if !saver.IsValid() {
 		log.Info("no valid files to write to")
-		return
+		return nil
 	}
 
 	writer := p.tracker.WrapWriter(saver, file.Name(), file.Size())
-	if err := p.service.Download(ctx, file.File, writerFunc(func(p []byte) (int, error) {
-		select {
-		case <-ctx.Done():
-			writer.Fail()
-			return 0, ctx.Err()
 
-		default:
+	var err error
+	for attempt := 1; attempt <= p.retryCount; attempt++ {
+		err = p.service.Download(ctx, file.File, writerFunc(func(p []byte) (int, error) {
+			select {
+			case <-ctx.Done():
+				writer.Fail()
+				return 0, ctx.Err()
+
+			default:
+			}
+
+			return writer.Write(p)
+		}))
+		if err == nil {
+			break
 		}
 
-		return writer.Write(p)
-	})); err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+			break
+		}
+
+		if attempt < p.retryCount {
+			log.Info("download retry scheduled", "filename", file.Name(), "attempt", attempt+1, "max_attempts", p.retryCount)
+			time.Sleep(p.retryDelay)
+		}
+	}
+
+	if err != nil {
 		writer.Fail()
 
 		log.Error(err, "failed to download file", "filename", file.Name())
-		saver.Remove()
+		if removeErr := saver.Remove(); removeErr != nil {
+			return apperr.New("downloader.download", apperr.KindIO, errors.Join(
+				fmt.Errorf("download file %q: %w", file.Name(), err),
+				apperr.New("downloader.cleanup_failed_file", apperr.KindIO, fmt.Errorf("cleanup failed file %q: %w", file.Name(), removeErr)),
+			))
+		}
+
+		return apperr.New("downloader.download", apperr.KindNetwork, fmt.Errorf("download file %q: %w", file.Name(), err))
 	}
 
 	saver.Close()
 	writer.Done()
 
 	log.Info("downloaded document", "filename", file.Name())
+	return nil
 }
 
 // addFileToSaver adds a file to the saver if it does not exist or if it should be rewritten.

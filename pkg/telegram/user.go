@@ -9,6 +9,7 @@ import (
 	"github.com/gotd/td/telegram/peers/members"
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/messages"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"go.uber.org/zap"
 )
 
@@ -38,7 +39,7 @@ func (r recent) Members(ctx context.Context, peer peers.Peer) (members.Members, 
 		return members.Chat(chat), nil
 
 	default:
-		return nil, fmt.Errorf("unsupported peer type")
+		return nil, apperr.New("telegram.user.query_recent", apperr.KindConfig, fmt.Errorf("unsupported peer type"))
 	}
 }
 
@@ -69,7 +70,7 @@ func (q querySearch) Members(ctx context.Context, peer peers.Peer) (members.Memb
 		return members.Chat(chat), nil
 
 	default:
-		return nil, fmt.Errorf("unsupported peer type")
+		return nil, apperr.New("telegram.user.query_search", apperr.KindConfig, fmt.Errorf("unsupported peer type"))
 	}
 }
 

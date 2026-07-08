@@ -29,6 +29,7 @@ import (
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/telegram/updates/hook"
 	"github.com/gotd/td/tg"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
 	bboltdb "go.etcd.io/bbolt"
 	"go.uber.org/zap"
@@ -317,7 +318,7 @@ func buildResolver(cfg config.Config, dialTimeout time.Duration) (dcs.Resolver, 
 	case "socks5":
 		proxyAddress := strings.TrimSpace(cfg.GetString("network.proxy.address"))
 		if proxyAddress == "" {
-			return nil, errors.New("telegram.network.proxy.address is required for socks5 resolver")
+			return nil, apperr.New("telegram.network.resolver.socks5", apperr.KindConfig, errors.New("telegram.network.proxy.address is required for socks5 resolver"))
 		}
 
 		var auth *proxy.Auth
@@ -331,7 +332,7 @@ func buildResolver(cfg config.Config, dialTimeout time.Duration) (dcs.Resolver, 
 
 		socksDialer, err := proxy.SOCKS5("tcp", proxyAddress, auth, baseDialer)
 		if err != nil {
-			return nil, fmt.Errorf("create socks5 dialer: %w", err)
+			return nil, apperr.New("telegram.network.resolver.socks5", apperr.KindNetwork, fmt.Errorf("create socks5 dialer: %w", err))
 		}
 
 		return dcs.Plain(plainResolverOptions(cfg, proxyDialContext(socksDialer))), nil
@@ -339,17 +340,17 @@ func buildResolver(cfg config.Config, dialTimeout time.Duration) (dcs.Resolver, 
 	case "mtproxy":
 		proxyAddress := strings.TrimSpace(cfg.GetString("network.mtproxy.address"))
 		if proxyAddress == "" {
-			return nil, errors.New("telegram.network.mtproxy.address is required for mtproxy resolver")
+			return nil, apperr.New("telegram.network.resolver.mtproxy", apperr.KindConfig, errors.New("telegram.network.mtproxy.address is required for mtproxy resolver"))
 		}
 
 		secretHex := strings.TrimSpace(cfg.GetString("network.mtproxy.secret"))
 		if secretHex == "" {
-			return nil, errors.New("telegram.network.mtproxy.secret is required for mtproxy resolver")
+			return nil, apperr.New("telegram.network.resolver.mtproxy", apperr.KindConfig, errors.New("telegram.network.mtproxy.secret is required for mtproxy resolver"))
 		}
 
 		secret, err := hex.DecodeString(secretHex)
 		if err != nil {
-			return nil, fmt.Errorf("decode mtproxy secret: %w", err)
+			return nil, apperr.New("telegram.network.resolver.mtproxy", apperr.KindConfig, fmt.Errorf("decode mtproxy secret: %w", err))
 		}
 
 		return dcs.MTProxy(proxyAddress, secret, dcs.MTProxyOptions{
@@ -357,7 +358,7 @@ func buildResolver(cfg config.Config, dialTimeout time.Duration) (dcs.Resolver, 
 			Network: cfg.GetString("network.mtproxy.network"),
 		})
 	default:
-		return nil, fmt.Errorf("unsupported telegram.network.resolver %q", resolverName)
+		return nil, apperr.New("telegram.network.resolver", apperr.KindConfig, fmt.Errorf("unsupported telegram.network.resolver %q", resolverName))
 	}
 }
 

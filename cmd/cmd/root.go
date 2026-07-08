@@ -245,8 +245,19 @@ func (r *Root) newDownloader(opts ...downloader.Option) (*downloader.Downloader,
 		opts = append(opts, downloader.WithNumWorkers(workers))
 	}
 
+	retryCount := dCfg.GetInt("retry.count")
+	retryDelay := dCfg.GetDuration("retry.delay")
+	if retryCount > 0 || retryDelay > 0 {
+		opts = append(opts, downloader.WithRetry(retryCount, retryDelay))
+	}
+
+	fs, err := downloader.GetFS(dCfg, zap.NewStdLog(r.zap))
+	if err != nil {
+		return nil, err
+	}
+
 	loader := downloader.New(
-		downloader.GetFS(dCfg, zap.NewStdLog(r.zap)),
+		fs,
 		r.client.FileService,
 		opts...,
 	)
