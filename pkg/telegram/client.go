@@ -151,7 +151,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		options.PublicKeys = keys
 	}
 
-	clock, err := getClock(cfg)
+	clock, err := getClock(cfg, log)
 	if err != nil {
 		return nil, err
 	}

@@ -15,6 +15,12 @@ import (
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
+	"go.uber.org/zap"
+)
+
+const (
+	defaultNTPAttemptsPerHost = 2
+	defaultNTPRetryDelay      = 300 * time.Millisecond
 )
 
 func extractHashtags(input string) []string {
@@ -57,13 +63,95 @@ func getPublicKeys(cfg config.Config) ([]tgclient.PublicKey, error) {
 	return keys, nil
 }
 
-func getClock(cfg config.Config) (clock.Clock, error) {
+func getClock(cfg config.Config, log *zap.Logger) (clock.Clock, error) {
 	if !cfg.IsSet("clock.ntp.host") {
 		return clock.System, nil
 	}
 
-	ntpHost := cfg.GetString("clock.ntp.host")
-	return NewNTPClock(ntpHost)
+	ntpHost := strings.TrimSpace(cfg.GetString("clock.ntp.host"))
+	if ntpHost == "" {
+		return clock.System, nil
+	}
+
+	hosts := buildNTPHosts(ntpHost)
+	attemptsPerHost := cfg.GetInt("clock.ntp.attempts_per_host")
+	if attemptsPerHost <= 0 {
+		attemptsPerHost = defaultNTPAttemptsPerHost
+	}
+
+	var lastErr error
+	for hostIdx, host := range hosts {
+		for attempt := 1; attempt <= attemptsPerHost; attempt++ {
+			ntpClock, err := NewNTPClock(host)
+			if err == nil {
+				if log != nil && (hostIdx > 0 || attempt > 1) {
+					log.Warn("NTP clock initialized after retries/failover",
+						zap.String("ntp_host", host),
+						zap.Int("attempt", attempt),
+						zap.Int("attempts_per_host", attemptsPerHost),
+						zap.Int("host_index", hostIdx+1),
+						zap.Int("hosts_total", len(hosts)),
+					)
+				}
+
+				return ntpClock, nil
+			}
+
+			lastErr = err
+			if log != nil {
+				log.Warn("NTP query attempt failed",
+					zap.String("ntp_host", host),
+					zap.Int("attempt", attempt),
+					zap.Int("attempts_per_host", attemptsPerHost),
+					zap.Int("host_index", hostIdx+1),
+					zap.Int("hosts_total", len(hosts)),
+					zap.Error(err),
+				)
+			}
+
+			if attempt < attemptsPerHost {
+				time.Sleep(defaultNTPRetryDelay)
+			}
+		}
+	}
+
+	if log != nil {
+		log.Warn("failed to initialize NTP clock after retries, falling back to system clock",
+			zap.Strings("ntp_hosts", hosts),
+			zap.Int("attempts_per_host", attemptsPerHost),
+			zap.Error(lastErr),
+		)
+	}
+
+	return clock.System, nil
+}
+
+func buildNTPHosts(primary string) []string {
+	ordered := []string{primary}
+	if primary == "pool.ntp.org" {
+		ordered = append(ordered,
+			"0.pool.ntp.org",
+			"1.pool.ntp.org",
+			"2.pool.ntp.org",
+			"3.pool.ntp.org",
+		)
+	}
+
+	result := make([]string, 0, len(ordered))
+	seen := map[string]struct{}{}
+	for _, host := range ordered {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		result = append(result, host)
+	}
+
+	return result
 }
 
 func getPhotoSize(sizes []tg.PhotoSizeClass) (string, int, bool) {
