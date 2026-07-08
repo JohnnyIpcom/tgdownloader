@@ -137,6 +137,20 @@ func TestApplyReliabilityOptionsSetsBackoffAndHooks(t *testing.T) {
 	}
 }
 
+func TestNewFloodWaiterReturnsMiddleware(t *testing.T) {
+	t.Parallel()
+
+	cfg := viper.NewConfig()
+	if mw := newFloodWaiter(cfg, zap.NewNop()); mw == nil {
+		t.Fatal("expected middleware for default flood wait config")
+	}
+
+	cfg.Set("flood_wait.log", false)
+	if mw := newFloodWaiter(cfg, zap.NewNop()); mw == nil {
+		t.Fatal("expected middleware when flood wait logging is disabled")
+	}
+}
+
 func TestNewClientDisablesUpdatesWhenConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -166,6 +180,37 @@ func TestNewClientDisablesUpdatesWhenConfigured(t *testing.T) {
 
 	if client.updMgr != nil {
 		t.Fatalf("expected updMgr to be nil when updates are disabled, got %v", client.updMgr)
+	}
+}
+
+func TestNewClientConfiguresUpdateManagerWhenUpdatesEnabled(t *testing.T) {
+	t.Parallel()
+
+	cachePath := t.TempDir() + "/cache.db"
+
+	cfg := viper.NewConfig()
+	cfg.Set("app.id", 1)
+	cfg.Set("app.hash", "hash")
+	cfg.Set("cache.path", cachePath)
+	cfg.Set("rate.limit", time.Millisecond)
+	cfg.Set("rate.burst", 1)
+	cfg.Set("updates.disable", false)
+
+	client, err := NewClient(cfg, zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+
+	if client.disableUpdates {
+		t.Fatal("expected updates to be enabled")
+	}
+	if client.updMgr == nil {
+		t.Fatal("expected update manager to be configured")
 	}
 }
 

@@ -93,7 +93,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 			rate.Every(cfg.GetDuration("rate.limit")),
 			cfg.GetInt("rate.burst"),
 		),
-		floodwait.NewSimpleWaiter(),
+		newFloodWaiter(cfg, log),
 	}
 
 	options := tgclient.Options{
@@ -110,9 +110,17 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 			handler = storage.UpdateHook(dispatcher, peerStorage)
 		}
 
+		gapsLog := log.Named("gaps")
 		gaps = updates.New(updates.Config{
-			Handler: handler,
-			Logger:  log.Named("gaps"),
+			Handler:      handler,
+			Storage:      bbolt.NewStateStorage(db),
+			AccessHasher: newBoltChannelAccessHasher(db),
+			OnChannelTooLong: func(channelID int64) {
+				gapsLog.Warn("channel update gap too long",
+					zap.Int64("channel_id", channelID),
+				)
+			},
+			Logger: gapsLog,
 		})
 
 		options.UpdateHandler = gaps
@@ -242,6 +250,19 @@ func applyReliabilityOptions(cfg config.Config, log *zap.Logger, options *tgclie
 			return exponential
 		}
 	}
+}
+
+func newFloodWaiter(cfg config.Config, log *zap.Logger) tgclient.Middleware {
+	waiter := floodwait.NewWaiter()
+	if !cfg.IsSet("flood_wait.log") || cfg.GetBool("flood_wait.log") {
+		waiter = waiter.WithCallback(func(ctx context.Context, wait floodwait.FloodWait) {
+			log.Named("floodwait").Warn("telegram flood wait",
+				zap.Duration("wait", wait.Duration),
+			)
+		})
+	}
+
+	return waiter
 }
 
 func hasReconnectBackoffConfig(cfg config.Config) bool {

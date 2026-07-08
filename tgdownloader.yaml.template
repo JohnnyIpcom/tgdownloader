@@ -24,6 +24,9 @@ telegram:
     limit: 100ms
     burst: 3
 
+  flood_wait:
+    log: true
+
   download:
     allow_cdn: true
 
@@ -64,6 +67,12 @@ downloader:
 service:
   password: 'password'
   downloader_id: "111111111111"
+
+prompt:
+  history:
+    enabled: true
+    max_entries: 1000
+    # path: "/absolute/path/to/.tgdownloader_history"
 
 logger:
   outputPaths:
