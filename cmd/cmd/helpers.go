@@ -132,7 +132,10 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 
 	d.Start(ctx)
 	d.AddDownloadQueue(ctx, queue)
-	return d.Stop(ctx)
+	err = d.Stop(ctx)
+	stats := d.Stats()
+	renderer.RenderDownloadSummary(stats.Downloaded, stats.Skipped, stats.Failed)
+	return err
 }
 
 func sendSliceToChannel[T any](ctx context.Context, slice []*T) <-chan T {

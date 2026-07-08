@@ -29,3 +29,12 @@ func RenderError(err error) {
 
 	fmt.Println(text.Colors{text.FgRed}.Sprintf("Error: %s\n", err))
 }
+
+func RenderDownloadSummary(downloaded, skipped, failed int64) {
+	fmt.Println(text.Colors{text.FgCyan}.Sprintf(
+		"Summary: downloaded=%d skipped=%d failed=%d",
+		downloaded,
+		skipped,
+		failed,
+	))
+}

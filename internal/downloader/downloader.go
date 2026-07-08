@@ -7,6 +7,7 @@ import (
 	"path"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -91,6 +92,16 @@ type Downloader struct {
 
 	errMu       sync.Mutex
 	downloadErr error
+
+	downloaded int64
+	skipped    int64
+	failed     int64
+}
+
+type Stats struct {
+	Downloaded int64
+	Skipped    int64
+	Failed     int64
 }
 
 // NewDownloader creates a new pool of workers.
@@ -159,9 +170,18 @@ func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 
 			log.Info("found job", "file", f.String())
 			if err := d.downloadFile(ctx, f, log); err != nil {
+				atomic.AddInt64(&d.failed, 1)
 				d.recordError(err)
 			}
 		}
+	}
+}
+
+func (d *Downloader) Stats() Stats {
+	return Stats{
+		Downloaded: atomic.LoadInt64(&d.downloaded),
+		Skipped:    atomic.LoadInt64(&d.skipped),
+		Failed:     atomic.LoadInt64(&d.failed),
 	}
 }
 
@@ -248,6 +268,7 @@ func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logge
 
 	if !saver.IsValid() {
 		log.Info("no valid files to write to")
+		atomic.AddInt64(&p.skipped, 1)
 		return nil
 	}
 
@@ -297,6 +318,7 @@ func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logge
 
 	saver.Close()
 	writer.Done()
+	atomic.AddInt64(&p.downloaded, 1)
 
 	log.Info("downloaded document", "filename", file.Name())
 	return nil
