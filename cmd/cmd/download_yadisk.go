@@ -44,17 +44,31 @@ func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegra
 	}
 	defer p.WaitAndStop(ctx)
 
+	var downloaded int64
+	var skipped int64
+	var failed int64
+
+	defer func() {
+		renderer.RenderDownloadSummary(downloaded, skipped, failed)
+	}()
+
 	var firstErr error
 	for {
 		select {
 		case <-ctx.Done():
+			failed++
 			return apperr.New("cmd.download.yadisk.loop", apperr.KindCancel, ctx.Err())
 		case externalLink, ok := <-links:
 			if !ok {
 				return firstErr
 			}
 
-			if err := r.downloadSingleYandexDiskLink(ctx, ydClient, outputDir, externalLink, opts, p); err != nil {
+			linkDownloaded, linkSkipped, err := r.downloadSingleYandexDiskLink(ctx, ydClient, outputDir, externalLink, opts, p)
+			downloaded += int64(linkDownloaded)
+			skipped += int64(linkSkipped)
+
+			if err != nil {
+				failed++
 				r.log.Error(err, "failed to download yandex disk link", "link", externalLink.URL, "message_id", externalLink.MessageID)
 				renderer.RenderError(err)
 				if firstErr == nil {
@@ -73,7 +87,7 @@ func (r *Root) downloadSingleYandexDiskLink(
 	externalLink telegram.ExternalLink,
 	opts downloadOptions,
 	p renderer.Progress,
-) error {
+) (int, int, error) {
 	// Build target directory
 	subdirs := yadisk.BuildSubdirectories(externalLink.Metadata, opts.hashtags)
 	targetDir := outputDir
@@ -86,7 +100,7 @@ func (r *Root) downloadSingleYandexDiskLink(
 	resource, err := ydClient.ResolvePublicResourceDownloads(ctx, externalLink.URL)
 	if err != nil {
 		resolveTracker.Fail()
-		return apperr.New("cmd.download.yadisk.resolve", apperr.KindNetwork, fmt.Errorf("resolve yadisk resource for msg_id=%d link=%q: %w", externalLink.MessageID, externalLink.URL, err))
+		return 0, 0, apperr.New("cmd.download.yadisk.resolve", apperr.KindNetwork, fmt.Errorf("resolve yadisk resource for msg_id=%d link=%q: %w", externalLink.MessageID, externalLink.URL, err))
 	}
 	resolveTracker.Increment(1)
 	resolveTracker.Done()
@@ -94,7 +108,7 @@ func (r *Root) downloadSingleYandexDiskLink(
 	if len(resource.Files) == 0 {
 		tracker := p.UnitsTracker(fmt.Sprintf("yadisk:msg:%d", externalLink.MessageID), 1)
 		tracker.Fail()
-		return apperr.New("cmd.download.yadisk.resolve", apperr.KindIO, fmt.Errorf("yadisk resource has no files for msg_id=%d link=%q", externalLink.MessageID, externalLink.URL))
+		return 0, 0, apperr.New("cmd.download.yadisk.resolve", apperr.KindIO, fmt.Errorf("yadisk resource has no files for msg_id=%d link=%q", externalLink.MessageID, externalLink.URL))
 	}
 
 	if resource.Type == "dir" {
@@ -113,10 +127,12 @@ func (r *Root) downloadSingleYandexDiskLink(
 
 	if len(filteredFiles) == 0 {
 		r.log.Info("yandex disk link has no downloadable files after filtering", "link", externalLink.URL, "message_id", externalLink.MessageID)
-		return nil
+		return 0, 0, nil
 	}
 
 	tracker := p.UnitsTracker(fmt.Sprintf("yadisk:msg:%d", externalLink.MessageID), len(filteredFiles))
+	linkDownloaded := 0
+	linkSkipped := 0
 
 	// Handle dry-run mode
 	if opts.dryRun {
@@ -127,15 +143,16 @@ func (r *Root) downloadSingleYandexDiskLink(
 			}
 			r.log.Info("dry-run yandex disk file", "link", externalLink.URL, "dir", dir, "name", item.Name)
 			tracker.Increment(1)
+			linkSkipped++
 		}
 		tracker.Done()
-		return nil
+		return linkDownloaded, linkSkipped, nil
 	}
 
 	// Prepare target directory
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		tracker.Fail()
-		return apperr.New("cmd.download.yadisk.prepare_dir", apperr.KindIO, fmt.Errorf("prepare target dir %q: %w", targetDir, err))
+		return linkDownloaded, linkSkipped, apperr.New("cmd.download.yadisk.prepare_dir", apperr.KindIO, fmt.Errorf("prepare target dir %q: %w", targetDir, err))
 	}
 
 	// Create downloader service
@@ -160,13 +177,14 @@ func (r *Root) downloadSingleYandexDiskLink(
 
 		if err := os.MkdirAll(itemDir, 0755); err != nil {
 			tracker.Fail()
-			return apperr.New("cmd.download.yadisk.prepare_item_dir", apperr.KindIO, fmt.Errorf("prepare item dir %q: %w", itemDir, err))
+			return linkDownloaded, linkSkipped, apperr.New("cmd.download.yadisk.prepare_item_dir", apperr.KindIO, fmt.Errorf("prepare item dir %q: %w", itemDir, err))
 		}
 
 		targetPath := filepath.Join(itemDir, item.Name)
 		if _, err := os.Stat(targetPath); err == nil && !opts.rewrite {
 			r.log.Info("skip existing yandex disk file", "file", targetPath)
 			tracker.Increment(1)
+			linkSkipped++
 			continue
 		}
 
@@ -182,21 +200,23 @@ func (r *Root) downloadSingleYandexDiskLink(
 		if err != nil {
 			bytesTracker.Fail()
 			tracker.Fail()
-			return apperr.New("cmd.download.yadisk.download_file", apperr.KindNetwork, fmt.Errorf("download file %q: %w", item.Name, err))
+			return linkDownloaded, linkSkipped, apperr.New("cmd.download.yadisk.download_file", apperr.KindNetwork, fmt.Errorf("download file %q: %w", item.Name, err))
 		}
 
 		// Skip if the file was skipped (not an error)
 		if downloaded == nil {
 			tracker.Increment(1)
+			linkSkipped++
 			continue
 		}
 
 		bytesTracker.Done()
 		tracker.Increment(1)
+		linkDownloaded++
 	}
 
 	tracker.Done()
-	return nil
+	return linkDownloaded, linkSkipped, nil
 }
 
 // createYadiskHTTPClient creates an HTTP client with proper timeouts and transport settings.
