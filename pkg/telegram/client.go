@@ -51,6 +51,7 @@ type LogoutFunc func() error
 type Client struct {
 	config         config.Config
 	client         *tgclient.Client
+	floodWaiter    *floodwait.Waiter
 	disableUpdates bool
 	logger         *zap.Logger
 	db             *bboltdb.DB
@@ -88,12 +89,14 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 
 	peerStorage := bbolt.NewPeerStorage(db, []byte("peers"))
 
+	floodWaiter := newFloodWaiter(cfg, log)
+
 	middlewares := []tgclient.Middleware{
 		ratelimit.New(
 			rate.Every(cfg.GetDuration("rate.limit")),
 			cfg.GetInt("rate.burst"),
 		),
-		newFloodWaiter(cfg, log),
+		floodWaiter,
 	}
 
 	options := tgclient.Options{
@@ -170,6 +173,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	cli := &Client{
 		config:         cfg,
 		client:         c,
+		floodWaiter:    floodWaiter,
 		disableUpdates: disableUpdates,
 		logger:         log,
 		db:             db,
@@ -252,7 +256,7 @@ func applyReliabilityOptions(cfg config.Config, log *zap.Logger, options *tgclie
 	}
 }
 
-func newFloodWaiter(cfg config.Config, log *zap.Logger) tgclient.Middleware {
+func newFloodWaiter(cfg config.Config, log *zap.Logger) *floodwait.Waiter {
 	waiter := floodwait.NewWaiter()
 	if !cfg.IsSet("flood_wait.log") || cfg.GetBool("flood_wait.log") {
 		waiter = waiter.WithCallback(func(ctx context.Context, wait floodwait.FloodWait) {
@@ -263,6 +267,18 @@ func newFloodWaiter(cfg config.Config, log *zap.Logger) tgclient.Middleware {
 	}
 
 	return waiter
+}
+
+func (c *Client) runClient(ctx context.Context, fn func(context.Context) error) error {
+	run := func(runCtx context.Context) error {
+		return c.client.Run(runCtx, fn)
+	}
+
+	if c.floodWaiter != nil {
+		return c.floodWaiter.Run(ctx, run)
+	}
+
+	return run(ctx)
 }
 
 func hasReconnectBackoffConfig(cfg config.Config) bool {
@@ -467,7 +483,7 @@ func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 	initDone := make(chan struct{})
 	go func() {
 		defer close(errC)
-		errC <- c.client.Run(ctx, func(ctx context.Context) error {
+		errC <- c.runClient(ctx, func(ctx context.Context) error {
 			logout, err := c.Auth(ctx)
 			if err != nil {
 				return err
@@ -511,7 +527,7 @@ func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 
 // Run runs the function f with the client.
 func (c *Client) Run(ctx context.Context, f func(context.Context, *Client) error) error {
-	return c.client.Run(ctx, func(ctx context.Context) error {
+	return c.runClient(ctx, func(ctx context.Context) error {
 		logout, err := c.Auth(ctx)
 		if err != nil {
 			return err
