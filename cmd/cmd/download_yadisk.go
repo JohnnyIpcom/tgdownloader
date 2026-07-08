@@ -100,11 +100,26 @@ func (r *Root) downloadSingleYandexDiskLink(
 		targetDir = filepath.Join(targetDir, resource.Name)
 	}
 
-	tracker := p.UnitsTracker(fmt.Sprintf("yadisk:msg:%d", externalLink.MessageID), len(resource.Files))
+	filteredFiles := make([]yadisk.PublicDownload, 0, len(resource.Files))
+	for _, item := range resource.Files {
+		if yadisk.IsSkippableYandexFileName(item.Name) {
+			r.log.Info("skip yandex disk system file", "name", item.Name, "path", item.Path)
+			continue
+		}
+
+		filteredFiles = append(filteredFiles, item)
+	}
+
+	if len(filteredFiles) == 0 {
+		r.log.Info("yandex disk link has no downloadable files after filtering", "link", externalLink.URL, "message_id", externalLink.MessageID)
+		return nil
+	}
+
+	tracker := p.UnitsTracker(fmt.Sprintf("yadisk:msg:%d", externalLink.MessageID), len(filteredFiles))
 
 	// Handle dry-run mode
 	if opts.dryRun {
-		for _, item := range resource.Files {
+		for _, item := range filteredFiles {
 			dir := targetDir
 			if strings.TrimSpace(item.RelativeDir) != "" {
 				dir = filepath.Join(targetDir, filepath.FromSlash(item.RelativeDir))
@@ -136,7 +151,7 @@ func (r *Root) downloadSingleYandexDiskLink(
 	})
 
 	// Download each file
-	for _, item := range resource.Files {
+	for _, item := range filteredFiles {
 		itemDir := targetDir
 		if strings.TrimSpace(item.RelativeDir) != "" {
 			itemDir = filepath.Join(targetDir, filepath.FromSlash(item.RelativeDir))

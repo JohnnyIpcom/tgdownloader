@@ -1,6 +1,7 @@
 package yadisk
 
 import (
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -28,8 +29,18 @@ func IsSkippableYandexItem(name string, err error) bool {
 		return false
 	}
 
-	fileName := strings.ToLower(strings.TrimSpace(name))
-	switch fileName {
+	return IsSkippableYandexFileName(name)
+}
+
+// IsSkippableYandexFileName checks if a file should be ignored by name.
+func IsSkippableYandexFileName(name string) bool {
+	normalized := strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if normalized == "" {
+		return false
+	}
+
+	base := strings.ToLower(path.Base(normalized))
+	switch base {
 	case "thumbs.db", ".ds_store", "desktop.ini":
 		return true
 	default:

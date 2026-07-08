@@ -283,6 +283,10 @@ func (c *Client) collectDirectoryFiles(ctx context.Context, publicURL, rootPath,
 				fileName = sanitizeFilename(path.Base(item.Path))
 			}
 
+			if IsSkippableYandexFileName(fileName) {
+				continue
+			}
+
 			files = append(files, PublicDownload{
 				Name: fileName,
 				Size: item.Size,

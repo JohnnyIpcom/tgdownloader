@@ -3,6 +3,7 @@ package telegram
 import (
 	"fmt"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -173,6 +174,10 @@ func getDocumentFromMessage(elem messages.Elem) (*File, error) {
 		)
 	}
 
+	if isSkippableTelegramDocumentName(name) {
+		return nil, errNoFilesInMessage
+	}
+
 	return &File{
 		name: name,
 		size: doc.Size,
@@ -188,6 +193,16 @@ func getDocumentFromMessage(elem messages.Elem) (*File, error) {
 			"mime_type": doc.MimeType,
 		},
 	}, nil
+}
+
+func isSkippableTelegramDocumentName(name string) bool {
+	normalized := strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if normalized == "" {
+		return false
+	}
+
+	base := strings.ToLower(path.Base(normalized))
+	return base == "thumbs.db" || base == ".ds_store" || base == "desktop.ini"
 }
 
 func getFileFromMessageElem(elem messages.Elem) (*File, error) {

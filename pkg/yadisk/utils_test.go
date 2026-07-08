@@ -151,3 +151,32 @@ func TestShouldUseHLSFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSkippableYandexFileName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "ThumbsDb", in: "Thumbs.db", want: true},
+		{name: "ThumbsDbNested", in: "folder/sub/Thumbs.db", want: true},
+		{name: "ThumbsDbNestedWindows", in: `folder\\sub\\Thumbs.db`, want: true},
+		{name: "DSStore", in: ".DS_Store", want: true},
+		{name: "DesktopIni", in: "desktop.ini", want: true},
+		{name: "RegularFile", in: "video.mp4", want: false},
+		{name: "Empty", in: "", want: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := IsSkippableYandexFileName(tt.in); got != tt.want {
+				t.Fatalf("IsSkippableYandexFileName(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
