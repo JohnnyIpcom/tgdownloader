@@ -262,6 +262,34 @@ func TestOpenDirectFileRange(t *testing.T) {
 	}
 }
 
+func TestOpenDirectFileRangeInvalidOffsetKindConfig(t *testing.T) {
+	t.Parallel()
+
+	client := NewClient(nil)
+	_, err := client.OpenDirectFileRange(context.Background(), PublicDownload{DirectURL: "https://example.test/f.bin"}, -1)
+	if err == nil {
+		t.Fatal("expected invalid offset error")
+	}
+
+	if !apperr.IsKind(err, apperr.KindConfig) {
+		t.Fatalf("expected KindConfig, got: %v", err)
+	}
+}
+
+func TestOpenDirectFileEmptyDirectURLKindConfig(t *testing.T) {
+	t.Parallel()
+
+	client := NewClient(nil)
+	_, err := client.OpenDirectFile(context.Background(), PublicDownload{Name: "x.bin", DirectURL: ""})
+	if err == nil {
+		t.Fatal("expected empty direct url error")
+	}
+
+	if !apperr.IsKind(err, apperr.KindConfig) {
+		t.Fatalf("expected KindConfig, got: %v", err)
+	}
+}
+
 func TestOpenDirectFileRangeFallsBackToFullBodyWhenRangeIgnored(t *testing.T) {
 	t.Parallel()
 

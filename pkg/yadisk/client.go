@@ -613,49 +613,54 @@ func (c *Client) DownloadHLSStream(ctx context.Context, m3u8URL string, w io.Wri
 func (c *Client) resolveHLSSegments(ctx context.Context, m3u8URL string) ([]string, error) {
 	playlist, baseURL, err := c.fetchM3U8(ctx, m3u8URL)
 	if err != nil {
-		return nil, err
+		return nil, apperr.Wrap("yadisk.resolve_hls_segments.fetch_playlist", err)
 	}
 
 	if strings.Contains(playlist, "#EXT-X-STREAM-INF") {
 		subURL, err := parseMasterPlaylist(playlist, baseURL)
 		if err != nil {
-			return nil, err
+			return nil, apperr.New("yadisk.resolve_hls_segments.parse_master", apperr.KindIO, err)
 		}
 		playlist, baseURL, err = c.fetchM3U8(ctx, subURL)
 		if err != nil {
-			return nil, err
+			return nil, apperr.Wrap("yadisk.resolve_hls_segments.fetch_sub_playlist", err)
 		}
 	}
 
-	return parseMediaPlaylist(playlist, baseURL)
+	segments, err := parseMediaPlaylist(playlist, baseURL)
+	if err != nil {
+		return nil, apperr.New("yadisk.resolve_hls_segments.parse_media", apperr.KindIO, err)
+	}
+
+	return segments, nil
 }
 
 func (c *Client) fetchM3U8(ctx context.Context, m3u8URL string) (string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m3u8URL, nil)
 	if err != nil {
-		return "", "", err
+		return "", "", apperr.New("yadisk.fetch_m3u8.new_request", apperr.KindInternal, err)
 	}
 	req.Header.Set("User-Agent", browserUserAgent)
 	req.Header.Set("Referer", yadiskBaseURL+"/")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("fetch m3u8 %s: %w", m3u8URL, err)
+		return "", "", apperr.New("yadisk.fetch_m3u8.http", apperr.KindNetwork, fmt.Errorf("fetch m3u8 %s: %w", m3u8URL, err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", formatHTTPError("fetch m3u8", resp)
+		return "", "", apperr.New("yadisk.fetch_m3u8.status", apperr.KindNetwork, formatHTTPError("fetch m3u8", resp))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 	if err != nil {
-		return "", "", err
+		return "", "", apperr.New("yadisk.fetch_m3u8.read_body", apperr.KindIO, err)
 	}
 
 	parsedURL, err := url.Parse(m3u8URL)
 	if err != nil {
-		return "", "", err
+		return "", "", apperr.New("yadisk.fetch_m3u8.parse_url", apperr.KindConfig, err)
 	}
 	parsedURL.RawQuery = ""
 	lastSlash := strings.LastIndex(parsedURL.Path, "/")
@@ -735,22 +740,26 @@ func resolveURL(baseURL, ref string) string {
 func (c *Client) downloadSegment(ctx context.Context, segURL string, w io.Writer) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, segURL, nil)
 	if err != nil {
-		return err
+		return apperr.New("yadisk.download_segment.new_request", apperr.KindInternal, err)
 	}
 	req.Header.Set("User-Agent", browserUserAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return apperr.New("yadisk.download_segment.http", apperr.KindNetwork, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return formatHTTPError("download segment", resp)
+		return apperr.New("yadisk.download_segment.status", apperr.KindNetwork, formatHTTPError("download segment", resp))
 	}
 
 	_, err = io.Copy(w, resp.Body)
-	return err
+	if err != nil {
+		return apperr.New("yadisk.download_segment.copy", apperr.KindIO, err)
+	}
+
+	return nil
 }
 
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -841,16 +850,21 @@ func sizeRank(name string) int {
 func (c *Client) OpenPublicFile(ctx context.Context, publicURL string) (*PublicFile, error) {
 	resource, err := c.ResolvePublicResourceDownloads(ctx, publicURL)
 	if err != nil {
-		return nil, err
+		return nil, apperr.Wrap("yadisk.open_public_file.resolve_resource", err)
 	}
 	if len(resource.Files) == 0 {
-		return nil, fmt.Errorf("yandex disk resource has no files")
+		return nil, apperr.New("yadisk.open_public_file.empty_files", apperr.KindIO, fmt.Errorf("yandex disk resource has no files"))
 	}
 	if resource.Type == "dir" {
-		return nil, fmt.Errorf("yandex disk public resource is a directory: %q", resource.Name)
+		return nil, apperr.New("yadisk.open_public_file.directory", apperr.KindIO, fmt.Errorf("yandex disk public resource is a directory: %q", resource.Name))
 	}
 
-	return c.OpenDirectFile(ctx, resource.Files[0])
+	pf, err := c.OpenDirectFile(ctx, resource.Files[0])
+	if err != nil {
+		return nil, apperr.Wrap("yadisk.open_public_file.open_direct", err)
+	}
+
+	return pf, nil
 }
 
 func (c *Client) OpenDirectFile(ctx context.Context, file PublicDownload) (*PublicFile, error) {
@@ -859,7 +873,7 @@ func (c *Client) OpenDirectFile(ctx context.Context, file PublicDownload) (*Publ
 
 func (c *Client) OpenDirectFileRange(ctx context.Context, file PublicDownload, offset int64) (*PublicFile, error) {
 	if offset < 0 {
-		return nil, fmt.Errorf("invalid offset %d", offset)
+		return nil, apperr.New("yadisk.open_direct_file_range.offset", apperr.KindConfig, fmt.Errorf("invalid offset %d", offset))
 	}
 
 	return c.openDirectFileAt(ctx, file, offset)
@@ -868,12 +882,12 @@ func (c *Client) OpenDirectFileRange(ctx context.Context, file PublicDownload, o
 func (c *Client) openDirectFileAt(ctx context.Context, file PublicDownload, offset int64) (*PublicFile, error) {
 	directURL := strings.TrimSpace(file.DirectURL)
 	if directURL == "" {
-		return nil, fmt.Errorf("empty direct url")
+		return nil, apperr.New("yadisk.open_direct_file.direct_url", apperr.KindConfig, fmt.Errorf("empty direct url"))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, directURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, apperr.New("yadisk.open_direct_file.new_request", apperr.KindInternal, err)
 	}
 	if offset > 0 {
 		req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-")
@@ -881,16 +895,16 @@ func (c *Client) openDirectFileAt(ctx context.Context, file PublicDownload, offs
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, apperr.New("yadisk.open_direct_file.http", apperr.KindNetwork, err)
 	}
 
 	if offset == 0 && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		defer resp.Body.Close()
-		return nil, formatHTTPError("unexpected yandex disk download status", resp)
+		return nil, apperr.New("yadisk.open_direct_file.status", apperr.KindNetwork, formatHTTPError("unexpected yandex disk download status", resp))
 	}
 	if offset > 0 && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		return nil, formatHTTPError("unexpected yandex disk ranged download status", resp)
+		return nil, apperr.New("yadisk.open_direct_file.range_status", apperr.KindNetwork, formatHTTPError("unexpected yandex disk ranged download status", resp))
 	}
 
 	name := FilenameFromResponse(resp, file.Name)
