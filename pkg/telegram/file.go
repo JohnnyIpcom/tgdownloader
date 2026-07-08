@@ -433,3 +433,69 @@ func (s *fileService) Download(ctx context.Context, file File, out io.Writer) er
 
 	return nil
 }
+
+// DownloadFromOffset downloads a Telegram file starting from the given byte offset.
+// It is used by downloader resume logic when a partial file already exists on disk.
+func (s *fileService) DownloadFromOffset(ctx context.Context, file File, out io.Writer, offset int64) (int64, error) {
+	if offset < 0 {
+		return 0, apperr.New("telegram.file.download_from_offset.offset", apperr.KindConfig, fmt.Errorf("invalid offset %d", offset))
+	}
+
+	if file.Size() > 0 && offset >= file.Size() {
+		return 0, nil
+	}
+
+	const partSize = 512 * 1024
+
+	api := s.client.client.API()
+	var written int64
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+
+		currentOffset := offset + written
+		req := &tg.UploadGetFileRequest{
+			Offset:   currentOffset,
+			Limit:    partSize,
+			Location: file.location,
+		}
+		req.SetPrecise(true)
+		req.SetCDNSupported(false)
+
+		res, err := api.UploadGetFile(ctx, req)
+		if err != nil {
+			return written, apperr.New("telegram.file.download_from_offset.get_chunk", apperr.KindNetwork, fmt.Errorf("get chunk at offset %d: %w", currentOffset, err))
+		}
+
+		uploadFile, ok := res.(*tg.UploadFile)
+		if !ok {
+			return written, apperr.New("telegram.file.download_from_offset.response", apperr.KindNetwork, fmt.Errorf("unexpected response type %T", res))
+		}
+
+		if len(uploadFile.Bytes) == 0 {
+			break
+		}
+
+		n, writeErr := out.Write(uploadFile.Bytes)
+		if writeErr != nil {
+			return written, apperr.New("telegram.file.download_from_offset.write", apperr.KindIO, fmt.Errorf("write chunk at offset %d: %w", currentOffset, writeErr))
+		}
+		if n != len(uploadFile.Bytes) {
+			return written, apperr.New("telegram.file.download_from_offset.short_write", apperr.KindIO, io.ErrShortWrite)
+		}
+
+		written += int64(n)
+
+		if file.Size() > 0 && currentOffset+int64(n) >= file.Size() {
+			break
+		}
+
+		if len(uploadFile.Bytes) < partSize {
+			break
+		}
+	}
+
+	return written, nil
+}

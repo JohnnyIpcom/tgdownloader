@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -21,6 +22,7 @@ type fakeFileService struct {
 	errSeq     []error
 	calls      int
 	lastWrites int
+	content    []byte
 }
 
 func (f *fakeFileService) GetAllFiles(ctx context.Context, peer peers.Peer, opts ...telegram.GetAllFilesOption) (<-chan telegram.File, error) {
@@ -53,7 +55,12 @@ func (f *fakeFileService) Download(ctx context.Context, file telegram.File, out 
 		return err
 	}
 
-	n, writeErr := out.Write([]byte("ok"))
+	payload := f.content
+	if len(payload) == 0 {
+		payload = []byte("ok")
+	}
+
+	n, writeErr := out.Write(payload)
 	if writeErr != nil {
 		return writeErr
 	}
@@ -69,6 +76,24 @@ func (f *fakeFileService) Calls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeFileService) DownloadFromOffset(ctx context.Context, file telegram.File, out io.Writer, offset int64) (int64, error) {
+	payload := f.content
+	if len(payload) == 0 {
+		payload = []byte("ok")
+	}
+
+	if offset < 0 {
+		return 0, errors.New("negative offset")
+	}
+
+	if offset >= int64(len(payload)) {
+		return 0, nil
+	}
+
+	n, err := out.Write(payload[offset:])
+	return int64(n), err
 }
 
 func makeTelegramFile(name string) telegram.File {
@@ -201,5 +226,58 @@ func TestDownloaderRetryFailsAfterLimit(t *testing.T) {
 	stats := d.Stats()
 	if stats.Downloaded != 0 || stats.Skipped != 0 || stats.Failed != 1 {
 		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestDownloaderResumesExistingPartialFile(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fs := afero.NewMemMapFs()
+
+	payload := []byte("hello-resume-world")
+	svc := &fakeFileService{content: payload}
+
+	d := New(fs, svc, WithNumWorkers(1), WithRetry(2, time.Millisecond))
+	d.SetOutputDir("/downloads")
+
+	if err := fs.MkdirAll("/downloads", 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	partial := payload[:5]
+	if err := afero.WriteFile(fs, "/downloads/resume.bin", partial, 0644); err != nil {
+		t.Fatalf("WriteFile() partial error = %v", err)
+	}
+
+	tgFile := makeTelegramFile("resume.bin")
+	setUnexportedField(&tgFile, "size", int64(len(payload)))
+
+	q := make(chan File)
+	d.Start(ctx)
+	d.AddDownloadQueue(ctx, q)
+	q <- File{File: tgFile}
+	close(q)
+
+	if err := d.Stop(ctx); err != nil {
+		t.Fatalf("Stop() unexpected error: %v", err)
+	}
+
+	got, err := afero.ReadFile(fs, "/downloads/resume.bin")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("unexpected resumed payload: got %q, want %q", string(got), string(payload))
+	}
+
+	if calls := svc.Calls(); calls != 0 {
+		t.Fatalf("expected 0 full Download() calls when resume path is used, got %d", calls)
+	}
+
+	stats := d.Stats()
+	if stats.Downloaded != 1 || stats.Skipped != 0 || stats.Failed != 0 {
+		t.Fatalf("unexpected stats after resume: %+v", stats)
 	}
 }

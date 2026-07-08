@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path"
 	"runtime"
 	"sync"
@@ -154,6 +156,10 @@ func (f writerFunc) Write(p []byte) (int, error) {
 	return f(p)
 }
 
+type resumeFileService interface {
+	DownloadFromOffset(ctx context.Context, file telegram.File, out io.Writer, offset int64) (int64, error)
+}
+
 // worker is a worker that downloads files.
 func (d *Downloader) worker(ctx context.Context, log logr.Logger) error {
 	defer log.Info("worker stopped")
@@ -241,10 +247,7 @@ func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan File) {
 
 // downloadFile downloads a file.
 func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logger) error {
-	saver := NewAferoSaver(p.fs)
-	if p.dryRun {
-		saver = NewNullSaver()
-	}
+	outputPaths := make([]string, 0, len(file.subdirs)+1)
 
 	for _, subdir := range file.subdirs {
 		outputDir := path.Join(p.outputDir, subdir)
@@ -253,14 +256,27 @@ func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logge
 			return apperr.New("downloader.create_directory", apperr.KindIO, fmt.Errorf("create output directory %q: %w", outputDir, err))
 		}
 
-		if err := p.addFileToSaver(saver, path.Join(outputDir, file.Name())); err != nil {
-			log.Error(err, "failed to add file to saver", "filename", file.Name())
-			return apperr.New("downloader.prepare_output", apperr.KindIO, fmt.Errorf("prepare output file %q: %w", file.Name(), err))
+		outputPaths = append(outputPaths, path.Join(outputDir, file.Name()))
+	}
+
+	if len(outputPaths) == 0 {
+		outputPaths = append(outputPaths, path.Join(p.outputDir, file.Name()))
+	}
+
+	if resumeSvc, ok := p.service.(resumeFileService); ok {
+		resumed, resumeErr := p.resumeExistingPartialFile(ctx, file, outputPaths, resumeSvc, log)
+		if resumed {
+			return resumeErr
 		}
 	}
 
-	if !saver.IsValid() {
-		if err := p.addFileToSaver(saver, path.Join(p.outputDir, file.Name())); err != nil {
+	saver := NewAferoSaver(p.fs)
+	if p.dryRun {
+		saver = NewNullSaver()
+	}
+
+	for _, outputPath := range outputPaths {
+		if err := p.addFileToSaver(saver, outputPath); err != nil {
 			log.Error(err, "failed to add file to saver", "filename", file.Name())
 			return apperr.New("downloader.prepare_output", apperr.KindIO, fmt.Errorf("prepare output file %q: %w", file.Name(), err))
 		}
@@ -322,6 +338,118 @@ func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logge
 
 	log.Info("downloaded document", "filename", file.Name())
 	return nil
+}
+
+func (p *Downloader) resumeExistingPartialFile(
+	ctx context.Context,
+	file File,
+	outputPaths []string,
+	service resumeFileService,
+	log logr.Logger,
+) (bool, error) {
+	if p.dryRun || p.rewrite || len(outputPaths) != 1 {
+		return false, nil
+	}
+
+	targetPath := outputPaths[0]
+	if file.Size() <= 0 {
+		return false, nil
+	}
+
+	info, err := p.fs.Stat(targetPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+
+		return true, apperr.New("downloader.resume.stat", apperr.KindIO, fmt.Errorf("stat partial file %q: %w", targetPath, err))
+	}
+
+	currentOffset := info.Size()
+	if currentOffset <= 0 || currentOffset >= file.Size() {
+		return false, nil
+	}
+
+	log.Info("resuming partial telegram file", "filename", file.Name(), "path", targetPath, "offset", currentOffset, "size", file.Size())
+
+	for attempt := 1; attempt <= p.retryCount; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return true, err
+		}
+
+		info, statErr := p.fs.Stat(targetPath)
+		if statErr != nil {
+			return true, apperr.New("downloader.resume.stat", apperr.KindIO, fmt.Errorf("stat partial file %q: %w", targetPath, statErr))
+		}
+
+		currentOffset = info.Size()
+		if currentOffset >= file.Size() {
+			atomic.AddInt64(&p.downloaded, 1)
+			log.Info("resume already complete", "filename", file.Name(), "path", targetPath)
+			return true, nil
+		}
+
+		fileHandle, openErr := p.fs.OpenFile(targetPath, os.O_WRONLY|os.O_APPEND, 0644)
+		if openErr != nil {
+			return true, apperr.New("downloader.resume.open", apperr.KindIO, fmt.Errorf("open partial file %q: %w", targetPath, openErr))
+		}
+
+		remaining := file.Size() - currentOffset
+		writer := p.tracker.WrapWriter(fileHandle, file.Name(), remaining)
+
+		resumeErr := func() error {
+			_, err := service.DownloadFromOffset(ctx, file.File, writerFunc(func(data []byte) (int, error) {
+				select {
+				case <-ctx.Done():
+					writer.Fail()
+					return 0, ctx.Err()
+				default:
+				}
+
+				return writer.Write(data)
+			}), currentOffset)
+			return err
+		}()
+
+		closeErr := fileHandle.Close()
+		if closeErr != nil {
+			writer.Fail()
+			return true, apperr.New("downloader.resume.close", apperr.KindIO, fmt.Errorf("close partial file %q: %w", targetPath, closeErr))
+		}
+
+		if resumeErr == nil {
+			writer.Done()
+
+			finalInfo, finalErr := p.fs.Stat(targetPath)
+			if finalErr != nil {
+				return true, apperr.New("downloader.resume.final_stat", apperr.KindIO, fmt.Errorf("stat resumed file %q: %w", targetPath, finalErr))
+			}
+
+			if finalInfo.Size() < file.Size() {
+				resumeErr = apperr.New("downloader.resume.incomplete", apperr.KindNetwork, fmt.Errorf("resume incomplete: got %d of %d bytes", finalInfo.Size(), file.Size()))
+			} else {
+				atomic.AddInt64(&p.downloaded, 1)
+				log.Info("resumed telegram file", "filename", file.Name(), "path", targetPath, "size", finalInfo.Size())
+				return true, nil
+			}
+		}
+
+		writer.Fail()
+
+		if ctx.Err() != nil {
+			return true, ctx.Err()
+		}
+
+		if attempt < p.retryCount {
+			log.Info("resume retry scheduled", "filename", file.Name(), "attempt", attempt+1, "max_attempts", p.retryCount)
+			time.Sleep(p.retryDelay)
+			continue
+		}
+
+		return true, apperr.New("downloader.resume", apperr.KindNetwork, fmt.Errorf("resume file %q from offset %d: %w", file.Name(), currentOffset, resumeErr))
+	}
+
+	return true, apperr.New("downloader.resume", apperr.KindNetwork, fmt.Errorf("resume file %q exceeded retry limit", file.Name()))
 }
 
 // addFileToSaver adds a file to the saver if it does not exist or if it should be rewritten.
