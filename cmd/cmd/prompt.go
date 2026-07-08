@@ -89,7 +89,7 @@ func (r *Root) getDateSuggestions(word string, format string) []prompt.Suggest {
 	return prompt.FilterHasPrefix(dates, word, true)
 }
 
-func (r *Root) newExecutor(rootCmd *cobra.Command) prompt.Executor {
+func (r *Root) newExecutor(rootCmd *cobra.Command, historyStore *promptHistoryStore) prompt.Executor {
 	s := splitter.MustCreateSplitter(' ', splitter.DoubleQuotesDoubleEscaped)
 	s.AddDefaultOptions(splitter.Trim(`/"`))
 
@@ -98,6 +98,20 @@ func (r *Root) newExecutor(rootCmd *cobra.Command) prompt.Executor {
 		if err != nil {
 			renderer.RenderError(err)
 			return
+		}
+
+		resolvedCmd, _, findErr := rootCmd.Find(args)
+		canPersistHistory := findErr == nil && resolvedCmd != nil
+		if canPersistHistory {
+			if mode, ok := resolvedCmd.Annotations["prompt_history"]; ok && strings.EqualFold(mode, "off") {
+				canPersistHistory = false
+			}
+		}
+
+		if historyStore != nil && canPersistHistory {
+			if err := historyStore.Save(in, args); err != nil {
+				renderer.RenderError(err)
+			}
 		}
 
 		rootCmd.SetArgs(args)
@@ -214,11 +228,26 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 				return
 			}
 
-			prompt.New(
-				r.newExecutor(rootCmd),
-				r.newCompleter(rootCmd),
+			enabled, path, maxEntries := r.promptHistorySettings()
+			var historyStore *promptHistoryStore
+			promptOptions := []prompt.Option{
 				prompt.OptionPrefix(fmt.Sprintf("%s> ", self.Raw().Username)),
 				prompt.OptionTitle("tgdownloader"),
+			}
+
+			if enabled {
+				historyStore, err = newPromptHistoryStore(path, maxEntries, r.shouldSkipPromptHistoryEntry)
+				if err != nil {
+					renderer.RenderError(err)
+				} else {
+					promptOptions = append(promptOptions, prompt.OptionHistory(historyStore.Entries()))
+				}
+			}
+
+			prompt.New(
+				r.newExecutor(rootCmd, historyStore),
+				r.newCompleter(rootCmd),
+				promptOptions...,
 			).Run()
 		},
 	}

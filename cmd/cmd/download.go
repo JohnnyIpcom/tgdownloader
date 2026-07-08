@@ -22,6 +22,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Annotations: map[string]string{
 			"prompt_suggest": "any",
+			"prompt_history": "off",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			peer, err := r.resolvePeer(cmd.Context(), args[0])
@@ -49,6 +50,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Annotations: map[string]string{
 			"prompt_suggest": "any",
+			"prompt_history": "off",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			peer, err := r.resolvePeer(cmd.Context(), args[0])
@@ -71,6 +73,9 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		Short: "Download a file from a message",
 		Long:  `Download a file from a message.`,
 		Args:  cobra.ExactArgs(1),
+		Annotations: map[string]string{
+			"prompt_history": "off",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			peer, msgId, err := r.client.ParseMessageLink(cmd.Context(), args[0])
 			if err != nil {
@@ -95,6 +100,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Annotations: map[string]string{
 			"prompt_suggest": "any",
+			"prompt_history": "off",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			peer, err := r.resolvePeer(cmd.Context(), args[0])
