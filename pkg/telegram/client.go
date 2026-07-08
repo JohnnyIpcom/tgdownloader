@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	backoff "github.com/cenkalti/backoff/v4"
@@ -33,6 +34,11 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
 	"golang.org/x/time/rate"
+)
+
+const (
+	defaultUpdatesStartTimeout = 15 * time.Second
+	defaultUpdatesStopTimeout  = 5 * time.Second
 )
 
 type linkedChatPeer interface {
@@ -448,27 +454,69 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	updateTracker := c.progress.Tracker("Update tracker")
 
 	updateStarted := make(chan struct{})
+	updatesErr := make(chan error, 1)
+	var updateStartedOnce sync.Once
 	authOptions := updates.AuthOptions{
 		IsBot: user.GetBot(),
 		OnStart: func(ctx context.Context) {
-			updateTracker.Done()
-			close(updateStarted)
+			updateStartedOnce.Do(func() {
+				updateTracker.Done()
+				close(updateStarted)
+			})
 		},
 	}
 
 	go func() {
-		updErr := c.updMgr.Run(ctx, c.client.API(), user.GetID(), authOptions)
-		if updErr != nil && !errors.Is(updErr, context.Canceled) {
-			updateTracker.Fail()
-			fmt.Printf("auth updates error: %s\n", updErr)
-		}
+		updatesErr <- c.updMgr.Run(ctx, c.client.API(), user.GetID(), authOptions)
 	}()
 
-	<-updateStarted
+	select {
+	case <-updateStarted:
+	case updErr := <-updatesErr:
+		if updErr == nil {
+			updateTracker.Fail()
+			return func() error { return nil }, errors.New("start updates manager: stopped before OnStart")
+		}
+
+		if errors.Is(updErr, context.Canceled) {
+			updateTracker.Fail()
+			if ctx.Err() != nil {
+				return func() error { return nil }, ctx.Err()
+			}
+
+			return func() error { return nil }, fmt.Errorf("start updates manager: %w", updErr)
+		}
+
+		updateTracker.Fail()
+		c.logger.Error("updates manager failed before start", zap.Error(updErr))
+		return func() error { return nil }, fmt.Errorf("start updates manager: %w", updErr)
+	case <-time.After(defaultUpdatesStartTimeout):
+		updateTracker.Fail()
+		return func() error { return nil }, fmt.Errorf("start updates manager: timeout waiting for OnStart (%s)", defaultUpdatesStartTimeout)
+	case <-ctx.Done():
+		updateTracker.Fail()
+		return func() error { return nil }, ctx.Err()
+	}
+
 	c.progress.Wait(ctx)
 	return func() error {
 		logoutTracker := c.progress.Tracker("Logout")
 		c.updMgr.Reset()
+
+		select {
+		case updErr := <-updatesErr:
+			if updErr != nil && !errors.Is(updErr, context.Canceled) {
+				logoutTracker.Fail()
+				c.logger.Error("updates manager exited with error", zap.Error(updErr))
+				c.progress.Wait(ctx)
+				return fmt.Errorf("updates manager: %w", updErr)
+			}
+		case <-time.After(defaultUpdatesStopTimeout):
+			c.logger.Warn("timeout waiting for updates manager shutdown",
+				zap.Duration("timeout", defaultUpdatesStopTimeout),
+			)
+		}
+
 		logoutTracker.Done()
 		c.progress.Wait(ctx)
 		return nil
