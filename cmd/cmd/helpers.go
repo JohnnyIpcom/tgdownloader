@@ -11,6 +11,7 @@ import (
 	"github.com/gotd/td/telegram/peers"
 	"github.com/johnnyipcom/tgdownloader/internal/downloader"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 )
 
@@ -61,24 +62,24 @@ func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) 
 func (r *Root) downloadFilesFromPeer(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
 	getFileOptions, err := opts.newGetAllFilesOptions()
 	if err != nil {
-		return err
+		return apperr.Wrap("cmd.download.history.options", err)
 	}
 
 	files, err := r.client.FileService.GetAllFiles(ctx, peer, getFileOptions...)
 	if err != nil {
-		return err
+		return apperr.Wrap("cmd.download.history.get_all_files", err)
 	}
 
-	return r.downloadFiles(ctx, files, opts)
+	return apperr.Wrap("cmd.download.history.download", r.downloadFiles(ctx, files, opts))
 }
 
 func (r *Root) downloadFilesFromNewMessages(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
 	files, err := r.client.FileService.GetAllFilesFromNewMessages(ctx, peer)
 	if err != nil {
-		return err
+		return apperr.Wrap("cmd.download.watcher.get_new_files", err)
 	}
 
-	return r.downloadFiles(ctx, files, opts)
+	return apperr.Wrap("cmd.download.watcher.download", r.downloadFiles(ctx, files, opts))
 }
 
 type trackerAdapter struct {
@@ -108,7 +109,7 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 
 	d, err := r.newDownloader(downloaderOptions...)
 	if err != nil {
-		return err
+		return apperr.Wrap("cmd.download.new_downloader", err)
 	}
 
 	queue := make(chan downloader.File)
@@ -135,7 +136,7 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 	err = d.Stop(ctx)
 	stats := d.Stats()
 	renderer.RenderDownloadSummary(stats.Downloaded, stats.Skipped, stats.Failed)
-	return err
+	return apperr.Wrap("cmd.download.stop", err)
 }
 
 func sendSliceToChannel[T any](ctx context.Context, slice []*T) <-chan T {
@@ -158,15 +159,15 @@ func sendSliceToChannel[T any](ctx context.Context, slice []*T) <-chan T {
 func (r *Root) downloadFilesFromMessage(ctx context.Context, peer peers.Peer, msgID int, opts downloadOptions) error {
 	getFileOptions, err := opts.newGetFileOptions()
 	if err != nil {
-		return err
+		return apperr.Wrap("cmd.download.message.options", err)
 	}
 
 	files, err := r.client.FileService.GetFilesFromMessage(ctx, peer, msgID, getFileOptions...)
 	if err != nil {
-		return err
+		return apperr.Wrap("cmd.download.message.get_files", err)
 	}
 
-	return r.downloadFiles(ctx, sendSliceToChannel(ctx, files), opts)
+	return apperr.Wrap("cmd.download.message.download", r.downloadFiles(ctx, sendSliceToChannel(ctx, files), opts))
 }
 
 func parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {
@@ -181,8 +182,13 @@ func parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {
 func (r *Root) resolvePeer(ctx context.Context, arg string) (peers.Peer, error) {
 	tdLibPeerID, err := parseTDLibPeerID(arg)
 	if err != nil {
-		return nil, err
+		return nil, apperr.Wrap("cmd.resolve_peer.parse_tdlib_id", err)
 	}
 
-	return r.client.PeerService.ResolveTDLibID(ctx, tdLibPeerID)
+	peer, err := r.client.PeerService.ResolveTDLibID(ctx, tdLibPeerID)
+	if err != nil {
+		return nil, apperr.Wrap("cmd.resolve_peer.lookup", err)
+	}
+
+	return peer, nil
 }
