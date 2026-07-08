@@ -67,6 +67,27 @@ func (p *progressImpl) EnablePS(ctx context.Context) {
 	}()
 }
 
+func (p *progressImpl) Stop() {
+	for i := 0; i < 10; i++ {
+		if stopProgressWriter(p.Writer) {
+			return
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func stopProgressWriter(w progress.Writer) (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+
+	w.Stop()
+	return true
+}
+
 func (p *progressImpl) Wait(ctx context.Context) {
 	for p.IsRenderInProgress() {
 		if p.LengthActive() == 0 {
