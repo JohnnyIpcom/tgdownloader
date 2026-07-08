@@ -11,8 +11,28 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"golang.org/x/oauth2"
 )
+
+var errInvalidOAuthState = errors.New("invalid oauth2 state")
+
+func validateOAuthCallbackState(rawQuery string, cookie *http.Cookie) (url.Values, error) {
+	if cookie == nil {
+		return nil, apperr.New("oauth2server.validate_callback.cookie", apperr.KindAuth, errInvalidOAuthState)
+	}
+
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return nil, apperr.New("oauth2server.validate_callback.query", apperr.KindConfig, err)
+	}
+
+	if values.Get("state") != cookie.Value {
+		return nil, apperr.New("oauth2server.validate_callback.state", apperr.KindAuth, errInvalidOAuthState)
+	}
+
+	return values, nil
+}
 
 func RunOAuth2Server(port int, cfg oauth2.Config) <-chan *http.Client {
 	client := make(chan *http.Client, 1)
@@ -52,14 +72,14 @@ func RunOAuth2Server(port int, cfg oauth2.Config) <-chan *http.Client {
 				return
 			}
 
-			values, err := url.ParseQuery(r.URL.RawQuery)
+			values, err := validateOAuthCallbackState(r.URL.RawQuery, cookie)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+				if errors.Is(err, errInvalidOAuthState) {
+					http.Error(w, "Invalid OAuth2 state", http.StatusBadRequest)
+					return
+				}
 
-			if values.Get("state") != cookie.Value {
-				http.Error(w, "Invalid OAuth2 state", http.StatusBadRequest)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
