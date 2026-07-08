@@ -12,6 +12,7 @@ import (
 
 	"github.com/gotd/td/telegram/peers"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/johnnyipcom/tgdownloader/pkg/yadisk"
 )
@@ -20,15 +21,15 @@ import (
 func (r *Root) downloadYandexDiskFromPeer(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
 	getFileOptions, err := opts.newGetAllFilesOptions()
 	if err != nil {
-		return err
+		return apperr.Wrap("cmd.download.yadisk.options", err)
 	}
 
 	links, err := r.client.LinkService.GetYandexDiskLinks(ctx, peer, getFileOptions...)
 	if err != nil {
-		return err
+		return apperr.Wrap("cmd.download.yadisk.links", err)
 	}
 
-	return r.downloadYandexDiskLinks(ctx, links, opts)
+	return apperr.Wrap("cmd.download.yadisk.download", r.downloadYandexDiskLinks(ctx, links, opts))
 }
 
 // downloadYandexDiskLinks orchestrates downloading multiple Yandex Disk links.
@@ -47,7 +48,7 @@ func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegra
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return apperr.New("cmd.download.yadisk.loop", apperr.KindCancel, ctx.Err())
 		case externalLink, ok := <-links:
 			if !ok {
 				return firstErr
@@ -85,7 +86,7 @@ func (r *Root) downloadSingleYandexDiskLink(
 	resource, err := ydClient.ResolvePublicResourceDownloads(ctx, externalLink.URL)
 	if err != nil {
 		resolveTracker.Fail()
-		return fmt.Errorf("resolve yadisk resource for msg_id=%d link=%q: %w", externalLink.MessageID, externalLink.URL, err)
+		return apperr.New("cmd.download.yadisk.resolve", apperr.KindNetwork, fmt.Errorf("resolve yadisk resource for msg_id=%d link=%q: %w", externalLink.MessageID, externalLink.URL, err))
 	}
 	resolveTracker.Increment(1)
 	resolveTracker.Done()
@@ -93,7 +94,7 @@ func (r *Root) downloadSingleYandexDiskLink(
 	if len(resource.Files) == 0 {
 		tracker := p.UnitsTracker(fmt.Sprintf("yadisk:msg:%d", externalLink.MessageID), 1)
 		tracker.Fail()
-		return fmt.Errorf("yadisk resource has no files for msg_id=%d link=%q", externalLink.MessageID, externalLink.URL)
+		return apperr.New("cmd.download.yadisk.resolve", apperr.KindIO, fmt.Errorf("yadisk resource has no files for msg_id=%d link=%q", externalLink.MessageID, externalLink.URL))
 	}
 
 	if resource.Type == "dir" {
@@ -134,7 +135,7 @@ func (r *Root) downloadSingleYandexDiskLink(
 	// Prepare target directory
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		tracker.Fail()
-		return fmt.Errorf("prepare target dir %q: %w", targetDir, err)
+		return apperr.New("cmd.download.yadisk.prepare_dir", apperr.KindIO, fmt.Errorf("prepare target dir %q: %w", targetDir, err))
 	}
 
 	// Create downloader service
@@ -159,7 +160,7 @@ func (r *Root) downloadSingleYandexDiskLink(
 
 		if err := os.MkdirAll(itemDir, 0755); err != nil {
 			tracker.Fail()
-			return fmt.Errorf("prepare item dir %q: %w", itemDir, err)
+			return apperr.New("cmd.download.yadisk.prepare_item_dir", apperr.KindIO, fmt.Errorf("prepare item dir %q: %w", itemDir, err))
 		}
 
 		targetPath := filepath.Join(itemDir, item.Name)
@@ -181,7 +182,7 @@ func (r *Root) downloadSingleYandexDiskLink(
 		if err != nil {
 			bytesTracker.Fail()
 			tracker.Fail()
-			return fmt.Errorf("download file %q: %w", item.Name, err)
+			return apperr.New("cmd.download.yadisk.download_file", apperr.KindNetwork, fmt.Errorf("download file %q: %w", item.Name, err))
 		}
 
 		// Skip if the file was skipped (not an error)

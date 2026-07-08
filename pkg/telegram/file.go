@@ -12,6 +12,7 @@ import (
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 )
@@ -137,7 +138,7 @@ func (s *fileService) extractFilesFromMessageElem(ctx context.Context, elem mess
 	if ok {
 		from, err := s.client.ExtractPeer(ctx, elem.Entities, fromID)
 		if err != nil {
-			return nil, 0, fmt.Errorf("extract fromID: %w", err)
+			return nil, 0, apperr.New("telegram.file.extract_files.extract_from", apperr.KindInternal, fmt.Errorf("extract fromID: %w", err))
 		}
 
 		peer = from
@@ -146,7 +147,7 @@ func (s *fileService) extractFilesFromMessageElem(ctx context.Context, elem mess
 	if peer == nil {
 		p, err := s.client.ExtractPeer(ctx, elem.Entities, elem.Msg.GetPeerID())
 		if err != nil {
-			return nil, 0, fmt.Errorf("extract peer: %w", err)
+			return nil, 0, apperr.New("telegram.file.extract_files.extract_peer", apperr.KindInternal, fmt.Errorf("extract peer: %w", err))
 		}
 
 		peer = p
@@ -185,7 +186,7 @@ func (s *fileService) GetAllFiles(ctx context.Context, peer peers.Peer, opts ...
 	}
 	for _, opt := range opts {
 		if err := opt.apply(&options); err != nil {
-			return nil, err
+			return nil, apperr.Wrap("telegram.file.get_all_files.options", err)
 		}
 	}
 
@@ -257,7 +258,7 @@ func (s *fileService) GetAllFilesFromNewMessages(ctx context.Context, p peers.Pe
 	}
 	for _, opt := range opts {
 		if err := opt.apply(&options); err != nil {
-			return nil, err
+			return nil, apperr.Wrap("telegram.file.get_new_files.options", err)
 		}
 	}
 
@@ -341,7 +342,7 @@ func (s *fileService) GetFilesFromMessage(ctx context.Context, peer peers.Peer, 
 	}
 	for _, opt := range opts {
 		if err := opt.apply(&options); err != nil {
-			return nil, err
+			return nil, apperr.Wrap("telegram.file.get_message_files.options", err)
 		}
 	}
 
@@ -350,14 +351,14 @@ func (s *fileService) GetFilesFromMessage(ctx context.Context, peer peers.Peer, 
 
 	iter := queryBuilder.Iter()
 	if !iter.Next(ctx) {
-		return nil, iter.Err()
+		return nil, apperr.Wrap("telegram.file.get_message_files.iter", iter.Err())
 	}
 
 	elem := iter.Value()
 
 	msg, ok := elem.Msg.(*tg.Message)
 	if !ok {
-		return nil, errors.New("not a message")
+		return nil, apperr.New("telegram.file.get_message_files.type", apperr.KindInternal, errors.New("not a message"))
 	}
 
 	if _, ok := msg.GetGroupedID(); ok && options.grouped {
@@ -376,7 +377,7 @@ func (s *fileService) GetFilesFromMessage(ctx context.Context, peer peers.Peer, 
 func (s *fileService) GetFilesFromGroupedMessage(ctx context.Context, peer peers.Peer, msg *tg.Message) ([]*File, error) {
 	group, ok := msg.GetGroupedID()
 	if !ok {
-		return nil, errors.New("not grouped message")
+		return nil, apperr.New("telegram.file.get_grouped_files.group", apperr.KindConfig, errors.New("not grouped message"))
 	}
 
 	batchSize := 20
@@ -427,7 +428,7 @@ func (s *fileService) Download(ctx context.Context, file File, out io.Writer) er
 	builder := s.client.client.Download(file.location)
 	_, err := builder.Stream(ctx, out)
 	if err != nil {
-		return err
+		return apperr.New("telegram.file.download", apperr.KindNetwork, err)
 	}
 
 	return nil

@@ -11,6 +11,7 @@ import (
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 )
@@ -61,7 +62,7 @@ func (s *linkService) GetYandexDiskLinks(ctx context.Context, p peers.Peer, opts
 	}
 	for _, opt := range opts {
 		if err := opt.apply(&options); err != nil {
-			return nil, err
+			return nil, apperr.Wrap("telegram.link.get_yadisk_links.options", err)
 		}
 	}
 
@@ -127,7 +128,7 @@ func (s *linkService) GetYandexDiskLinks(ctx context.Context, p peers.Peer, opts
 			return nil
 		}); err != nil {
 			if !errors.Is(err, errLimitReached) {
-				s.logger.Error("failed to get yandex disk links", zap.Error(err))
+				s.logger.Error("failed to get yandex disk links", zap.Error(apperr.New("telegram.link.get_yadisk_links.iterate", apperr.KindNetwork, err)))
 			}
 		}
 	}()
