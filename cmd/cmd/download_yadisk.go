@@ -17,6 +17,28 @@ import (
 	"github.com/johnnyipcom/tgdownloader/pkg/yadisk"
 )
 
+type yandexDownloadSummary struct {
+	downloaded int64
+	skipped    int64
+	failed     int64
+}
+
+func (s *yandexDownloadSummary) AddLinkResult(downloaded, skipped int, err error) {
+	s.downloaded += int64(downloaded)
+	s.skipped += int64(skipped)
+	if err != nil {
+		s.failed++
+	}
+}
+
+func (s *yandexDownloadSummary) MarkFailed() {
+	s.failed++
+}
+
+func (s yandexDownloadSummary) Values() (int64, int64, int64) {
+	return s.downloaded, s.skipped, s.failed
+}
+
 // downloadYandexDiskFromPeer downloads all Yandex Disk links from a peer's messages.
 func (r *Root) downloadYandexDiskFromPeer(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
 	getFileOptions, err := opts.newGetAllFilesOptions()
@@ -44,11 +66,10 @@ func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegra
 	}
 	defer p.WaitAndStop(ctx)
 
-	var downloaded int64
-	var skipped int64
-	var failed int64
+	summary := yandexDownloadSummary{}
 
 	defer func() {
+		downloaded, skipped, failed := summary.Values()
 		renderer.RenderDownloadSummary(downloaded, skipped, failed)
 	}()
 
@@ -56,7 +77,7 @@ func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegra
 	for {
 		select {
 		case <-ctx.Done():
-			failed++
+			summary.MarkFailed()
 			return apperr.New("cmd.download.yadisk.loop", apperr.KindCancel, ctx.Err())
 		case externalLink, ok := <-links:
 			if !ok {
@@ -64,11 +85,9 @@ func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegra
 			}
 
 			linkDownloaded, linkSkipped, err := r.downloadSingleYandexDiskLink(ctx, ydClient, outputDir, externalLink, opts, p)
-			downloaded += int64(linkDownloaded)
-			skipped += int64(linkSkipped)
+			summary.AddLinkResult(linkDownloaded, linkSkipped, err)
 
 			if err != nil {
-				failed++
 				r.log.Error(err, "failed to download yandex disk link", "link", externalLink.URL, "message_id", externalLink.MessageID)
 				renderer.RenderError(err)
 				if firstErr == nil {
