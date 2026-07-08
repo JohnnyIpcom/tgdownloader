@@ -127,7 +127,20 @@ func GetFileWithGrouped(grouped bool) GetFileOption {
 }
 
 func (s *fileService) extractFileFromMessageElem(ctx context.Context, elem messages.Elem) (*File, int64, error) {
-	file, err := getFileFromMessageElem(elem)
+	files, peerID, err := s.extractFilesFromMessageElem(ctx, elem)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if len(files) == 0 {
+		return nil, peerID, errNoFilesInMessage
+	}
+
+	return files[0], peerID, nil
+}
+
+func (s *fileService) extractFilesFromMessageElem(ctx context.Context, elem messages.Elem) ([]*File, int64, error) {
+	files, err := getFilesFromMessageElem(elem)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -152,22 +165,30 @@ func (s *fileService) extractFileFromMessageElem(ctx context.Context, elem messa
 		peer = p
 	}
 
-	file.metadata["peername"] = strconv.FormatInt(peer.ID(), 10)
-
 	visibleName := peer.VisibleName()
-	if visibleName != "" {
-		file.metadata["peername"] = visibleName
-	}
 
 	msg, ok := elem.Msg.(*tg.Message)
+	hashtags := []string{}
 	if ok {
-		hashtags := extractHashtags(msg.GetMessage())
+		hashtags = extractHashtags(msg.GetMessage())
+	}
+
+	for _, file := range files {
+		if file == nil {
+			continue
+		}
+
+		file.metadata["peername"] = strconv.FormatInt(peer.ID(), 10)
+		if visibleName != "" {
+			file.metadata["peername"] = visibleName
+		}
+
 		if len(hashtags) > 0 {
 			file.metadata["hashtags"] = hashtags
 		}
 	}
 
-	return file, peer.ID(), nil
+	return files, peer.ID(), nil
 }
 
 // GetAllFiles returns channel for file IDs and error channel.
@@ -196,25 +217,36 @@ func (s *fileService) GetAllFiles(ctx context.Context, peer peers.Peer, opts ...
 				return errLimitReached
 			}
 
-			file, peerID, err := s.extractFileFromMessageElem(ctx, elem)
+			files, peerID, err := s.extractFilesFromMessageElem(ctx, elem)
 			if err != nil {
-				if errors.Is(err, errNoFilesInMessage) {
+				if errors.Is(err, errNoFilesInMessage) || errors.Is(err, errPaidMediaLocked) {
 					return nil
 				}
 
 				return err
 			}
 
-			if file == nil || (options.userID > 0 && peerID != options.userID) {
+			if len(files) == 0 || (options.userID > 0 && peerID != options.userID) {
 				return nil
 			}
 
-			select {
-			case fileChan <- *file:
-				atomic.AddInt64(&fileCounter, 1)
+			for _, file := range files {
+				if file == nil {
+					continue
+				}
 
-			case <-ctx.Done():
-				return ctx.Err()
+				if atomic.LoadInt64(&fileCounter) >= int64(options.limit) {
+					s.logger.Info("limit reached", zap.Int64("limit", int64(options.limit)))
+					return errLimitReached
+				}
+
+				select {
+				case fileChan <- *file:
+					atomic.AddInt64(&fileCounter, 1)
+
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
 
 			return nil
@@ -265,30 +297,41 @@ func (s *fileService) GetAllFilesFromNewMessages(ctx context.Context, p peers.Pe
 			msgPeer = &tg.InputPeerEmpty{}
 		}
 
-		file, peerID, err := s.extractFileFromMessageElem(ctx, messages.Elem{
+		files, peerID, err := s.extractFilesFromMessageElem(ctx, messages.Elem{
 			Msg:      nonEmpty,
 			Peer:     msgPeer,
 			Entities: entities,
 		})
 
 		if err != nil {
-			if errors.Is(err, errNoFilesInMessage) {
+			if errors.Is(err, errNoFilesInMessage) || errors.Is(err, errPaidMediaLocked) {
 				return nil
 			}
 
 			return err
 		}
 
-		if file == nil || peerID != p.ID() {
+		if len(files) == 0 || peerID != p.ID() {
 			return nil
 		}
 
-		select {
-		case fileChan <- *file:
-			atomic.AddInt64(&fileCounter, 1)
+		for _, file := range files {
+			if file == nil {
+				continue
+			}
 
-		case <-ctx.Done():
-			return ctx.Err()
+			if atomic.LoadInt64(&fileCounter) >= int64(options.limit) {
+				s.logger.Info("limit reached", zap.Int64("limit", int64(options.limit)))
+				return errLimitReached
+			}
+
+			select {
+			case fileChan <- *file:
+				atomic.AddInt64(&fileCounter, 1)
+
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 
 		return nil
@@ -339,8 +382,8 @@ func (s *fileService) GetFilesFromMessage(ctx context.Context, peer peers.Peer, 
 		return files, nil
 	}
 
-	file, _, err := s.extractFileFromMessageElem(ctx, iter.Value())
-	return []*File{file}, err
+	files, _, err := s.extractFilesFromMessageElem(ctx, iter.Value())
+	return files, err
 }
 
 func (s *fileService) GetFilesFromGroupedMessage(ctx context.Context, peer peers.Peer, msg *tg.Message) ([]*File, error) {
@@ -372,15 +415,22 @@ func (s *fileService) GetFilesFromGroupedMessage(ctx context.Context, peer peers
 			continue
 		}
 
-		file, _, err := s.extractFileFromMessageElem(ctx, iter.Value())
+		messageFiles, _, err := s.extractFilesFromMessageElem(ctx, iter.Value())
 		if err != nil {
-			if errors.Is(err, errNoFilesInMessage) {
+			if errors.Is(err, errNoFilesInMessage) || errors.Is(err, errPaidMediaLocked) {
 				continue
 			}
 
 			return nil, err
 		}
-		files = append(files, file)
+
+		for _, file := range messageFiles {
+			if file == nil {
+				continue
+			}
+
+			files = append(files, file)
+		}
 	}
 
 	return files, nil

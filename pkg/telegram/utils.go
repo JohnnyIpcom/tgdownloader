@@ -80,8 +80,8 @@ func getPhotoSize(sizes []tg.PhotoSizeClass) (string, int, bool) {
 
 const dateLayout = "2006-01-02_15-04-05"
 
-func getPhotoFromMessage(elem messages.Elem) (*File, error) {
-	photo, ok := elem.Photo()
+func getPhotoFile(photoClass tg.PhotoClass) (*File, error) {
+	photo, ok := photoClass.(*tg.Photo)
 	if !ok {
 		return nil, errNoFilesInMessage
 	}
@@ -115,8 +115,17 @@ func getPhotoFromMessage(elem messages.Elem) (*File, error) {
 	}, nil
 }
 
-func getDocumentFromMessage(elem messages.Elem) (*File, error) {
-	doc, ok := elem.Document()
+func getPhotoFromMessage(elem messages.Elem) (*File, error) {
+	photo, ok := elem.Photo()
+	if !ok {
+		return nil, errNoFilesInMessage
+	}
+
+	return getPhotoFile(photo)
+}
+
+func getDocumentFile(docClass tg.DocumentClass) (*File, error) {
+	doc, ok := docClass.(*tg.Document)
 	if !ok {
 		return nil, errNoFilesInMessage
 	}
@@ -195,6 +204,103 @@ func getDocumentFromMessage(elem messages.Elem) (*File, error) {
 	}, nil
 }
 
+func getDocumentFromMessage(elem messages.Elem) (*File, error) {
+	doc, ok := elem.Document()
+	if !ok {
+		return nil, errNoFilesInMessage
+	}
+
+	return getDocumentFile(doc)
+}
+
+func getFilesFromMessageMedia(media tg.MessageMediaClass) ([]*File, error) {
+	switch m := media.(type) {
+	case *tg.MessageMediaPhoto:
+		photo, ok := m.GetPhoto()
+		if !ok {
+			return nil, errNoFilesInMessage
+		}
+
+		file, err := getPhotoFile(photo)
+		if err != nil {
+			return nil, err
+		}
+
+		return []*File{file}, nil
+	case *tg.MessageMediaDocument:
+		doc, ok := m.GetDocument()
+		if !ok {
+			return nil, errNoFilesInMessage
+		}
+
+		file, err := getDocumentFile(doc)
+		if err != nil {
+			return nil, err
+		}
+
+		return []*File{file}, nil
+	case *tg.MessageMediaPaidMedia:
+		files := make([]*File, 0, len(m.ExtendedMedia))
+		hasLockedPreview := false
+		for _, extended := range m.ExtendedMedia {
+			switch e := extended.(type) {
+			case *tg.MessageExtendedMedia:
+				nestedFiles, err := getFilesFromMessageMedia(e.Media)
+				if err != nil {
+					if err == errNoFilesInMessage {
+						continue
+					}
+
+					return nil, err
+				}
+
+				files = append(files, nestedFiles...)
+			case *tg.MessageExtendedMediaPreview:
+				hasLockedPreview = true
+			}
+		}
+
+		if len(files) > 0 {
+			return files, nil
+		}
+
+		if hasLockedPreview {
+			return nil, errPaidMediaLocked
+		}
+
+		return nil, errNoFilesInMessage
+	case *tg.MessageMediaInvoice:
+		extended, ok := m.GetExtendedMedia()
+		if !ok {
+			return nil, errNoFilesInMessage
+		}
+
+		switch e := extended.(type) {
+		case *tg.MessageExtendedMedia:
+			return getFilesFromMessageMedia(e.Media)
+		case *tg.MessageExtendedMediaPreview:
+			return nil, errPaidMediaLocked
+		default:
+			return nil, errNoFilesInMessage
+		}
+	default:
+		return nil, errNoFilesInMessage
+	}
+}
+
+func getFileFromMessageMedia(media tg.MessageMediaClass) (*File, error) {
+	files, err := getFilesFromMessageMedia(media)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(files) == 0 {
+		return nil, errNoFilesInMessage
+	}
+
+	return files[0], nil
+}
+
 func isSkippableTelegramDocumentName(name string) bool {
 	normalized := strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
 	if normalized == "" {
@@ -206,17 +312,23 @@ func isSkippableTelegramDocumentName(name string) bool {
 }
 
 func getFileFromMessageElem(elem messages.Elem) (*File, error) {
+	files, err := getFilesFromMessageElem(elem)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(files) == 0 {
+		return nil, errNoFilesInMessage
+	}
+
+	return files[0], nil
+}
+
+func getFilesFromMessageElem(elem messages.Elem) ([]*File, error) {
 	msg, ok := elem.Msg.(*tg.Message)
 	if !ok {
 		return nil, errNoFilesInMessage
 	}
 
-	switch msg.Media.(type) {
-	case *tg.MessageMediaPhoto:
-		return getPhotoFromMessage(elem)
-	case *tg.MessageMediaDocument:
-		return getDocumentFromMessage(elem)
-	}
-
-	return nil, errNoFilesInMessage
+	return getFilesFromMessageMedia(msg.Media)
 }
