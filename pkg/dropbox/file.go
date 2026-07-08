@@ -10,6 +10,7 @@ import (
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/spf13/afero"
 )
 
@@ -63,7 +64,7 @@ func (f *File) Close() error {
 
 		// We try to close the Writer
 		if err := f.streamWrite.Close(); err != nil {
-			return fmt.Errorf("problem writing file: %w", err)
+			return apperr.New("dropbox.file.close.write_stream", apperr.KindIO, fmt.Errorf("problem writing file: %w", err))
 		}
 		// And more importantly, we wait for the actual writing performed in go-routine to finish.
 		err := <-f.streamWriteCloseErr
@@ -86,7 +87,7 @@ func (f *File) Read(p []byte) (int, error) {
 			return n, io.EOF
 		}
 
-		return 0, fmt.Errorf("couldn't read from stream: %w", err)
+		return 0, apperr.New("dropbox.file.read", apperr.KindIO, fmt.Errorf("couldn't read from stream: %w", err))
 	}
 
 	f.streamReadOffset += int64(n)
@@ -113,7 +114,7 @@ func (f *File) ReadAt(p []byte, off int64) (n int, err error) {
 func (f *File) Seek(offset int64, whence int) (int64, error) {
 	// Write seek is not supported
 	if f.streamWrite != nil {
-		return 0, ErrNotSupported
+		return 0, apperr.New("dropbox.file.seek.write_stream", apperr.KindConfig, ErrNotSupported)
 	}
 
 	// Read seek has its own implementation
@@ -225,7 +226,7 @@ func (f *File) _readDir() error {
 	}
 
 	if err != nil {
-		return fmt.Errorf("couldn't fetch files list: %w", err)
+		return apperr.New("dropbox.file.readdir.fetch", apperr.KindNetwork, fmt.Errorf("couldn't fetch files list: %w", err))
 	}
 
 	f.dirListCursor = res.Cursor
@@ -295,7 +296,7 @@ func (f *File) Sync() error {
 // Truncate should truncate a file to a specific size but isn't
 // supported by dropbox.
 func (f *File) Truncate(size int64) error {
-	return ErrNotSupported
+	return apperr.New("dropbox.file.truncate", apperr.KindConfig, ErrNotSupported)
 }
 
 // WriteString writes a string.

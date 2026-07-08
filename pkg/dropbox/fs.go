@@ -13,6 +13,7 @@ import (
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/spf13/afero"
 )
 
@@ -47,7 +48,7 @@ func (fs *Fs) Create(name string) (afero.File, error) {
 
 	// We close it to write the file
 	if errClose := f.Close(); errClose != nil {
-		return nil, fmt.Errorf("issue while closing empty file: %w", errClose)
+		return nil, apperr.New("dropbox.fs.create.close_empty_file", apperr.KindIO, fmt.Errorf("issue while closing empty file: %w", errClose))
 	}
 
 	// And re-open it to allow to write on it
@@ -60,7 +61,7 @@ func (fs *Fs) Mkdir(name string, _ os.FileMode) error {
 
 	_, err := fs.files.CreateFolderV2(&files.CreateFolderArg{Path: p})
 	if err != nil {
-		return fmt.Errorf("couldn't create dir: %w", err)
+		return apperr.New("dropbox.fs.mkdir", apperr.KindNetwork, fmt.Errorf("couldn't create dir: %w", err))
 	}
 
 	return nil
@@ -106,13 +107,13 @@ func (fs *Fs) OpenFile(name string, flag int, _ os.FileMode) (afero.File, error)
 
 	// Reading and writing is technically supported but can't lead to anything that makes sense
 	if flag&os.O_RDWR != 0 {
-		return nil, ErrNotSupported
+		return nil, apperr.New("dropbox.fs.open_file.read_write", apperr.KindConfig, ErrNotSupported)
 	}
 
 	// Dropbox doesn't support it:
 	// https://www.dropboxforum.com/t5/Dropbox-API-Support-Feedback/How-to-append-to-existing-file/td-p/271603
 	if flag&os.O_APPEND != 0 {
-		return nil, ErrNotSupported
+		return nil, apperr.New("dropbox.fs.open_file.append", apperr.KindConfig, ErrNotSupported)
 	}
 
 	// Creating is basically a write
@@ -142,7 +143,7 @@ func (fs *Fs) Remove(name string) error {
 	_, err := fs.files.DeleteV2(&files.DeleteArg{Path: path.Join(fs.rootPath, name)})
 
 	if err != nil {
-		return fmt.Errorf("couldn't remove a file: %w", err)
+		return apperr.New("dropbox.fs.remove", apperr.KindNetwork, fmt.Errorf("couldn't remove a file: %w", err))
 	}
 
 	return nil
@@ -161,7 +162,7 @@ func (fs *Fs) Rename(oldname, newname string) error {
 	}})
 
 	if err != nil {
-		return fmt.Errorf("couldn't rename file: %w", err)
+		return apperr.New("dropbox.fs.rename", apperr.KindNetwork, fmt.Errorf("couldn't rename file: %w", err))
 	}
 
 	return nil
@@ -182,7 +183,7 @@ func (fs *Fs) stat(name string) (os.FileInfo, error) {
 			return nil, os.ErrNotExist
 		}
 
-		return nil, fmt.Errorf("couldn't fetch file info: %w", err)
+		return nil, apperr.New("dropbox.fs.stat", apperr.KindNetwork, fmt.Errorf("couldn't fetch file info: %w", err))
 	}
 
 	return newFileInfo(meta), nil
@@ -195,17 +196,17 @@ func (fs *Fs) Name() string {
 
 // Chmod is not supported.
 func (fs *Fs) Chmod(name string, mode os.FileMode) error {
-	return ErrNotSupported
+	return apperr.New("dropbox.fs.chmod", apperr.KindConfig, ErrNotSupported)
 }
 
 // Chown is not supported.
 func (fs *Fs) Chown(name string, uid int, gid int) error {
-	return ErrNotSupported
+	return apperr.New("dropbox.fs.chown", apperr.KindConfig, ErrNotSupported)
 }
 
 // Chtimes is not supported because dropbox doesn't support simply changing a time.
 func (fs *Fs) Chtimes(name string, _ time.Time, mtime time.Time) error {
-	return ErrNotSupported
+	return apperr.New("dropbox.fs.chtimes", apperr.KindConfig, ErrNotSupported)
 }
 
 // SetRootDirectory defines a base directory
