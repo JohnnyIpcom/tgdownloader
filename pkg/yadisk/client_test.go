@@ -2,12 +2,15 @@ package yadisk
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 )
 
 func TestResolvePublicDownloadURL(t *testing.T) {
@@ -47,8 +50,13 @@ func TestResolvePublicDownloadURLErrors(t *testing.T) {
 		client := NewClient(server.Client())
 		client.apiBaseURL = server.URL
 
-		if _, err := client.ResolvePublicDownloadURL(context.Background(), "x"); err == nil {
+		_, err := client.ResolvePublicDownloadURL(context.Background(), "x")
+		if err == nil {
 			t.Fatal("expected error for non-200 status")
+		}
+
+		if !apperr.IsKind(err, apperr.KindNetwork) {
+			t.Fatalf("expected network error kind, got: %v", err)
 		}
 	})
 
@@ -128,6 +136,44 @@ func TestResolvePublicDownloadURLErrors(t *testing.T) {
 			t.Fatalf("expected directory hint in error, got: %v", err)
 		}
 	})
+}
+
+func TestGetVideoStreamsValidationKind(t *testing.T) {
+	t.Parallel()
+
+	client := NewClient(nil)
+	_, err := client.GetVideoStreams(context.Background(), "", "")
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	if !apperr.IsKind(err, apperr.KindConfig) {
+		t.Fatalf("expected config error kind, got: %v", err)
+	}
+}
+
+func TestResolvePublicDownloadURLWrapsContextCancelAsKindCancel(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.apiBaseURL = server.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := client.ResolvePublicDownloadURL(ctx, "x")
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation in error chain, got: %v", err)
+	}
 }
 
 func TestOpenPublicFile(t *testing.T) {

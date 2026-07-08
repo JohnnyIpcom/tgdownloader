@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 )
 
 const defaultAPIBaseURL = "https://cloud-api.yandex.net"
@@ -99,7 +101,7 @@ func NewClient(httpClient *http.Client) *Client {
 func (c *Client) ResolvePublicDownloadURL(ctx context.Context, publicURL string) (string, error) {
 	href, err := c.resolveDownloadURL(ctx, publicURL, "")
 	if err != nil {
-		return "", err
+		return "", apperr.Wrap("yadisk.resolve_public_download_url.resolve_download", err)
 	}
 	if href != "" {
 		return href, nil
@@ -107,12 +109,12 @@ func (c *Client) ResolvePublicDownloadURL(ctx context.Context, publicURL string)
 
 	meta, err := c.getPublicResource(ctx, publicURL, "", 0, 0)
 	if err != nil {
-		return "", err
+		return "", apperr.Wrap("yadisk.resolve_public_download_url.get_resource", err)
 	}
 	if meta.Path != "" {
 		href, err = c.resolveDownloadURL(ctx, publicURL, meta.Path)
 		if err != nil {
-			return "", err
+			return "", apperr.Wrap("yadisk.resolve_public_download_url.resolve_download_by_path", err)
 		}
 		if href != "" {
 			return href, nil
@@ -133,20 +135,20 @@ func (c *Client) ResolvePublicDownloadURL(ctx context.Context, publicURL string)
 	}
 
 	if meta.Type == "dir" {
-		return "", fmt.Errorf("yandex disk api returned empty href (public resource is a directory: %q)", meta.Name)
+		return "", apperr.New("yadisk.resolve_public_download_url.empty_href_directory", apperr.KindIO, fmt.Errorf("yandex disk api returned empty href (public resource is a directory: %q)", meta.Name))
 	}
 
 	if err := c.detectReadWithoutDownload(ctx, publicURL); err != nil {
-		return "", err
+		return "", apperr.Wrap("yadisk.resolve_public_download_url.detect_rights", err)
 	}
 
-	return "", fmt.Errorf("yandex disk api returned empty href")
+	return "", apperr.New("yadisk.resolve_public_download_url.empty_href", apperr.KindIO, fmt.Errorf("yandex disk api returned empty href"))
 }
 
 func (c *Client) ResolvePublicResourceDownloads(ctx context.Context, publicURL string) (*ResolvedPublicResource, error) {
 	meta, err := c.getPublicResource(ctx, publicURL, "", 0, 0)
 	if err != nil {
-		return nil, err
+		return nil, apperr.Wrap("yadisk.resolve_public_resource_downloads.get_resource", err)
 	}
 
 	resourceName := sanitizeFilename(strings.TrimSpace(meta.Name))
@@ -157,7 +159,7 @@ func (c *Client) ResolvePublicResourceDownloads(ctx context.Context, publicURL s
 	if meta.Type == "dir" {
 		files, err := c.collectDirectoryFiles(ctx, publicURL, meta.Path, meta.Path)
 		if err != nil {
-			return nil, err
+			return nil, apperr.Wrap("yadisk.resolve_public_resource_downloads.collect_dir", err)
 		}
 
 		return &ResolvedPublicResource{
@@ -169,7 +171,7 @@ func (c *Client) ResolvePublicResourceDownloads(ctx context.Context, publicURL s
 
 	directURL, err := c.resolveFileDirectURL(ctx, publicURL, *meta)
 	if err != nil {
-		return nil, err
+		return nil, apperr.Wrap("yadisk.resolve_public_resource_downloads.resolve_file_url", err)
 	}
 
 	fileName := sanitizeFilename(strings.TrimSpace(meta.Name))
@@ -199,22 +201,22 @@ func (c *Client) resolveDownloadURL(ctx context.Context, publicURL, resourcePath
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return "", err
+		return "", apperr.New("yadisk.resolve_download_url.new_request", apperr.KindInternal, err)
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", apperr.New("yadisk.resolve_download_url.http", apperr.KindNetwork, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", formatHTTPError("unexpected yandex disk api status", resp)
+		return "", apperr.New("yadisk.resolve_download_url.status", apperr.KindNetwork, formatHTTPError("unexpected yandex disk api status", resp))
 	}
 
 	var result downloadResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return "", apperr.New("yadisk.resolve_download_url.decode", apperr.KindIO, err)
 	}
 
 	return strings.TrimSpace(result.Href), nil
@@ -234,22 +236,22 @@ func (c *Client) getPublicResource(ctx context.Context, publicURL, resourcePath 
 	endpoint := strings.TrimRight(c.apiBaseURL, "/") + "/v1/disk/public/resources?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, apperr.New("yadisk.get_public_resource.new_request", apperr.KindInternal, err)
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, apperr.New("yadisk.get_public_resource.http", apperr.KindNetwork, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, formatHTTPError("unexpected yandex disk public resource status", resp)
+		return nil, apperr.New("yadisk.get_public_resource.status", apperr.KindNetwork, formatHTTPError("unexpected yandex disk public resource status", resp))
 	}
 
 	var result publicResourceResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, apperr.New("yadisk.get_public_resource.decode", apperr.KindIO, err)
 	}
 
 	return &result, nil
@@ -331,7 +333,7 @@ func (c *Client) resolveFileDirectURL(ctx context.Context, publicURL string, met
 	if meta.Path != "" {
 		href, err := c.resolveDownloadURL(ctx, publicURL, meta.Path)
 		if err != nil {
-			return "", err
+			return "", apperr.Wrap("yadisk.resolve_file_direct_url.resolve_by_path", err)
 		}
 		if href != "" {
 			return href, nil
@@ -340,7 +342,7 @@ func (c *Client) resolveFileDirectURL(ctx context.Context, publicURL string, met
 
 	href, err := c.resolveDownloadURL(ctx, publicURL, "")
 	if err != nil {
-		return "", err
+		return "", apperr.Wrap("yadisk.resolve_file_direct_url.resolve_root", err)
 	}
 	if href != "" {
 		return href, nil
@@ -354,7 +356,7 @@ func (c *Client) resolveFileDirectURL(ctx context.Context, publicURL string, met
 
 		fileMeta, err := c.getPublicResource(ctx, publicURL, meta.Path, 0, 0)
 		if err != nil {
-			return "", err
+			return "", apperr.Wrap("yadisk.resolve_file_direct_url.get_resource", err)
 		}
 		if fileURL := strings.TrimSpace(fileMeta.File); fileURL != "" {
 			return fileURL, nil
@@ -380,14 +382,14 @@ func (c *Client) resolveFileDirectURL(ctx context.Context, publicURL string, met
 	}
 
 	if meta.Type == "dir" {
-		return "", fmt.Errorf("yandex disk api returned empty href (public resource is a directory: %q)", meta.Name)
+		return "", apperr.New("yadisk.resolve_file_direct_url.empty_href_directory", apperr.KindIO, fmt.Errorf("yandex disk api returned empty href (public resource is a directory: %q)", meta.Name))
 	}
 
 	if err := c.detectReadWithoutDownload(ctx, publicURL); err != nil {
-		return "", err
+		return "", apperr.Wrap("yadisk.resolve_file_direct_url.detect_rights", err)
 	}
 
-	return "", fmt.Errorf("yandex disk api returned empty href (type=%q name=%q path=%q)", meta.Type, meta.Name, meta.Path)
+	return "", apperr.New("yadisk.resolve_file_direct_url.empty_href", apperr.KindIO, fmt.Errorf("yandex disk api returned empty href (type=%q name=%q path=%q)", meta.Type, meta.Name, meta.Path))
 }
 
 func (c *Client) detectReadWithoutDownload(ctx context.Context, publicURL string) error {
@@ -420,7 +422,7 @@ func (c *Client) detectReadWithoutDownload(ctx context.Context, publicURL string
 	text := strings.ToLower(string(body))
 
 	if strings.Contains(text, "read_without_download") || strings.Contains(text, "read_with_password_without_download") {
-		return fmt.Errorf("yandex disk public link forbids file download (rights include read_without_download)")
+		return apperr.New("yadisk.detect_read_without_download", apperr.KindAuth, fmt.Errorf("yandex disk public link forbids file download (rights include read_without_download)"))
 	}
 
 	return nil
@@ -433,10 +435,15 @@ func (c *Client) ResolvePublicFileDownloadURL(ctx context.Context, publicURL str
 
 	meta, err := c.getPublicResource(ctx, publicURL, file.Path, 0, 0)
 	if err != nil {
-		return "", err
+		return "", apperr.Wrap("yadisk.resolve_public_file_download_url.get_resource", err)
 	}
 
-	return c.resolveFileDirectURL(ctx, publicURL, *meta)
+	href, err := c.resolveFileDirectURL(ctx, publicURL, *meta)
+	if err != nil {
+		return "", apperr.Wrap("yadisk.resolve_public_file_download_url.resolve_file_url", err)
+	}
+
+	return href, nil
 }
 
 // ============================================================================
@@ -455,12 +462,12 @@ func (c *Client) GetVideoStreams(ctx context.Context, publicURL string, itemPath
 	publicURL = strings.TrimSpace(publicURL)
 	itemPath = strings.TrimSpace(itemPath)
 	if publicURL == "" || itemPath == "" {
-		return nil, fmt.Errorf("yadisk GetVideoStreams: empty publicURL or itemPath")
+		return nil, apperr.New("yadisk.get_video_streams.validate", apperr.KindConfig, fmt.Errorf("yadisk GetVideoStreams: empty publicURL or itemPath"))
 	}
 
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return nil, fmt.Errorf("create cookie jar: %w", err)
+		return nil, apperr.New("yadisk.get_video_streams.cookie_jar", apperr.KindInternal, fmt.Errorf("create cookie jar: %w", err))
 	}
 	pageClient := &http.Client{
 		Jar:     jar,
@@ -477,25 +484,25 @@ func (c *Client) GetVideoStreams(ctx context.Context, publicURL string, itemPath
 
 	pageResp, err := pageClient.Do(pageReq)
 	if err != nil {
-		return nil, fmt.Errorf("fetch yadisk public page: %w", err)
+		return nil, apperr.New("yadisk.get_video_streams.fetch_page", apperr.KindNetwork, fmt.Errorf("fetch yadisk public page: %w", err))
 	}
 	defer pageResp.Body.Close()
 
 	pageBody, err := io.ReadAll(io.LimitReader(pageResp.Body, 4*1024*1024))
 	if err != nil {
-		return nil, fmt.Errorf("read yadisk public page: %w", err)
+		return nil, apperr.New("yadisk.get_video_streams.read_page", apperr.KindIO, fmt.Errorf("read yadisk public page: %w", err))
 	}
 	pageText := string(pageBody)
 
 	skMatch := reYadiskSk.FindStringSubmatch(pageText)
 	if len(skMatch) < 2 {
-		return nil, fmt.Errorf("yadisk page: could not extract sk token")
+		return nil, apperr.New("yadisk.get_video_streams.extract_sk", apperr.KindIO, fmt.Errorf("yadisk page: could not extract sk token"))
 	}
 	sk := skMatch[1]
 
 	rootHashMatch := reYadiskRootHash.FindStringSubmatch(pageText)
 	if len(rootHashMatch) < 2 {
-		return nil, fmt.Errorf("yadisk page: could not extract root hash")
+		return nil, apperr.New("yadisk.get_video_streams.extract_root_hash", apperr.KindIO, fmt.Errorf("yadisk page: could not extract root hash"))
 	}
 	rootHash := rootHashMatch[1]
 
@@ -507,13 +514,13 @@ func (c *Client) GetVideoStreams(ctx context.Context, publicURL string, itemPath
 	apiURL := yadiskBaseURL + "/public/api/get-video-streams"
 	bodyJSON, err := json.Marshal(map[string]string{"hash": compositeHash, "sk": sk})
 	if err != nil {
-		return nil, err
+		return nil, apperr.New("yadisk.get_video_streams.marshal_payload", apperr.KindInternal, err)
 	}
 	bodyEncoded := url.QueryEscape(string(bodyJSON))
 
 	apiReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewBufferString(bodyEncoded))
 	if err != nil {
-		return nil, err
+		return nil, apperr.New("yadisk.get_video_streams.new_request", apperr.KindInternal, err)
 	}
 	apiReq.Header.Set("Content-Type", "text/plain")
 	apiReq.Header.Set("X-Requested-With", "XMLHttpRequest")
@@ -523,20 +530,20 @@ func (c *Client) GetVideoStreams(ctx context.Context, publicURL string, itemPath
 
 	apiResp, err := pageClient.Do(apiReq)
 	if err != nil {
-		return nil, fmt.Errorf("get-video-streams request: %w", err)
+		return nil, apperr.New("yadisk.get_video_streams.http", apperr.KindNetwork, fmt.Errorf("get-video-streams request: %w", err))
 	}
 	defer apiResp.Body.Close()
 
 	if apiResp.StatusCode != http.StatusOK {
-		return nil, formatHTTPError("get-video-streams api", apiResp)
+		return nil, apperr.New("yadisk.get_video_streams.status", apperr.KindNetwork, formatHTTPError("get-video-streams api", apiResp))
 	}
 
 	var result videoStreamsResponse
 	if err := json.NewDecoder(apiResp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode get-video-streams response: %w", err)
+		return nil, apperr.New("yadisk.get_video_streams.decode", apperr.KindIO, fmt.Errorf("decode get-video-streams response: %w", err))
 	}
 	if result.Error {
-		return nil, fmt.Errorf("get-video-streams api returned error (statusCode=%d)", result.StatusCode)
+		return nil, apperr.New("yadisk.get_video_streams.api_error", apperr.KindNetwork, fmt.Errorf("get-video-streams api returned error (statusCode=%d)", result.StatusCode))
 	}
 
 	streams := make([]VideoStream, 0, len(result.Data.Videos))
@@ -593,11 +600,11 @@ func ChooseBestVideoStream(streams []VideoStream) *VideoStream {
 func (c *Client) DownloadHLSStream(ctx context.Context, m3u8URL string, w io.Writer) error {
 	segURLs, err := c.resolveHLSSegments(ctx, m3u8URL)
 	if err != nil {
-		return err
+		return apperr.Wrap("yadisk.download_hls_stream.resolve_segments", err)
 	}
 	for _, segURL := range segURLs {
 		if err := c.downloadSegment(ctx, segURL, w); err != nil {
-			return fmt.Errorf("download HLS segment %s: %w", segURL, err)
+			return apperr.New("yadisk.download_hls_stream.segment", apperr.KindNetwork, fmt.Errorf("download HLS segment %s: %w", segURL, err))
 		}
 	}
 	return nil

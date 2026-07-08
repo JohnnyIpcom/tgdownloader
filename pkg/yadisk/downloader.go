@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 )
 
 // FileDownloadOptions configures file download behavior.
@@ -96,7 +98,7 @@ func (fd *FileDownloader) DownloadFile(
 				return nil, nil // nil file indicates skip, not error
 			}
 
-			return nil, fmt.Errorf("resolve download url for %q: %w", file.Name, err)
+			return nil, apperr.New("yadisk.downloader.resolve_download_url", apperr.KindNetwork, fmt.Errorf("resolve download url for %q: %w", file.Name, err))
 		}
 	}
 
@@ -139,14 +141,14 @@ func (fd *FileDownloader) downloadViaDirect(
 ) (*DownloadedFile, error) {
 	publicFile, err := fd.client.OpenDirectFile(ctx, file)
 	if err != nil {
-		return nil, fmt.Errorf("open file %q: %w", file.Name, err)
+		return nil, apperr.New("yadisk.downloader.open_direct_file", apperr.KindNetwork, fmt.Errorf("open file %q: %w", file.Name, err))
 	}
 	defer publicFile.Body.Close()
 
 	// Create target file
 	out, err := os.Create(targetPath)
 	if err != nil {
-		return nil, fmt.Errorf("create file %q: %w", targetPath, err)
+		return nil, apperr.New("yadisk.downloader.create_target_file", apperr.KindIO, fmt.Errorf("create file %q: %w", targetPath, err))
 	}
 
 	total := publicFile.Size
@@ -163,7 +165,7 @@ func (fd *FileDownloader) downloadViaDirect(
 	if copyErr != nil {
 		out.Close()
 		os.Remove(targetPath)
-		return nil, fmt.Errorf("download body: %w", copyErr)
+		return nil, apperr.New("yadisk.downloader.copy_body", apperr.KindNetwork, fmt.Errorf("download body: %w", copyErr))
 	}
 
 	// Handle resume if not all bytes were downloaded
@@ -172,13 +174,13 @@ func (fd *FileDownloader) downloadViaDirect(
 		if err != nil {
 			out.Close()
 			os.Remove(targetPath)
-			return nil, fmt.Errorf("resume download: %w", err)
+			return nil, apperr.Wrap("yadisk.downloader.resume_download", err)
 		}
 	}
 
 	if err := out.Close(); err != nil {
 		os.Remove(targetPath)
-		return nil, fmt.Errorf("close file: %w", err)
+		return nil, apperr.New("yadisk.downloader.close_target_file", apperr.KindIO, fmt.Errorf("close file: %w", err))
 	}
 
 	return &DownloadedFile{Path: targetPath, Size: written, IsHLSStream: false}, nil
@@ -199,18 +201,18 @@ func (fd *FileDownloader) resumeDownload(
 	for part := 0; written < total && part < maxRangeParts; part++ {
 		rangeFile, err := fd.client.OpenDirectFileRange(ctx, file, written)
 		if err != nil {
-			return written, fmt.Errorf("open range at offset %d: %w", written, err)
+			return written, apperr.New("yadisk.downloader.open_range", apperr.KindNetwork, fmt.Errorf("open range at offset %d: %w", written, err))
 		}
 
 		// Handle server ignoring Range and returning full body
 		if rangeFile.Offset == 0 && written > 0 {
 			if err := out.Truncate(0); err != nil {
 				_ = rangeFile.Body.Close()
-				return written, fmt.Errorf("truncate file: %w", err)
+				return written, apperr.New("yadisk.downloader.truncate_file", apperr.KindIO, fmt.Errorf("truncate file: %w", err))
 			}
 			if _, err := out.Seek(0, 0); err != nil {
 				_ = rangeFile.Body.Close()
-				return written, fmt.Errorf("seek to start: %w", err)
+				return written, apperr.New("yadisk.downloader.seek_start", apperr.KindIO, fmt.Errorf("seek to start: %w", err))
 			}
 			written = 0
 		}
@@ -222,21 +224,21 @@ func (fd *FileDownloader) resumeDownload(
 		chunkWritten, err := io.Copy(chunkWriter, rangeFile.Body)
 		closeErr := rangeFile.Body.Close()
 		if err != nil {
-			return written, fmt.Errorf("copy range: %w", err)
+			return written, apperr.New("yadisk.downloader.copy_range", apperr.KindNetwork, fmt.Errorf("copy range: %w", err))
 		}
 		if closeErr != nil {
-			return written, fmt.Errorf("close range body: %w", closeErr)
+			return written, apperr.New("yadisk.downloader.close_range_body", apperr.KindIO, fmt.Errorf("close range body: %w", closeErr))
 		}
 
 		if chunkWritten <= 0 {
-			return written, fmt.Errorf("no progress made at offset %d", written)
+			return written, apperr.New("yadisk.downloader.no_progress", apperr.KindNetwork, fmt.Errorf("no progress made at offset %d", written))
 		}
 
 		written += chunkWritten
 	}
 
 	if written < total {
-		return written, fmt.Errorf("incomplete download: got %d of %d bytes", written, total)
+		return written, apperr.New("yadisk.downloader.incomplete_download", apperr.KindNetwork, fmt.Errorf("incomplete download: got %d of %d bytes", written, total))
 	}
 
 	return written, nil
@@ -252,11 +254,11 @@ func (fd *FileDownloader) downloadViaHLS(
 ) (*DownloadedFile, error) {
 	streams, err := fd.client.GetVideoStreams(ctx, publicURL, file.Path)
 	if err != nil {
-		return nil, fmt.Errorf("get video streams: %w", err)
+		return nil, apperr.Wrap("yadisk.downloader.get_video_streams", err)
 	}
 
 	if len(streams) == 0 {
-		return nil, fmt.Errorf("no video streams available")
+		return nil, apperr.New("yadisk.downloader.video_streams_empty", apperr.KindIO, fmt.Errorf("no video streams available"))
 	}
 
 	best := ChooseBestVideoStream(streams)
@@ -264,19 +266,19 @@ func (fd *FileDownloader) downloadViaHLS(
 
 	out, err := os.Create(targetPath)
 	if err != nil {
-		return nil, fmt.Errorf("create file: %w", err)
+		return nil, apperr.New("yadisk.downloader.create_hls_file", apperr.KindIO, fmt.Errorf("create file: %w", err))
 	}
 	defer out.Close()
 
 	if err := fd.client.DownloadHLSStream(ctx, best.URL, io.MultiWriter(out, progressWriter)); err != nil {
 		os.Remove(targetPath)
-		return nil, fmt.Errorf("download HLS stream: %w", err)
+		return nil, apperr.Wrap("yadisk.downloader.download_hls_stream", err)
 	}
 
 	// Get final file size
 	stat, err := os.Stat(targetPath)
 	if err != nil {
-		return nil, err
+		return nil, apperr.New("yadisk.downloader.stat_hls_file", apperr.KindIO, err)
 	}
 
 	return &DownloadedFile{Path: targetPath, Size: stat.Size(), IsHLSStream: true}, nil
