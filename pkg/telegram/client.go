@@ -501,7 +501,6 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 	c.progress.Wait(ctx)
 	return func() error {
 		logoutTracker := c.progress.Tracker("Logout")
-		c.updMgr.Reset()
 
 		select {
 		case updErr := <-updatesErr:
