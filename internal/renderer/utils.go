@@ -46,7 +46,21 @@ func getUsername(user peers.User) string {
 }
 
 func getVisibleName(p peers.Peer) string {
-	return ReplaceAllEmojis(p.VisibleName())
+	if name := p.VisibleName(); name != "" {
+		return ReplaceAllEmojis(name)
+	}
+
+	if user, ok := p.(peers.User); ok {
+		if username, ok := user.Username(); ok && username != "" {
+			return "@" + username
+		}
+		if user.Deleted() {
+			return "<deleted user>"
+		}
+		return fmt.Sprintf("<user %d>", user.ID())
+	}
+
+	return fmt.Sprintf("<peer %d>", p.ID())
 }
 
 func getVisibleNameConfig(name string) table.ColumnConfig {
