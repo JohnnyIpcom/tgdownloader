@@ -222,8 +222,11 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 			}
 			defer r.Disconnect()
 
+			setupTracker := r.progress.UnitsTracker("Prompt setup", 0)
 			self, err := r.client.UserService.GetSelf(rootCmd.Context())
 			if err != nil {
+				setupTracker.Fail()
+				r.progress.Wait(rootCmd.Context())
 				renderer.RenderError(err)
 				return
 			}
@@ -244,6 +247,8 @@ func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
 				}
 			}
 
+			setupTracker.Done()
+			r.progress.Wait(rootCmd.Context())
 			prompt.New(
 				r.newExecutor(rootCmd, historyStore),
 				r.newCompleter(rootCmd),

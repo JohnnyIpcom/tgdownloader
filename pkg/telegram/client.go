@@ -526,12 +526,15 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 // Connect connects to Telegram.
 func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	connectTracker := c.progress.Tracker("Connecting")
 
 	errC := make(chan error, 1)
 	initDone := make(chan struct{})
 	go func() {
 		defer close(errC)
 		errC <- c.runClient(ctx, func(ctx context.Context) error {
+			c.finishConnecting(ctx, connectTracker)
+
 			logout, err := c.Auth(ctx)
 			if err != nil {
 				return err
@@ -553,13 +556,27 @@ func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 		})
 	}()
 
+	return c.waitForConnectInit(ctx, cancel, errC, initDone, connectTracker)
+}
+
+func (c *Client) waitForConnectInit(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	errC <-chan error,
+	initDone <-chan struct{},
+	connectTracker Tracker,
+) (StopFunc, error) {
 	select {
 	case <-ctx.Done():
 		cancel()
+		connectTracker.Fail()
+		c.progress.Wait(ctx)
 		return func() error { return nil }, ctx.Err()
 
 	case err := <-errC:
 		cancel()
+		connectTracker.Fail()
+		c.progress.Wait(ctx)
 		return func() error { return nil }, err
 
 	case <-initDone:
@@ -571,6 +588,11 @@ func (c *Client) Connect(ctx context.Context) (StopFunc, error) {
 	}
 
 	return stopFn, nil
+}
+
+func (c *Client) finishConnecting(ctx context.Context, connectTracker Tracker) {
+	connectTracker.Done()
+	c.progress.Wait(ctx)
 }
 
 // Run runs the function f with the client.

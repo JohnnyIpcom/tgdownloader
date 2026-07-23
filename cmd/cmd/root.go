@@ -32,6 +32,7 @@ type Root struct {
 
 	cfg    config.Config
 	client *telegram.Client
+	progress renderer.Progress
 	zap    *zap.Logger
 	log    logr.Logger
 	level  zap.AtomicLevel
@@ -83,6 +84,7 @@ func NewRoot(version string) (*Root, error) {
 		version: version,
 		cfg:     cfg,
 		client:  client,
+		progress: progress,
 		zap:     zap,
 		log:     zapr.NewLogger(zap),
 		level:   level,
