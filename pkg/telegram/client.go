@@ -16,7 +16,6 @@ import (
 
 	backoff "github.com/cenkalti/backoff/v4"
 	"github.com/gotd/contrib/bbolt"
-	"github.com/gotd/contrib/middleware/floodwait"
 	"github.com/gotd/contrib/middleware/ratelimit"
 	"github.com/gotd/contrib/storage"
 	"github.com/gotd/td/session"
@@ -58,7 +57,7 @@ type LogoutFunc func() error
 type Client struct {
 	config         config.Config
 	client         *tgclient.Client
-	floodWaiter    *floodwait.Waiter
+	floodWaiter    *reentrantFloodWaiter
 	disableUpdates bool
 	logger         *zap.Logger
 	db             *bboltdb.DB
@@ -123,6 +122,9 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		AllowCDN:    true,
 		NoUpdates:   disableUpdates,
 		Middlewares: middlewares,
+		OnTransfer: func(ctx context.Context, _ *tgclient.Client, fn func(context.Context) error) error {
+			return fn(markAuthTransfer(ctx))
+		},
 	}
 
 	var gaps *updates.Manager
@@ -283,17 +285,11 @@ func applyReliabilityOptions(cfg config.Config, log *zap.Logger, options *tgclie
 	}
 }
 
-func newFloodWaiter(cfg config.Config, log *zap.Logger) *floodwait.Waiter {
-	waiter := floodwait.NewWaiter()
-	if !cfg.IsSet("flood_wait.log") || cfg.GetBool("flood_wait.log") {
-		waiter = waiter.WithCallback(func(ctx context.Context, wait floodwait.FloodWait) {
-			log.Named("floodwait").Warn("telegram flood wait",
-				zap.Duration("wait", wait.Duration),
-			)
-		})
+func newFloodWaiter(cfg config.Config, log *zap.Logger) *reentrantFloodWaiter {
+	if cfg.IsSet("flood_wait.log") && !cfg.GetBool("flood_wait.log") {
+		return newReentrantFloodWaiter(nil)
 	}
-
-	return waiter
+	return newReentrantFloodWaiter(log)
 }
 
 func (c *Client) runClient(ctx context.Context, fn func(context.Context) error) error {

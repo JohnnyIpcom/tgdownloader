@@ -111,6 +111,7 @@ func (p *progressImpl) WaitAndStop(ctx context.Context) {
 
 type Tracker interface {
 	Increment(n int64)
+	UpdateMessage(message string)
 	Fail()
 	Done()
 }
@@ -125,6 +126,10 @@ func (t *tracker) Fail() {
 
 func (t *tracker) Done() {
 	t.MarkAsDone()
+}
+
+func (t *tracker) UpdateMessage(message string) {
+	t.Tracker.UpdateMessage(message)
 }
 
 var _ Tracker = (*tracker)(nil)

@@ -93,6 +93,40 @@ type trackerAdapter struct {
 	renderer.Progress
 }
 
+type downloadScanProgress struct {
+	tracker renderer.Tracker
+	found   int64
+}
+
+func newDownloadScanProgress(tracker renderer.Tracker) *downloadScanProgress {
+	return &downloadScanProgress{tracker: tracker}
+}
+
+func (p *downloadScanProgress) FileFound(stats downloader.Stats) {
+	p.found++
+	p.tracker.Increment(1)
+	p.updateMessage("Scanning history", stats)
+}
+
+func (p *downloadScanProgress) ScanningDone(stats downloader.Stats) {
+	p.updateMessage("Scanning history complete", stats)
+}
+
+func (p *downloadScanProgress) Finish(stats downloader.Stats) {
+	p.ScanningDone(stats)
+	p.tracker.Done()
+}
+
+func (p *downloadScanProgress) updateMessage(prefix string, stats downloader.Stats) {
+	p.tracker.UpdateMessage(fmt.Sprintf(
+		"%s: found=%d skipped=%d failed=%d",
+		prefix,
+		p.found,
+		stats.Skipped,
+		stats.Failed,
+	))
+}
+
 var _ downloader.Tracker = (*trackerAdapter)(nil)
 
 func (pa *trackerAdapter) WrapWriter(w io.Writer, msg string, size int64) downloader.TrackedWriter {
@@ -110,18 +144,27 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 	}
 
 	var downloaderOptions []downloader.Option
+	var scanProgress *downloadScanProgress
 	downloaderOptions = append(downloaderOptions, downloader.WithRewrite(opts.rewrite))
 	downloaderOptions = append(downloaderOptions, downloader.WithDryRun(opts.dryRun))
 	downloaderOptions = append(downloaderOptions, downloader.WithTracker(newTrackerAdapter(p)))
+	downloaderOptions = append(downloaderOptions, downloader.WithOnComplete(func(stats downloader.Stats) {
+		if scanProgress != nil {
+			scanProgress.Finish(stats)
+		}
+	}))
 
 	d, err := r.newDownloader(downloaderOptions...)
 	if err != nil {
 		return apperr.Wrap("cmd.download.new_downloader", err)
 	}
-
+	scanProgress = newDownloadScanProgress(p.UnitsTracker("Scanning history", 0))
 	queue := make(chan downloader.File)
 	go func() {
-		defer close(queue)
+		defer func() {
+			close(queue)
+			scanProgress.ScanningDone(d.Stats())
+		}()
 
 		for {
 			select {
@@ -133,7 +176,12 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 					return
 				}
 
-				queue <- downloader.NewFile(file, downloader.WithSaveByHashtags(opts.hashtags))
+				scanProgress.FileFound(d.Stats())
+				select {
+				case queue <- downloader.NewFile(file, downloader.WithSaveByHashtags(opts.hashtags)):
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()

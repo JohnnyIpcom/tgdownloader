@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"strconv"
@@ -39,6 +40,35 @@ func (f File) Name() string {
 
 func (f File) Size() int64 {
 	return f.size
+}
+
+// Identity returns a stable identifier for distinguishing Telegram files that
+// happen to have the same display name.
+func (f File) Identity() string {
+	if identity, ok := f.StableIdentity(); ok {
+		return identity
+	}
+
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%T:%#v", f.location, f.location)))
+	return fmt.Sprintf("%x", sum[:8])
+}
+
+// StableIdentity returns an identifier embedded in Telegram's file location.
+func (f File) StableIdentity() (string, bool) {
+	if location, ok := f.location.(interface{ GetID() int64 }); ok {
+		return strconv.FormatInt(location.GetID(), 10), true
+	}
+	if location, ok := f.location.(interface{ GetPhotoID() int64 }); ok {
+		return strconv.FormatInt(location.GetPhotoID(), 10), true
+	}
+	if location, ok := f.location.(interface {
+		GetVolumeID() int64
+		GetLocalID() int
+	}); ok {
+		return fmt.Sprintf("%d-%d", location.GetVolumeID(), location.GetLocalID()), true
+	}
+
+	return "", false
 }
 
 func (f File) Metadata() map[string]interface{} {

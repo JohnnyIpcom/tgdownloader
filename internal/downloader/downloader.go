@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +27,7 @@ type settings struct {
 	dryRun     bool
 	retryCount int
 	retryDelay time.Duration
+	onComplete func(Stats)
 }
 
 func (s *settings) setDefaults() {
@@ -75,18 +77,28 @@ func WithRetry(count int, delay time.Duration) Option {
 	}
 }
 
+func WithOnComplete(fn func(Stats)) Option {
+	return func(s *settings) {
+		s.onComplete = fn
+	}
+}
+
 // Pool is a pool of workers that download files
 type Downloader struct {
 	fs      afero.Fs
 	service telegram.FileService
 
-	outputDir  string
-	numWorkers int
-	tracker    Tracker
-	rewrite    bool
-	dryRun     bool
-	retryCount int
-	retryDelay time.Duration
+	outputDir     string
+	numWorkers    int
+	tracker       Tracker
+	rewrite       bool
+	dryRun        bool
+	retryCount    int
+	retryDelay    time.Duration
+	pathClaims    map[string]string
+	manifest      fileManifest
+	manifestDirty bool
+	onComplete    func(Stats)
 
 	files   chan File
 	queueWG sync.WaitGroup
@@ -122,6 +134,9 @@ func New(fs afero.Fs, service telegram.FileService, opts ...Option) *Downloader 
 		dryRun:     s.dryRun,
 		retryCount: s.retryCount,
 		retryDelay: s.retryDelay,
+		pathClaims: make(map[string]string),
+		manifest:   newFileManifest(),
+		onComplete: s.onComplete,
 
 		fs:      fs,
 		files:   make(chan File),
@@ -133,6 +148,20 @@ func New(fs afero.Fs, service telegram.FileService, opts ...Option) *Downloader 
 func (p *Downloader) SetOutputDir(dir string) {
 	p.outputDir = dir
 	p.createDirectoryIfNotExists(dir)
+
+	manifest, err := loadFileManifest(p.fs, path.Join(dir, fileManifestName))
+	if err != nil {
+		p.recordError(err)
+		return
+	}
+	p.manifest = manifest
+	for _, identities := range manifest.Paths {
+		for identity, actualPath := range identities {
+			if actualPath, ok := cleanManifestPath(actualPath); ok {
+				p.pathClaims[path.Join(dir, actualPath)] = identity
+			}
+		}
+	}
 }
 
 // Start starts the pool of workers.
@@ -194,10 +223,18 @@ func (d *Downloader) Stats() Stats {
 // Stop stops the pool of workers and waits for them to finish.
 func (p *Downloader) Stop(ctx context.Context) error {
 	p.queueWG.Wait()
+	if p.manifestDirty {
+		if err := saveFileManifest(p.fs, path.Join(p.outputDir, fileManifestName), p.manifest); err != nil {
+			p.recordError(err)
+		}
+	}
 
 	close(p.files)
 	if err := p.workerG.Wait(); err != nil {
 		p.recordError(err)
+	}
+	if p.onComplete != nil {
+		p.onComplete(p.Stats())
 	}
 
 	p.tracker.WaitAndStop(ctx)
@@ -239,28 +276,98 @@ func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan File) {
 					return
 				}
 
-				p.files <- file
+				p.files <- p.reserveOutputPaths(file)
 			}
 		}
 	}()
 }
 
+func (p *Downloader) reserveOutputPaths(file File) File {
+	paths := make([]string, 0, len(file.subdirs)+1)
+	for _, subdir := range file.subdirs {
+		paths = append(paths, path.Join(p.outputDir, subdir, file.Name()))
+	}
+	if len(paths) == 0 {
+		paths = append(paths, path.Join(p.outputDir, file.Name()))
+	}
+
+	identity := file.Identity()
+	for i, outputPath := range paths {
+		logicalPath := p.relativeOutputPath(outputPath)
+		if actualPath, ok := p.manifest.lookup(logicalPath, identity); ok {
+			if actualPath, valid := cleanManifestPath(actualPath); valid {
+				paths[i] = path.Join(p.outputDir, actualPath)
+				p.pathClaims[paths[i]] = identity
+				continue
+			}
+		}
+
+		claimedBy, claimed := p.pathClaims[outputPath]
+		if !claimed && p.hasAmbiguousExistingFile(outputPath, file) {
+			paths[i] = p.claimIdentifiedPath(outputPath, identity)
+		} else if !claimed || claimedBy == identity {
+			p.pathClaims[outputPath] = identity
+			paths[i] = outputPath
+		} else {
+			paths[i] = p.claimIdentifiedPath(outputPath, identity)
+		}
+
+		if !p.dryRun {
+			p.manifest.assign(logicalPath, identity, p.relativeOutputPath(paths[i]))
+			p.manifestDirty = true
+		}
+	}
+
+	file.outputPaths = paths
+	return file
+}
+
+func (p *Downloader) relativeOutputPath(filename string) string {
+	outputDir := strings.TrimSuffix(path.Clean(p.outputDir), "/")
+	return strings.TrimPrefix(path.Clean(filename), outputDir+"/")
+}
+
+func (p *Downloader) hasAmbiguousExistingFile(outputPath string, file File) bool {
+	if _, stable := file.StableIdentity(); !stable || file.Size() <= 0 {
+		return false
+	}
+
+	info, err := p.fs.Stat(outputPath)
+	return err == nil && info.Size() != file.Size()
+}
+
+func (p *Downloader) claimIdentifiedPath(outputPath, identity string) string {
+	candidate := pathWithIdentity(outputPath, identity)
+	for suffix := 2; ; suffix++ {
+		candidateClaim, candidateClaimed := p.pathClaims[candidate]
+		if !candidateClaimed || candidateClaim == identity {
+			p.pathClaims[candidate] = identity
+			return candidate
+		}
+		candidate = pathWithIdentity(outputPath, fmt.Sprintf("%s-%d", identity, suffix))
+	}
+}
+
+func pathWithIdentity(filename, identity string) string {
+	ext := path.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+	return base + "_" + identity + ext
+}
+
 // downloadFile downloads a file.
 func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logger) error {
-	outputPaths := make([]string, 0, len(file.subdirs)+1)
+	outputPaths := file.outputPaths
+	if len(outputPaths) == 0 {
+		file = p.reserveOutputPaths(file)
+		outputPaths = file.outputPaths
+	}
 
-	for _, subdir := range file.subdirs {
-		outputDir := path.Join(p.outputDir, subdir)
+	for _, outputPath := range outputPaths {
+		outputDir := path.Dir(outputPath)
 		if err := p.createDirectoryIfNotExists(outputDir); err != nil {
 			log.Error(err, "failed to create directory", "directory", outputDir)
 			return apperr.New("downloader.create_directory", apperr.KindIO, fmt.Errorf("create output directory %q: %w", outputDir, err))
 		}
-
-		outputPaths = append(outputPaths, path.Join(outputDir, file.Name()))
-	}
-
-	if len(outputPaths) == 0 {
-		outputPaths = append(outputPaths, path.Join(p.outputDir, file.Name()))
 	}
 
 	if resumeSvc, ok := p.service.(resumeFileService); ok {
@@ -288,7 +395,8 @@ func (p *Downloader) downloadFile(ctx context.Context, file File, log logr.Logge
 		return nil
 	}
 
-	writer := p.tracker.WrapWriter(saver, file.Name(), file.Size())
+	displayName := path.Base(outputPaths[0])
+	writer := p.tracker.WrapWriter(saver, displayName, file.Size())
 
 	var err error
 	for attempt := 1; attempt <= p.retryCount; attempt++ {
@@ -395,7 +503,8 @@ func (p *Downloader) resumeExistingPartialFile(
 		}
 
 		remaining := file.Size() - currentOffset
-		writer := p.tracker.WrapWriter(fileHandle, file.Name(), remaining)
+		displayName := path.Base(outputPaths[0])
+		writer := p.tracker.WrapWriter(fileHandle, displayName, remaining)
 
 		resumeErr := func() error {
 			_, err := service.DownloadFromOffset(ctx, file.File, writerFunc(func(data []byte) (int, error) {

@@ -25,6 +25,26 @@ type fakeFileService struct {
 	content    []byte
 }
 
+type recordingTracker struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (t *recordingTracker) WrapWriter(w io.Writer, msg string, _ int64) TrackedWriter {
+	t.mu.Lock()
+	t.messages = append(t.messages, msg)
+	t.mu.Unlock()
+	return &nullTrackedWriter{w: w}
+}
+
+func (t *recordingTracker) WaitAndStop(context.Context) {}
+
+func (t *recordingTracker) Messages() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.messages...)
+}
+
 func (f *fakeFileService) GetAllFiles(ctx context.Context, peer peers.Peer, opts ...telegram.GetAllFilesOption) (<-chan telegram.File, error) {
 	return nil, errors.New("not implemented")
 }
@@ -108,6 +128,12 @@ func makeTelegramFile(name string) telegram.File {
 	return f
 }
 
+func makeTelegramDocument(name string, id int64) telegram.File {
+	f := makeTelegramFile(name)
+	setUnexportedField(&f, "location", tg.InputFileLocationClass(&tg.InputDocumentFileLocation{ID: id}))
+	return f
+}
+
 func setUnexportedField(target interface{}, field string, value interface{}) {
 	rv := reflect.ValueOf(target).Elem().FieldByName(field)
 	reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem().Set(reflect.ValueOf(value))
@@ -135,6 +161,40 @@ func TestDownloaderStatsDownloaded(t *testing.T) {
 	stats := d.Stats()
 	if stats.Downloaded != 1 || stats.Skipped != 0 || stats.Failed != 0 {
 		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestDownloaderCallsOnCompleteAfterWorkersStop(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fs := afero.NewMemMapFs()
+	completed := false
+	d := New(
+		fs,
+		&fakeFileService{},
+		WithNumWorkers(1),
+		WithRetry(1, time.Millisecond),
+		WithOnComplete(func(stats Stats) {
+			completed = true
+			if stats.Downloaded != 1 {
+				t.Errorf("completion stats = %+v", stats)
+			}
+		}),
+	)
+	d.SetOutputDir("/downloads")
+
+	q := make(chan File)
+	d.Start(ctx)
+	d.AddDownloadQueue(ctx, q)
+	q <- File{File: makeTelegramFile("complete.txt")}
+	close(q)
+
+	if err := d.Stop(ctx); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if !completed {
+		t.Fatal("completion callback was not called")
 	}
 }
 
@@ -279,5 +339,137 @@ func TestDownloaderResumesExistingPartialFile(t *testing.T) {
 	stats := d.Stats()
 	if stats.Downloaded != 1 || stats.Skipped != 0 || stats.Failed != 0 {
 		t.Fatalf("unexpected stats after resume: %+v", stats)
+	}
+}
+
+func TestDownloaderUsesTelegramIDForDuplicateNames(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fs := afero.NewMemMapFs()
+	svc := &fakeFileService{}
+	tracker := &recordingTracker{}
+	d := New(fs, svc, WithNumWorkers(1), WithRetry(1, time.Millisecond), WithTracker(tracker))
+	d.SetOutputDir("/downloads")
+
+	q := make(chan File)
+	d.Start(ctx)
+	d.AddDownloadQueue(ctx, q)
+	q <- File{File: makeTelegramDocument("video.mp4", 101)}
+	q <- File{File: makeTelegramDocument("video.mp4", 202)}
+	close(q)
+
+	if err := d.Stop(ctx); err != nil {
+		t.Fatalf("Stop() unexpected error: %v", err)
+	}
+
+	for _, filename := range []string{"video.mp4", "video_202.mp4"} {
+		exists, err := afero.Exists(fs, "/downloads/"+filename)
+		if err != nil {
+			t.Fatalf("Exists(%q) error = %v", filename, err)
+		}
+		if !exists {
+			t.Errorf("expected %q to be downloaded", filename)
+		}
+	}
+
+	stats := d.Stats()
+	if stats.Downloaded != 2 || stats.Skipped != 0 || stats.Failed != 0 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+
+	if got := tracker.Messages(); !reflect.DeepEqual(got, []string{"video.mp4", "video_202.mp4"}) {
+		t.Fatalf("tracker messages = %q", got)
+	}
+}
+
+func TestDownloaderManifestKeepsNamesStableWhenOrderChanges(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fs := afero.NewMemMapFs()
+	first := New(fs, &fakeFileService{}, WithNumWorkers(1), WithRetry(1, time.Millisecond))
+	first.SetOutputDir("/downloads")
+
+	q := make(chan File)
+	first.Start(ctx)
+	first.AddDownloadQueue(ctx, q)
+	q <- File{File: makeTelegramDocument("video.mp4", 101)}
+	q <- File{File: makeTelegramDocument("video.mp4", 202)}
+	close(q)
+	if err := first.Stop(ctx); err != nil {
+		t.Fatalf("first Stop() error = %v", err)
+	}
+
+	secondService := &fakeFileService{}
+	second := New(fs, secondService, WithNumWorkers(1), WithRetry(1, time.Millisecond))
+	second.SetOutputDir("/downloads")
+
+	q = make(chan File)
+	second.Start(ctx)
+	second.AddDownloadQueue(ctx, q)
+	q <- File{File: makeTelegramDocument("video.mp4", 202)}
+	q <- File{File: makeTelegramDocument("video.mp4", 101)}
+	close(q)
+	if err := second.Stop(ctx); err != nil {
+		t.Fatalf("second Stop() error = %v", err)
+	}
+
+	if got := secondService.Calls(); got != 0 {
+		t.Fatalf("second run downloaded %d files, want 0", got)
+	}
+	exists, err := afero.Exists(fs, "/downloads/video_101.mp4")
+	if err != nil {
+		t.Fatalf("Exists() error = %v", err)
+	}
+	if exists {
+		t.Fatal("second run created duplicate video_101.mp4")
+	}
+}
+
+func TestDownloaderDoesNotResumeAmbiguousLegacyFile(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fs := afero.NewMemMapFs()
+	payload := []byte("complete-video")
+	svc := &fakeFileService{content: payload}
+	d := New(fs, svc, WithNumWorkers(1), WithRetry(1, time.Millisecond))
+	d.SetOutputDir("/downloads")
+
+	if err := afero.WriteFile(fs, "/downloads/video.mp4", []byte("old"), 0644); err != nil {
+		t.Fatalf("WriteFile() legacy partial error = %v", err)
+	}
+
+	file := makeTelegramDocument("video.mp4", 303)
+	setUnexportedField(&file, "size", int64(len(payload)))
+
+	q := make(chan File)
+	d.Start(ctx)
+	d.AddDownloadQueue(ctx, q)
+	q <- File{File: file}
+	close(q)
+
+	if err := d.Stop(ctx); err != nil {
+		t.Fatalf("Stop() unexpected error: %v", err)
+	}
+
+	legacy, err := afero.ReadFile(fs, "/downloads/video.mp4")
+	if err != nil {
+		t.Fatalf("ReadFile() legacy error = %v", err)
+	}
+	if string(legacy) != "old" {
+		t.Fatalf("legacy file was modified: %q", legacy)
+	}
+
+	downloaded, err := afero.ReadFile(fs, "/downloads/video_303.mp4")
+	if err != nil {
+		t.Fatalf("ReadFile() identified file error = %v", err)
+	}
+	if !bytes.Equal(downloaded, payload) {
+		t.Fatalf("identified file = %q, want %q", downloaded, payload)
+	}
+	if got := svc.Calls(); got != 1 {
+		t.Fatalf("full Download() calls = %d, want 1", got)
 	}
 }

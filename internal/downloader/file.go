@@ -12,6 +12,7 @@ type File struct {
 
 	subdirs        []string
 	saveByHashtags bool
+	outputPaths    []string
 }
 
 type FileOption func(*File)
