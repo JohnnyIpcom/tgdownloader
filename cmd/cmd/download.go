@@ -19,12 +19,12 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		Use:   "history",
 		Short: "Download files from a peer history",
 		Long:  `Download files from a chat, channel or user history.`,
-		Args:  cobra.ExactArgs(1),
+		Args:  peerInputArgs,
 		Annotations: map[string]string{
 			"prompt_suggest": "any",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			peer, err := r.resolvePeer(cmd.Context(), args[0])
+			peer, err := r.resolvePeer(cmd.Context(), peerInputArg(args))
 			if err != nil {
 				r.log.Error(err, "failed to parse peer")
 				return err
@@ -46,12 +46,12 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		Use:   "watcher",
 		Short: "Watch a peer for new files",
 		Long:  `Watch a peer for new files.`,
-		Args:  cobra.ExactArgs(1),
+		Args:  peerInputArgs,
 		Annotations: map[string]string{
 			"prompt_suggest": "any",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			peer, err := r.resolvePeer(cmd.Context(), args[0])
+			peer, err := r.resolvePeer(cmd.Context(), peerInputArg(args))
 			if err != nil {
 				r.log.Error(err, "failed to parse peer")
 				return err
@@ -92,12 +92,12 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		Use:   "yadisk",
 		Short: "Download files from Yandex Disk links in peer history",
 		Long:  `Download files from Yandex Disk links found in message text of chat, channel or user history.`,
-		Args:  cobra.ExactArgs(1),
+		Args:  peerInputArgs,
 		Annotations: map[string]string{
 			"prompt_suggest": "any",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			peer, err := r.resolvePeer(cmd.Context(), args[0])
+			peer, err := r.resolvePeer(cmd.Context(), peerInputArg(args))
 			if err != nil {
 				r.log.Error(err, "failed to parse peer")
 				return err

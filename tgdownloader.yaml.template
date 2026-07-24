@@ -17,7 +17,7 @@ telegram:
   session:
     path: "session.json"
 
-  cache:
+  storage:
     path: "storage.db"
 
   rate:

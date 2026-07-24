@@ -151,15 +151,57 @@ func TestNewFloodWaiterReturnsMiddleware(t *testing.T) {
 	}
 }
 
+func TestTelegramStoragePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		storagePath string
+		cachePath   string
+		want        string
+	}{
+		{
+			name:        "StoragePath",
+			storagePath: "new-storage.db",
+			want:        "new-storage.db",
+		},
+		{
+			name:      "LegacyCachePath",
+			cachePath: "legacy-storage.db",
+			want:      "legacy-storage.db",
+		},
+		{
+			name:        "StoragePathTakesPriority",
+			storagePath: "new-storage.db",
+			cachePath:   "legacy-storage.db",
+			want:        "new-storage.db",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := viper.NewConfig()
+			if tt.storagePath != "" {
+				cfg.Set("storage.path", tt.storagePath)
+			}
+			if tt.cachePath != "" {
+				cfg.Set("cache.path", tt.cachePath)
+			}
+
+			if got := telegramStoragePath(cfg); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
 func TestNewClientDisablesUpdatesWhenConfigured(t *testing.T) {
 	t.Parallel()
 
-	cachePath := t.TempDir() + "/cache.db"
+	storagePath := t.TempDir() + "/storage.db"
 
 	cfg := viper.NewConfig()
 	cfg.Set("app.id", 1)
 	cfg.Set("app.hash", "hash")
-	cfg.Set("cache.path", cachePath)
+	cfg.Set("storage.path", storagePath)
 	cfg.Set("rate.limit", time.Millisecond)
 	cfg.Set("rate.burst", 1)
 	cfg.Set("updates.disable", true)

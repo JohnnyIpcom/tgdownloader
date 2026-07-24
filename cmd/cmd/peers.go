@@ -24,12 +24,12 @@ func (r *Root) newPeerCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List peers from a chat/channel",
 		Long:  "List peers from a chat/channel",
-		Args:  cobra.ExactArgs(1),
+		Args:  peerInputArgs,
 		Annotations: map[string]string{
 			"prompt_suggest": "chatorchannel",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			peer, err := r.resolvePeer(cmd.Context(), args[0])
+			peer, err := r.resolvePeer(cmd.Context(), peerInputArg(args))
 			if err != nil {
 				r.log.Error(err, "failed to parse peer")
 				return err
@@ -96,7 +96,7 @@ func (r *Root) newPeerCmd() *cobra.Command {
 		Use:   "find",
 		Short: "Find a user in a channel",
 		Long:  `Find a user in a channel by its data.`,
-		Args:  cobra.ExactArgs(1),
+		Args:  peerInputArgs,
 		Annotations: map[string]string{
 			"prompt_suggest": "channel",
 		},
@@ -107,7 +107,7 @@ func (r *Root) newPeerCmd() *cobra.Command {
 				return err
 			}
 
-			peer, err := r.resolvePeer(cmd.Context(), args[0])
+			peer, err := r.resolvePeer(cmd.Context(), peerInputArg(args))
 			if err != nil {
 				r.log.Error(err, "failed to parse peer")
 				return err
@@ -135,12 +135,12 @@ func (r *Root) newPeerCmd() *cobra.Command {
 		Use:   "from-history",
 		Short: "Get users from message history",
 		Long:  `Get users from message history.`,
-		Args:  cobra.ExactArgs(1),
+		Args:  peerInputArgs,
 		Annotations: map[string]string{
 			"prompt_suggest": "any",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			peer, err := r.resolvePeer(cmd.Context(), args[0])
+			peer, err := r.resolvePeer(cmd.Context(), peerInputArg(args))
 			if err != nil {
 				r.log.Error(err, "failed to parse peer")
 				return err

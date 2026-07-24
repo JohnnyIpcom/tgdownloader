@@ -30,12 +30,12 @@ type Root struct {
 	verbosity string
 	stopFunc  telegram.StopFunc
 
-	cfg    config.Config
-	client *telegram.Client
+	cfg      config.Config
+	client   *telegram.Client
 	progress renderer.Progress
-	zap    *zap.Logger
-	log    logr.Logger
-	level  zap.AtomicLevel
+	zap      *zap.Logger
+	log      logr.Logger
+	level    zap.AtomicLevel
 }
 
 type progressAdapter struct {
@@ -81,13 +81,13 @@ func NewRoot(version string) (*Root, error) {
 	progress.Style().Visibility.Value = false
 	client.SetProgress(&progressAdapter{progress})
 	return &Root{
-		version: version,
-		cfg:     cfg,
-		client:  client,
+		version:  version,
+		cfg:      cfg,
+		client:   client,
 		progress: progress,
-		zap:     zap,
-		log:     zapr.NewLogger(zap),
-		level:   level,
+		zap:      zap,
+		log:      zapr.NewLogger(zap),
+		level:    level,
 	}, nil
 }
 
@@ -158,7 +158,6 @@ func (r *Root) newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(r.newVersionCmd())
 	rootCmd.AddCommand(r.newPeerCmd())
 	rootCmd.AddCommand(r.newDialogsCmd())
-	rootCmd.AddCommand(r.newCacheCmd())
 	rootCmd.AddCommand(r.newDownloadCmd())
 
 	// Prompt command must be the last one to initialize all other commands first.

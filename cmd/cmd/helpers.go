@@ -2,18 +2,25 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	prompt "github.com/c-bata/go-prompt"
 	"github.com/gotd/td/constant"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/johnnyipcom/tgdownloader/internal/downloader"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
+	"github.com/mattn/go-runewidth"
+	"github.com/spf13/cobra"
 )
+
+const maxPromptPeerSuggestionWidth = 48
 
 type downloadOptions struct {
 	limit      int
@@ -181,14 +188,176 @@ func parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {
 
 func (r *Root) resolvePeer(ctx context.Context, arg string) (peers.Peer, error) {
 	tdLibPeerID, err := parseTDLibPeerID(arg)
-	if err != nil {
-		return nil, apperr.Wrap("cmd.resolve_peer.parse_tdlib_id", err)
+	if err == nil {
+		peer, err := r.client.PeerService.ResolveTDLibID(ctx, tdLibPeerID)
+		if err == nil {
+			return peer, nil
+		}
 	}
 
-	peer, err := r.client.PeerService.ResolveTDLibID(ctx, tdLibPeerID)
+	dialogPeers, err := r.client.DialogCache.GetDialogPeers(ctx)
+	if err != nil {
+		return nil, apperr.Wrap("cmd.resolve_peer.cache_lookup", err)
+	}
+
+	dialogPeer, err := resolveDialogPeerByInput(dialogPeers, arg)
 	if err != nil {
 		return nil, apperr.Wrap("cmd.resolve_peer.lookup", err)
 	}
 
+	peer, err := r.client.PeerService.ResolveTDLibID(ctx, dialogPeer.TDLibPeerID())
+	if err != nil {
+		return nil, apperr.Wrap("cmd.resolve_peer.lookup_tdlib_id", err)
+	}
+
 	return peer, nil
+}
+
+func peerInputArgs(cmd *cobra.Command, args []string) error {
+	return cobra.MinimumNArgs(1)(cmd, args)
+}
+
+func peerInputArg(args []string) string {
+	return strings.Join(args, " ")
+}
+
+func dialogPeerSuggest(peer telegram.DialogPeer, word string) (prompt.Suggest, bool) {
+	id := renderer.RenderTDLibPeerID(peer.TDLibPeerID())
+	if isTDLibIDInput(word) {
+		if !strings.HasPrefix(strings.ToLower(id), strings.ToLower(word)) {
+			return prompt.Suggest{}, false
+		}
+
+		return prompt.Suggest{
+			Text: id,
+		}, true
+	}
+
+	name := sanitizePromptPeerName(peer.Name())
+	nameQuery := sanitizePromptPeerName(normalizePeerInput(word))
+	if name == "" {
+		return prompt.Suggest{}, false
+	}
+	if !dialogPeerAliasMatches(peer, nameQuery, containsFold) {
+		return prompt.Suggest{}, false
+	}
+
+	return prompt.Suggest{
+		Text: promptPeerSuggestionText(name),
+	}, true
+}
+
+func resolveDialogPeerByInput(peers []telegram.DialogPeer, input string) (telegram.DialogPeer, error) {
+	normalized := sanitizePromptPeerName(normalizePeerInput(input))
+	var exact []telegram.DialogPeer
+	for _, peer := range peers {
+		if dialogPeerAliasMatches(peer, normalized, strings.EqualFold) {
+			exact = append(exact, peer)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], nil
+	}
+	if len(exact) > 1 {
+		return telegram.DialogPeer{}, ambiguousPeerNameError(normalized, exact)
+	}
+
+	var prefix []telegram.DialogPeer
+	for _, peer := range peers {
+		if dialogPeerAliasMatches(peer, normalized, hasPrefixFold) {
+			prefix = append(prefix, peer)
+		}
+	}
+	if len(prefix) == 1 {
+		return prefix[0], nil
+	}
+	if len(prefix) > 1 {
+		return telegram.DialogPeer{}, ambiguousPeerNameError(normalized, prefix)
+	}
+
+	return telegram.DialogPeer{}, fmt.Errorf("peer not found by name %q", normalized)
+}
+
+func dialogPeerAliasMatches(peer telegram.DialogPeer, query string, match func(string, string) bool) bool {
+	for _, alias := range peer.SearchNames() {
+		if match(sanitizePromptPeerName(alias), query) {
+			return true
+		}
+	}
+	return false
+}
+
+func ambiguousPeerNameError(input string, peers []telegram.DialogPeer) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "ambiguous peer name %q, candidates:", input)
+	for _, peer := range peers {
+		fmt.Fprintf(
+			&b,
+			"\n- %s | %s | %s",
+			peer.Name(),
+			renderer.RenderTDLibPeerID(peer.TDLibPeerID()),
+			dialogPeerType(peer),
+		)
+	}
+
+	return fmt.Errorf("%s", b.String())
+}
+
+func promptPeerSuggestionText(name string) string {
+	return runewidth.Truncate(sanitizePromptPeerName(name), maxPromptPeerSuggestionWidth, "")
+}
+
+func sanitizePromptPeerName(name string) string {
+	var b strings.Builder
+	lastWasSpace := true
+	for _, r := range name {
+		switch {
+		case unicode.IsSpace(r) || unicode.IsControl(r):
+			if !lastWasSpace {
+				b.WriteByte(' ')
+				lastWasSpace = true
+			}
+		case unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsPunct(r):
+			b.WriteRune(r)
+			lastWasSpace = false
+		}
+	}
+
+	return strings.TrimSpace(b.String())
+}
+
+func dialogPeerType(peer telegram.DialogPeer) string {
+	switch {
+	case peer.TDLibPeerID().IsUser():
+		return "User"
+	case peer.TDLibPeerID().IsChat():
+		return "Chat"
+	case peer.TDLibPeerID().IsChannel():
+		return "Channel"
+	default:
+		return "Unknown"
+	}
+}
+
+func normalizePeerInput(input string) string {
+	input = strings.TrimSpace(input)
+	if len(input) >= 2 && input[0] == '"' && input[len(input)-1] == '"' {
+		input = strings.Trim(input, `"`)
+		input = strings.ReplaceAll(input, `""`, `"`)
+	} else if strings.HasPrefix(input, `"`) {
+		input = strings.TrimPrefix(input, `"`)
+	}
+	return input
+}
+
+func isTDLibIDInput(input string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(input)), "0x")
+}
+
+func containsFold(s string, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(strings.TrimSpace(substr)))
+}
+
+func hasPrefixFold(s string, prefix string) bool {
+	return strings.HasPrefix(strings.ToLower(s), strings.ToLower(strings.TrimSpace(prefix)))
 }

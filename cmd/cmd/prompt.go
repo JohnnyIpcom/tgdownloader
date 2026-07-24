@@ -16,41 +16,40 @@ import (
 )
 
 func (r *Root) getPeerSuggestions(ctx context.Context, word string, peerType string) []prompt.Suggest {
-	var filter telegram.CachedPeerFilter
+	var filter telegram.DialogPeerFilter
 	switch peerType {
 	case "user":
-		filter = telegram.OnlyUsersCachedPeerFilter()
+		filter = telegram.OnlyUsersDialogPeerFilter()
 	case "chat":
-		filter = telegram.OnlyChatsCachedPeerFilter()
+		filter = telegram.OnlyChatsDialogPeerFilter()
 	case "channel":
-		filter = telegram.OnlyChannelsCachedPeerFilter()
+		filter = telegram.OnlyChannelsDialogPeerFilter()
 	case "chatorchannel":
-		filter = telegram.OrCachedPeerFilter(
-			telegram.OnlyChatsCachedPeerFilter(),
-			telegram.OnlyChannelsCachedPeerFilter(),
+		filter = telegram.OrDialogPeerFilter(
+			telegram.OnlyChatsDialogPeerFilter(),
+			telegram.OnlyChannelsDialogPeerFilter(),
 		)
 	case "any":
-		filter = telegram.OrCachedPeerFilter(
-			telegram.OnlyUsersCachedPeerFilter(),
-			telegram.OnlyChatsCachedPeerFilter(),
-			telegram.OnlyChannelsCachedPeerFilter(),
+		filter = telegram.OrDialogPeerFilter(
+			telegram.OnlyUsersDialogPeerFilter(),
+			telegram.OnlyChatsDialogPeerFilter(),
+			telegram.OnlyChannelsDialogPeerFilter(),
 		)
 	}
 
-	peers, err := r.client.CacheService.GetCachedPeers(ctx, filter)
+	peers, err := r.client.DialogCache.GetDialogPeers(ctx, filter)
 	if err != nil {
 		return []prompt.Suggest{}
 	}
 
 	var suggestions []prompt.Suggest
 	for _, peer := range peers {
-		suggestions = append(suggestions, prompt.Suggest{
-			Text:        renderer.RenderTDLibPeerID(peer.TDLibPeerID()),
-			Description: renderer.RenderName(peer.Name()),
-		})
+		if suggestion, ok := dialogPeerSuggest(peer, word); ok {
+			suggestions = append(suggestions, suggestion)
+		}
 	}
 
-	return prompt.FilterHasPrefix(suggestions, word, true)
+	return suggestions
 }
 
 func (r *Root) getVerbositySuggestions(word string) []prompt.Suggest {
@@ -177,7 +176,7 @@ func (r *Root) newCompleter(rootCmd *cobra.Command) prompt.Completer {
 		if ok {
 			switch suggest {
 			case "user", "chat", "channel", "chatorchannel", "any":
-				return r.getPeerSuggestions(currCmd.Context(), word, suggest)
+				return r.getPeerSuggestions(rootCmd.Context(), word, suggest)
 
 			default:
 			}

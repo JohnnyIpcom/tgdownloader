@@ -66,6 +66,7 @@ type Client struct {
 	updMgr         *updates.Manager
 	dispatcher     tg.UpdateDispatcher
 	storage        storage.PeerStorage
+	dialogCache    *dialogCache
 	progress       Progress
 
 	common service // Reuse a single struct instead of allocating one for each service on the heap
@@ -76,7 +77,7 @@ type Client struct {
 	FileService   FileService
 	LinkService   LinkService
 	DialogService DialogService
-	CacheService  CacheService
+	DialogCache   DialogCache
 }
 
 type service struct {
@@ -89,12 +90,23 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	dispatcher := tg.NewUpdateDispatcher()
 	disableUpdates := cfg.GetBool("updates.disable")
 
-	db, err := bboltdb.Open(cfg.GetString("cache.path"), 0600, nil)
+	db, err := bboltdb.Open(telegramStoragePath(cfg), 0600, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	peerStorage := bbolt.NewPeerStorage(db, []byte("peers"))
+	dialogStore, err := newDialogCacheStore(db, peerStorage)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	dialogCache, err := newDialogCache(context.Background(), dialogStore)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	registerDialogCacheHandlers(dispatcher, dialogCache, log.Named("dialog_cache"))
 
 	floodWaiter := newFloodWaiter(cfg, log)
 
@@ -188,6 +200,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		updMgr:         gaps,
 		dispatcher:     dispatcher,
 		storage:        peerStorage,
+		dialogCache:    dialogCache,
 		progress:       &progress{},
 	}
 
@@ -199,8 +212,15 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 	cli.FileService = (*fileService)(&cli.common)
 	cli.LinkService = (*linkService)(&cli.common)
 	cli.DialogService = (*dialogService)(&cli.common)
-	cli.CacheService = (*cacheService)(&cli.common)
+	cli.DialogCache = dialogCache
 	return cli, nil
+}
+
+func telegramStoragePath(cfg config.Config) string {
+	if cfg.IsSet("storage.path") {
+		return cfg.GetString("storage.path")
+	}
+	return cfg.GetString("cache.path")
 }
 
 func applyNetworkOptions(cfg config.Config, options *tgclient.Options) error {
@@ -442,6 +462,16 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 
 	authTracker.Done()
 	c.progress.Wait(ctx)
+	if c.dialogCache.Empty() {
+		dialogCacheTracker := c.progress.Tracker("Dialog cache")
+		if err := c.bootstrapDialogCache(ctx); err != nil {
+			dialogCacheTracker.Fail()
+			c.progress.Wait(ctx)
+			return func() error { return nil }, fmt.Errorf("bootstrap dialog cache: %w", err)
+		}
+		dialogCacheTracker.Done()
+		c.progress.Wait(ctx)
+	}
 
 	if c.disableUpdates || c.updMgr == nil {
 		return func() error { return nil }, nil

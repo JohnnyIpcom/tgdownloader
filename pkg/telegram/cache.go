@@ -2,71 +2,74 @@ package telegram
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/gotd/contrib/storage"
 	"github.com/gotd/td/constant"
 	"github.com/gotd/td/telegram/query/dialogs"
 )
 
-type CachedPeerFilter interface {
-	filter(CachedPeer) bool
+type DialogPeerFilter interface {
+	filter(DialogPeer) bool
 }
 
-type keyKindCachedPeerFilter struct {
+type keyKindDialogPeerFilter struct {
 	kind dialogs.PeerKind
 }
 
-func (f keyKindCachedPeerFilter) filter(p CachedPeer) bool {
+func (f keyKindDialogPeerFilter) filter(p DialogPeer) bool {
 	return p.Key.Kind == f.kind
 }
 
-func OnlyUsersCachedPeerFilter() CachedPeerFilter {
-	return keyKindCachedPeerFilter{kind: dialogs.User}
+func OnlyUsersDialogPeerFilter() DialogPeerFilter {
+	return keyKindDialogPeerFilter{kind: dialogs.User}
 }
 
-func OnlyChatsCachedPeerFilter() CachedPeerFilter {
-	return keyKindCachedPeerFilter{kind: dialogs.Chat}
+func OnlyChatsDialogPeerFilter() DialogPeerFilter {
+	return keyKindDialogPeerFilter{kind: dialogs.Chat}
 }
 
-func OnlyChannelsCachedPeerFilter() CachedPeerFilter {
-	return keyKindCachedPeerFilter{kind: dialogs.Channel}
+func OnlyChannelsDialogPeerFilter() DialogPeerFilter {
+	return keyKindDialogPeerFilter{kind: dialogs.Channel}
 }
 
-type nameCachedPeerFilter struct {
+type nameDialogPeerFilter struct {
 	name string
 }
 
-// NameCachedPeerFilter returns a filter that matches peers by substring of their name.
-func NameCachedPeerFilter(name string) CachedPeerFilter {
-	return nameCachedPeerFilter{name: name}
+// NameDialogPeerFilter returns a filter that matches peers by substring of their name.
+func NameDialogPeerFilter(name string) DialogPeerFilter {
+	return nameDialogPeerFilter{name: name}
 }
 
-func (f nameCachedPeerFilter) filter(p CachedPeer) bool {
+func (f nameDialogPeerFilter) filter(p DialogPeer) bool {
 	return strings.Contains(strings.ToLower(p.Name()), strings.ToLower(f.name))
 }
 
 type not struct {
-	f CachedPeerFilter
+	f DialogPeerFilter
 }
 
-func NotCachedPeerFilter(f CachedPeerFilter) CachedPeerFilter {
+func NotDialogPeerFilter(f DialogPeerFilter) DialogPeerFilter {
 	return not{f: f}
 }
 
-func (f not) filter(p CachedPeer) bool {
+func (f not) filter(p DialogPeer) bool {
 	return !f.f.filter(p)
 }
 
 type and struct {
-	filters []CachedPeerFilter
+	filters []DialogPeerFilter
 }
 
-func AndCachedPeerFilter(filters ...CachedPeerFilter) CachedPeerFilter {
+func AndDialogPeerFilter(filters ...DialogPeerFilter) DialogPeerFilter {
 	return and{filters: filters}
 }
 
-func (f and) filter(p CachedPeer) bool {
+func (f and) filter(p DialogPeer) bool {
 	for _, filter := range f.filters {
 		if !filter.filter(p) {
 			return false
@@ -77,14 +80,14 @@ func (f and) filter(p CachedPeer) bool {
 }
 
 type or struct {
-	filters []CachedPeerFilter
+	filters []DialogPeerFilter
 }
 
-func OrCachedPeerFilter(filters ...CachedPeerFilter) CachedPeerFilter {
+func OrDialogPeerFilter(filters ...DialogPeerFilter) DialogPeerFilter {
 	return or{filters: filters}
 }
 
-func (f or) filter(p CachedPeer) bool {
+func (f or) filter(p DialogPeer) bool {
 	for _, filter := range f.filters {
 		if filter.filter(p) {
 			return true
@@ -94,13 +97,22 @@ func (f or) filter(p CachedPeer) bool {
 	return false
 }
 
-type CachedPeer struct {
+type DialogPeer struct {
 	storage.Peer
 }
 
-func (p CachedPeer) Name() string {
+func (p DialogPeer) Name() string {
 	if p.User != nil {
-		return p.User.Username
+		if name := strings.TrimSpace(strings.Join([]string{p.User.FirstName, p.User.LastName}, " ")); name != "" {
+			return name
+		}
+		if p.User.Username != "" {
+			return p.User.Username
+		}
+		if p.User.Deleted {
+			return "<deleted user>"
+		}
+		return fmt.Sprintf("<user %d>", p.User.ID)
 	} else if p.Chat != nil {
 		return p.Chat.Title
 	} else if p.Channel != nil {
@@ -110,7 +122,36 @@ func (p CachedPeer) Name() string {
 	return ""
 }
 
-func (p CachedPeer) TDLibPeerID() constant.TDLibPeerID {
+func (p DialogPeer) SearchNames() []string {
+	aliases := []string{p.Name()}
+	switch {
+	case p.User != nil:
+		aliases = append(aliases, p.User.Username)
+	case p.Channel != nil:
+		aliases = append(aliases, p.Channel.Username)
+	}
+
+	result := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range result {
+			if strings.EqualFold(existing, alias) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			result = append(result, alias)
+		}
+	}
+	return result
+}
+
+func (p DialogPeer) TDLibPeerID() constant.TDLibPeerID {
 	var peerID constant.TDLibPeerID
 	switch p.Key.Kind {
 	case dialogs.User:
@@ -123,34 +164,116 @@ func (p CachedPeer) TDLibPeerID() constant.TDLibPeerID {
 	return peerID
 }
 
-type CacheService interface {
-	GetCachedPeers(ctx context.Context, filters ...CachedPeerFilter) ([]CachedPeer, error)
+type DialogCache interface {
+	GetDialogPeers(ctx context.Context, filters ...DialogPeerFilter) ([]DialogPeer, error)
 }
 
-type cacheService service
+type dialogCache struct {
+	mu    sync.RWMutex
+	store *dialogCacheStore
+	peers map[storage.PeerKey]DialogPeer
+}
 
-var _ CacheService = (*cacheService)(nil)
+var _ DialogCache = (*dialogCache)(nil)
 
-func (s *cacheService) GetCachedPeers(ctx context.Context, filters ...CachedPeerFilter) ([]CachedPeer, error) {
-	iter, err := s.client.storage.Iterate(ctx)
+func newDialogCache(ctx context.Context, store *dialogCacheStore) (*dialogCache, error) {
+	peers, err := store.load(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	defer iter.Close()
+	s := &dialogCache{
+		store: store,
+		peers: make(map[storage.PeerKey]DialogPeer, len(peers)),
+	}
+	s.replaceMemory(peers)
+	return s, nil
+}
 
-	peers := make([]CachedPeer, 0)
-	storage.ForEach(ctx, iter, func(p storage.Peer) error {
-		peer := CachedPeer{p}
+func (s *dialogCache) GetDialogPeers(ctx context.Context, filters ...DialogPeerFilter) ([]DialogPeer, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("get dialog peers: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	peers := make([]DialogPeer, 0, len(s.peers))
+	for _, peer := range s.peers {
 		for _, filter := range filters {
 			if !filter.filter(peer) {
-				return nil
+				goto nextPeer
 			}
 		}
 
 		peers = append(peers, peer)
-		return nil
+	nextPeer:
+	}
+	s.mu.RUnlock()
+
+	sort.Slice(peers, func(i, j int) bool {
+		left := strings.ToLower(peers[i].Name())
+		right := strings.ToLower(peers[j].Name())
+		if left == right {
+			return uint64(peers[i].TDLibPeerID()) < uint64(peers[j].TDLibPeerID())
+		}
+		return left < right
 	})
 
 	return peers, nil
+}
+
+func (s *dialogCache) ReplaceDialogs(ctx context.Context, peers []storage.Peer) error {
+	if err := s.store.replace(ctx, peers); err != nil {
+		return err
+	}
+	s.replaceMemory(peers)
+	return nil
+}
+
+func (s *dialogCache) UpsertDialog(ctx context.Context, peer storage.Peer) error {
+	if err := s.store.upsert(ctx, peer); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.peers[storage.KeyFromPeer(peer)] = DialogPeer{Peer: peer}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *dialogCache) RemoveDialog(ctx context.Context, key storage.PeerKey) error {
+	if err := s.store.remove(ctx, key); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	delete(s.peers, key)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *dialogCache) Empty() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.peers) == 0
+}
+
+func (s *dialogCache) dialog(key storage.PeerKey) (DialogPeer, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	peer, ok := s.peers[key]
+	return peer, ok
+}
+
+func (s *dialogCache) replaceMemory(peers []storage.Peer) {
+	next := make(map[storage.PeerKey]DialogPeer, len(peers))
+	for _, peer := range peers {
+		next[storage.KeyFromPeer(peer)] = DialogPeer{Peer: peer}
+	}
+
+	s.mu.Lock()
+	s.peers = next
+	s.mu.Unlock()
 }
