@@ -9,18 +9,14 @@ import (
 	"time"
 	"unicode"
 
-	prompt "github.com/c-bata/go-prompt"
 	"github.com/gotd/td/constant"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/johnnyipcom/tgdownloader/internal/downloader"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
-	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 )
-
-const maxPromptPeerSuggestionWidth = 48
 
 type downloadOptions struct {
 	limit      int
@@ -66,7 +62,18 @@ func (o *downloadOptions) newGetFileOptions() ([]telegram.GetFileOption, error) 
 	return opts, nil
 }
 
-func (r *Root) downloadFilesFromPeer(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
+func (r *Root) downloadFilesFromPeer(ctx context.Context, writer io.Writer, peer peers.Peer, opts downloadOptions) error {
+	if renderer.HasEventSink(ctx) {
+		renderer.RenderDownloadPlan(writer, renderer.DownloadPlan{
+			Name:      peer.VisibleName(),
+			Type:      promptResolvedPeerType(peer),
+			PeerID:    renderer.RenderTDLibPeerID(peer.TDLibPeerID()),
+			OutputDir: r.cfg.GetString("downloader.dir.output"),
+			Rewrite:   opts.rewrite,
+			DryRun:    opts.dryRun,
+		})
+	}
+
 	getFileOptions, err := opts.newGetAllFilesOptions()
 	if err != nil {
 		return apperr.Wrap("cmd.download.history.options", err)
@@ -77,16 +84,16 @@ func (r *Root) downloadFilesFromPeer(ctx context.Context, peer peers.Peer, opts 
 		return apperr.Wrap("cmd.download.history.get_all_files", err)
 	}
 
-	return apperr.Wrap("cmd.download.history.download", r.downloadFiles(ctx, files, opts))
+	return apperr.Wrap("cmd.download.history.download", r.downloadFiles(ctx, writer, files, opts))
 }
 
-func (r *Root) downloadFilesFromNewMessages(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
+func (r *Root) downloadFilesFromNewMessages(ctx context.Context, writer io.Writer, peer peers.Peer, opts downloadOptions) error {
 	files, err := r.client.FileService.GetAllFilesFromNewMessages(ctx, peer)
 	if err != nil {
 		return apperr.Wrap("cmd.download.watcher.get_new_files", err)
 	}
 
-	return apperr.Wrap("cmd.download.watcher.download", r.downloadFiles(ctx, files, opts))
+	return apperr.Wrap("cmd.download.watcher.download", r.downloadFiles(ctx, writer, files, opts))
 }
 
 type trackerAdapter struct {
@@ -137,8 +144,9 @@ func newTrackerAdapter(p renderer.Progress) *trackerAdapter {
 	return &trackerAdapter{p}
 }
 
-func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, opts downloadOptions) error {
-	p := renderer.NewProgress()
+func (r *Root) downloadFiles(ctx context.Context, writer io.Writer, files <-chan telegram.File, opts downloadOptions) error {
+	startedAt := time.Now()
+	p := renderer.NewProgressForContext(ctx)
 	if opts.ps {
 		p.EnablePS(ctx)
 	}
@@ -154,7 +162,7 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 		}
 	}))
 
-	d, err := r.newDownloader(downloaderOptions...)
+	d, err := r.newDownloader(ctx, writer, downloaderOptions...)
 	if err != nil {
 		return apperr.Wrap("cmd.download.new_downloader", err)
 	}
@@ -190,8 +198,32 @@ func (r *Root) downloadFiles(ctx context.Context, files <-chan telegram.File, op
 	d.AddDownloadQueue(ctx, queue)
 	err = d.Stop(ctx)
 	stats := d.Stats()
-	renderer.RenderDownloadSummary(stats.Downloaded, stats.Skipped, stats.Failed)
+	if renderer.HasEventSink(ctx) {
+		renderer.RenderDownloadSummaryDetails(
+			writer,
+			stats.Downloaded,
+			stats.Skipped,
+			stats.Failed,
+			time.Since(startedAt),
+			r.cfg.GetString("downloader.dir.output"),
+		)
+	} else {
+		renderer.RenderDownloadSummary(writer, stats.Downloaded, stats.Skipped, stats.Failed)
+	}
 	return apperr.Wrap("cmd.download.stop", err)
+}
+
+func promptResolvedPeerType(peer peers.Peer) string {
+	switch {
+	case peer.TDLibPeerID().IsUser():
+		return "User"
+	case peer.TDLibPeerID().IsChat():
+		return "Chat"
+	case peer.TDLibPeerID().IsChannel():
+		return "Channel"
+	default:
+		return "Unknown"
+	}
 }
 
 func sendSliceToChannel[T any](ctx context.Context, slice []*T) <-chan T {
@@ -211,7 +243,7 @@ func sendSliceToChannel[T any](ctx context.Context, slice []*T) <-chan T {
 	return ch
 }
 
-func (r *Root) downloadFilesFromMessage(ctx context.Context, peer peers.Peer, msgID int, opts downloadOptions) error {
+func (r *Root) downloadFilesFromMessage(ctx context.Context, writer io.Writer, peer peers.Peer, msgID int, opts downloadOptions) error {
 	getFileOptions, err := opts.newGetFileOptions()
 	if err != nil {
 		return apperr.Wrap("cmd.download.message.options", err)
@@ -222,7 +254,7 @@ func (r *Root) downloadFilesFromMessage(ctx context.Context, peer peers.Peer, ms
 		return apperr.Wrap("cmd.download.message.get_files", err)
 	}
 
-	return apperr.Wrap("cmd.download.message.download", r.downloadFiles(ctx, sendSliceToChannel(ctx, files), opts))
+	return apperr.Wrap("cmd.download.message.download", r.downloadFiles(ctx, writer, sendSliceToChannel(ctx, files), opts))
 }
 
 func parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {
@@ -269,30 +301,12 @@ func peerInputArg(args []string) string {
 	return strings.Join(args, " ")
 }
 
-func dialogPeerSuggest(peer telegram.DialogPeer, word string) (prompt.Suggest, bool) {
-	id := renderer.RenderTDLibPeerID(peer.TDLibPeerID())
-	if isTDLibIDInput(word) {
-		if !strings.HasPrefix(strings.ToLower(id), strings.ToLower(word)) {
-			return prompt.Suggest{}, false
-		}
-
-		return prompt.Suggest{
-			Text: id,
-		}, true
-	}
-
+func peerCandidate(peer telegram.DialogPeer, query string) (promptCandidate, bool) {
 	name := sanitizePromptPeerName(peer.Name())
-	nameQuery := sanitizePromptPeerName(normalizePeerInput(word))
-	if name == "" {
-		return prompt.Suggest{}, false
+	if name == "" || !dialogPeerAliasMatches(peer, query, containsFold) {
+		return promptCandidate{}, false
 	}
-	if !dialogPeerAliasMatches(peer, nameQuery, containsFold) {
-		return prompt.Suggest{}, false
-	}
-
-	return prompt.Suggest{
-		Text: promptPeerSuggestionText(name),
-	}, true
+	return promptCandidate{Value: name, Display: name}, true
 }
 
 func resolveDialogPeerByInput(peers []telegram.DialogPeer, input string) (telegram.DialogPeer, error) {
@@ -351,27 +365,94 @@ func ambiguousPeerNameError(input string, peers []telegram.DialogPeer) error {
 	return fmt.Errorf("%s", b.String())
 }
 
-func promptPeerSuggestionText(name string) string {
-	return runewidth.Truncate(sanitizePromptPeerName(name), maxPromptPeerSuggestionWidth, "")
+func sanitizePromptPeerName(name string) string {
+	return sanitizePromptModelText(name)
 }
 
-func sanitizePromptPeerName(name string) string {
+func sanitizePromptModelText(value string) string {
+	return sanitizePromptText(value, false)
+}
+
+func sanitizePromptModelLine(value string) string {
+	return sanitizePromptText(value, true)
+}
+
+func sanitizePromptText(value string, preserveSpaces bool) string {
 	var b strings.Builder
 	lastWasSpace := true
-	for _, r := range name {
+	escapeState := 0
+	for _, r := range value {
+		switch escapeState {
+		case 1:
+			switch r {
+			case '[':
+				escapeState = 2
+			case ']':
+				escapeState = 3
+			default:
+				escapeState = 0
+			}
+			continue
+		case 2:
+			if r >= 0x40 && r <= 0x7e {
+				escapeState = 0
+			}
+			continue
+		case 3:
+			if r == '\a' {
+				escapeState = 0
+			} else if r == 0x1b {
+				escapeState = 4
+			}
+			continue
+		case 4:
+			if r == '\\' {
+				escapeState = 0
+			} else {
+				escapeState = 3
+			}
+			continue
+		}
+
 		switch {
-		case unicode.IsSpace(r) || unicode.IsControl(r):
+		case r == 0x1b:
+			escapeState = 1
+		case r == 0x9b:
+			escapeState = 2
+		case r == 0x9d:
+			escapeState = 3
+		case isBidiControl(r):
+			continue
+		case r == ' ':
+			if preserveSpaces || !lastWasSpace {
+				b.WriteRune(r)
+			}
+			lastWasSpace = true
+		case unicode.IsSpace(r):
 			if !lastWasSpace {
 				b.WriteByte(' ')
 				lastWasSpace = true
 			}
-		case unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsPunct(r):
+		case unicode.IsControl(r):
+			if !preserveSpaces && !lastWasSpace {
+				b.WriteByte(' ')
+				lastWasSpace = true
+			}
+		case r == 0x200c || r == 0x200d:
+			b.WriteRune(r)
+		case unicode.IsGraphic(r):
 			b.WriteRune(r)
 			lastWasSpace = false
 		}
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+func isBidiControl(r rune) bool {
+	return r == 0x061c || r == 0x200e || r == 0x200f ||
+		(r >= 0x202a && r <= 0x202e) ||
+		(r >= 0x2066 && r <= 0x2069)
 }
 
 func dialogPeerType(peer telegram.DialogPeer) string {

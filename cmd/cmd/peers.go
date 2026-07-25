@@ -21,10 +21,11 @@ func (r *Root) newPeerCmd() *cobra.Command {
 	}
 
 	peerListCmd := &cobra.Command{
-		Use:   "list",
-		Short: "List peers from a chat/channel",
-		Long:  "List peers from a chat/channel",
-		Args:  peerInputArgs,
+		Use:     "list",
+		Short:   "List peers from a chat/channel",
+		Long:    "List peers from a chat/channel",
+		Example: `  tgdownloader peer list "Cherry Channel"`,
+		Args:    peerInputArgs,
 		Annotations: map[string]string{
 			"prompt_suggest": "chatorchannel",
 		},
@@ -43,7 +44,7 @@ func (r *Root) newPeerCmd() *cobra.Command {
 					return err
 				}
 
-				return renderer.RenderUserTableAsync(cmd.Context(), users, total)
+				return renderer.RenderUserTableAsync(cmd.Context(), cmd.OutOrStdout(), users, total)
 
 			case peer.TDLibPeerID().IsUser():
 				user, err := r.client.UserService.GetUser(cmd.Context(), peer.ID())
@@ -52,7 +53,7 @@ func (r *Root) newPeerCmd() *cobra.Command {
 					return err
 				}
 
-				renderer.RenderUser(user)
+				renderer.RenderUser(cmd.OutOrStdout(), user)
 				return nil
 			}
 
@@ -81,11 +82,11 @@ func (r *Root) newPeerCmd() *cobra.Command {
 					return err
 				}
 
-				renderer.RenderUser(user)
+				renderer.RenderUser(cmd.OutOrStdout(), user)
 				return nil
 
 			default:
-				renderer.RenderPeerTable([]peers.Peer{peer})
+				renderer.RenderPeerTable(cmd.OutOrStdout(), []peers.Peer{peer})
 			}
 
 			return nil
@@ -121,7 +122,7 @@ func (r *Root) newPeerCmd() *cobra.Command {
 					return err
 				}
 
-				return renderer.RenderUserTableAsync(cmd.Context(), users, total)
+				return renderer.RenderUserTableAsync(cmd.Context(), cmd.OutOrStdout(), users, total)
 
 			default:
 				return fmt.Errorf("unsupported peer type")
@@ -152,7 +153,7 @@ func (r *Root) newPeerCmd() *cobra.Command {
 				return err
 			}
 
-			return renderer.RenderUsersAsync(cmd.Context(), usersChan)
+			return renderer.RenderUsersAsync(cmd.Context(), cmd.OutOrStdout(), usersChan)
 		},
 	}
 

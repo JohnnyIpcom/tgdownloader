@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -40,7 +41,7 @@ func (s yandexDownloadSummary) Values() (int64, int64, int64) {
 }
 
 // downloadYandexDiskFromPeer downloads all Yandex Disk links from a peer's messages.
-func (r *Root) downloadYandexDiskFromPeer(ctx context.Context, peer peers.Peer, opts downloadOptions) error {
+func (r *Root) downloadYandexDiskFromPeer(ctx context.Context, writer io.Writer, peer peers.Peer, opts downloadOptions) error {
 	getFileOptions, err := opts.newGetAllFilesOptions()
 	if err != nil {
 		return apperr.Wrap("cmd.download.yadisk.options", err)
@@ -51,16 +52,16 @@ func (r *Root) downloadYandexDiskFromPeer(ctx context.Context, peer peers.Peer, 
 		return apperr.Wrap("cmd.download.yadisk.links", err)
 	}
 
-	return apperr.Wrap("cmd.download.yadisk.download", r.downloadYandexDiskLinks(ctx, links, opts))
+	return apperr.Wrap("cmd.download.yadisk.download", r.downloadYandexDiskLinks(ctx, writer, links, opts))
 }
 
 // downloadYandexDiskLinks orchestrates downloading multiple Yandex Disk links.
-func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegram.ExternalLink, opts downloadOptions) error {
+func (r *Root) downloadYandexDiskLinks(ctx context.Context, writer io.Writer, links <-chan telegram.ExternalLink, opts downloadOptions) error {
 	outputDir := r.cfg.GetString("downloader.dir.output")
 	httpClient := createYadiskHTTPClient()
 	ydClient := yadisk.NewClient(httpClient)
 
-	p := renderer.NewProgress()
+	p := renderer.NewProgressForContext(ctx)
 	if opts.ps {
 		p.EnablePS(ctx)
 	}
@@ -70,7 +71,7 @@ func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegra
 
 	defer func() {
 		downloaded, skipped, failed := summary.Values()
-		renderer.RenderDownloadSummary(downloaded, skipped, failed)
+		renderer.RenderDownloadSummary(writer, downloaded, skipped, failed)
 	}()
 
 	var firstErr error
@@ -89,7 +90,6 @@ func (r *Root) downloadYandexDiskLinks(ctx context.Context, links <-chan telegra
 
 			if err != nil {
 				r.log.Error(err, "failed to download yandex disk link", "link", externalLink.URL, "message_id", externalLink.MessageID)
-				renderer.RenderError(err)
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -222,20 +222,24 @@ func (r *Root) downloadSingleYandexDiskLink(
 			return linkDownloaded, linkSkipped, apperr.New("cmd.download.yadisk.download_file", apperr.KindNetwork, fmt.Errorf("download file %q: %w", item.Name, err))
 		}
 
-		// Skip if the file was skipped (not an error)
-		if downloaded == nil {
+		// Skip if the file was skipped (not an error).
+		if terminalizeYandexFileTracker(downloaded, bytesTracker) {
 			tracker.Increment(1)
 			linkSkipped++
 			continue
 		}
 
-		bytesTracker.Done()
 		tracker.Increment(1)
 		linkDownloaded++
 	}
 
 	tracker.Done()
 	return linkDownloaded, linkSkipped, nil
+}
+
+func terminalizeYandexFileTracker(downloaded *yadisk.DownloadedFile, tracker renderer.BytesTracker) bool {
+	tracker.Done()
+	return downloaded == nil
 }
 
 // createYadiskHTTPClient creates an HTTP client with proper timeouts and transport settings.

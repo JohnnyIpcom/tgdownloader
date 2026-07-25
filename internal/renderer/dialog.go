@@ -1,15 +1,15 @@
 package renderer
 
 import (
-	"os"
+	"io"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 )
 
-func RenderDialogsTable(peers []telegram.DialogPeer) string {
+func RenderDialogsTable(writer io.Writer, peers []telegram.DialogPeer) string {
 	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
+	t.SetOutputMirror(outputWriter(writer))
 	t.SetAutoIndex(true)
 	t.AppendHeader(table.Row{
 		"Name",

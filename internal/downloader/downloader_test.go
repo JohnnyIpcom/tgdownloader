@@ -473,3 +473,36 @@ func TestDownloaderDoesNotResumeAmbiguousLegacyFile(t *testing.T) {
 		t.Fatalf("full Download() calls = %d, want 1", got)
 	}
 }
+
+func TestDownloaderCanceledBlockedFeederDoesNotBlockStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fs := afero.NewMemMapFs()
+	d := New(fs, &fakeFileService{}, WithNumWorkers(0))
+	d.SetOutputDir("/downloads")
+	d.Start(ctx)
+
+	files := make(chan File)
+	d.AddDownloadQueue(ctx, files)
+	sent := make(chan struct{})
+	go func() {
+		files <- File{File: makeTelegramFile("blocked.txt")}
+		close(sent)
+	}()
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("feeder did not receive the source file")
+	}
+	close(files)
+	cancel()
+
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- d.Stop(context.Background())
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Stop remained blocked after feeder context cancellation")
+	}
+}

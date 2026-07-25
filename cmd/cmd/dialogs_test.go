@@ -62,7 +62,7 @@ func TestDialogListReadsCacheWithoutRefresh(t *testing.T) {
 	}
 }
 
-func TestDialogListDoesNotRequireConnection(t *testing.T) {
+func TestDialogListInitializesRuntimeWithoutConnection(t *testing.T) {
 	r := &Root{}
 	cmd := r.newDialogsCmd()
 	list, _, err := cmd.Find([]string{"list"})
@@ -74,11 +74,11 @@ func TestDialogListDoesNotRequireConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if list.PreRunE != nil {
-		t.Fatal("expected dialog list to run without connecting")
+	if got := list.Annotations["runtime"]; got != "runtime_only" {
+		t.Fatalf("dialog list runtime mode = %q, want runtime_only", got)
 	}
-	if refresh.PreRunE == nil {
-		t.Fatal("expected dialog refresh to require a connection")
+	if got := refresh.Annotations["runtime"]; got != "requires_connection" {
+		t.Fatalf("dialog refresh runtime mode = %q, want requires_connection", got)
 	}
 }
 

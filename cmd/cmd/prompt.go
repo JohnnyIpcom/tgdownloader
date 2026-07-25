@@ -1,260 +1,61 @@
 package cmd
 
 import (
-	"context"
-	"fmt"
+	"errors"
 	"os"
-	"strings"
-	"time"
 
-	prompt "github.com/c-bata/go-prompt"
-	"github.com/go-andiamo/splitter"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
-	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
-func (r *Root) getPeerSuggestions(ctx context.Context, word string, peerType string) []prompt.Suggest {
-	var filter telegram.DialogPeerFilter
-	switch peerType {
-	case "user":
-		filter = telegram.OnlyUsersDialogPeerFilter()
-	case "chat":
-		filter = telegram.OnlyChatsDialogPeerFilter()
-	case "channel":
-		filter = telegram.OnlyChannelsDialogPeerFilter()
-	case "chatorchannel":
-		filter = telegram.OrDialogPeerFilter(
-			telegram.OnlyChatsDialogPeerFilter(),
-			telegram.OnlyChannelsDialogPeerFilter(),
-		)
-	case "any":
-		filter = telegram.OrDialogPeerFilter(
-			telegram.OnlyUsersDialogPeerFilter(),
-			telegram.OnlyChatsDialogPeerFilter(),
-			telegram.OnlyChannelsDialogPeerFilter(),
-		)
-	}
-
-	peers, err := r.client.DialogCache.GetDialogPeers(ctx, filter)
-	if err != nil {
-		return []prompt.Suggest{}
-	}
-
-	var suggestions []prompt.Suggest
-	for _, peer := range peers {
-		if suggestion, ok := dialogPeerSuggest(peer, word); ok {
-			suggestions = append(suggestions, suggestion)
-		}
-	}
-
-	return suggestions
-}
-
-func (r *Root) getVerbositySuggestions(word string) []prompt.Suggest {
-	levels := []prompt.Suggest{
-		{Text: "debug"},
-		{Text: "info"},
-		{Text: "warn"},
-		{Text: "error"},
-		{Text: "fatal"},
-		{Text: "panic"},
-	}
-
-	return prompt.FilterHasPrefix(levels, word, true)
-}
-
-func (r *Root) getTypeSuggestions(word string) []prompt.Suggest {
-	types := []prompt.Suggest{
-		{Text: "user"},
-		{Text: "chat"},
-		{Text: "channel"},
-	}
-
-	return prompt.FilterHasPrefix(types, word, true)
-}
-
-func (r *Root) getDateSuggestions(word string, format string) []prompt.Suggest {
-	dateNow := time.Now()
-	dates := []prompt.Suggest{
-		{Text: fmt.Sprintf("\"%s\"", dateNow.Format(format))},
-		{Text: fmt.Sprintf("\"%s\"", dateNow.AddDate(0, 0, -1).Format(format))},
-		{Text: fmt.Sprintf("\"%s\"", dateNow.AddDate(0, 0, -7).Format(format))},
-		{Text: fmt.Sprintf("\"%s\"", dateNow.AddDate(0, 0, -30).Format(format))},
-		{Text: fmt.Sprintf("\"%s\"", dateNow.AddDate(0, 0, -365).Format(format))},
-	}
-
-	return prompt.FilterHasPrefix(dates, word, true)
-}
-
-func (r *Root) newExecutor(rootCmd *cobra.Command, historyStore *promptHistoryStore) prompt.Executor {
-	s := splitter.MustCreateSplitter(' ', splitter.DoubleQuotesDoubleEscaped)
-	s.AddDefaultOptions(splitter.Trim(`/"`))
-
-	return func(in string) {
-		args, err := s.Split(in)
-		if err != nil {
-			renderer.RenderError(err)
-			return
-		}
-
-		resolvedCmd, _, findErr := rootCmd.Find(args)
-		canPersistHistory := findErr == nil && resolvedCmd != nil
-		if canPersistHistory {
-			if mode, ok := resolvedCmd.Annotations["prompt_history"]; ok && strings.EqualFold(mode, "off") {
-				canPersistHistory = false
-			}
-		}
-
-		if historyStore != nil && canPersistHistory {
-			if err := historyStore.Save(in, args); err != nil {
-				renderer.RenderError(err)
-			}
-		}
-
-		rootCmd.SetArgs(args)
-		if err := rootCmd.ExecuteContext(rootCmd.Context()); err != nil {
-			renderer.RenderError(err)
-		}
-	}
-}
-
-func (r *Root) newCompleter(rootCmd *cobra.Command) prompt.Completer {
-	return func(d prompt.Document) []prompt.Suggest {
-		args := strings.Fields(d.CurrentLine())
-		word := d.GetWordBeforeCursor()
-
-		currCmd := rootCmd
-		if found, _, err := rootCmd.Find(args); err == nil {
-			currCmd = found
-		}
-
-		if strings.HasPrefix(word, "-") {
-			var flagSuggestions []prompt.Suggest
-			currCmd.Flags().VisitAll(func(flag *pflag.Flag) {
-				flagSuggestions = append(flagSuggestions, prompt.Suggest{
-					//Adding the -- to allow auto-complete to work on the flags flawlessly
-					Text:        "--" + flag.Name,
-					Description: flag.Usage,
-				})
-			})
-
-			return prompt.FilterHasPrefix(flagSuggestions, word, true)
-		}
-
-		lastArg := ""
-		if len(args) > 0 {
-			lastArg = args[len(args)-1]
-		}
-
-		switch lastArg {
-		case "--verbosity":
-			return r.getVerbositySuggestions(word)
-
-		case "--type":
-			return r.getTypeSuggestions(word)
-
-		case "--limit":
-			return prompt.FilterHasPrefix([]prompt.Suggest{
-				{Text: "10"},
-				{Text: "20"},
-				{Text: "50"},
-				{Text: "100"},
-			}, word, true)
-
-		case "--offset-date":
-			return r.getDateSuggestions(word, "2006-01-02 15:04:05")
-
-		default:
-			if strings.HasPrefix(lastArg, "--") {
-				return []prompt.Suggest{}
-			}
-		}
-
-		suggest, ok := currCmd.Annotations["prompt_suggest"]
-		if ok {
-			switch suggest {
-			case "user", "chat", "channel", "chatorchannel", "any":
-				return r.getPeerSuggestions(rootCmd.Context(), word, suggest)
-
-			default:
-			}
-		}
-
-		var promptSuggestions []prompt.Suggest
-		if currCmd.HasAvailableSubCommands() {
-			for _, subCmd := range currCmd.Commands() {
-				promptSuggestions = append(promptSuggestions, prompt.Suggest{
-					Text:        subCmd.Name(),
-					Description: subCmd.Short,
-				})
-			}
-		}
-
-		return prompt.FilterHasPrefix(promptSuggestions, word, true)
-	}
-}
-
-func (r *Root) newPromptCmd(rootCmd *cobra.Command) *cobra.Command {
-	rootCmd.InitDefaultHelpCmd()
-	rootCmd.DisableSuggestions = true
-
-	rootCmd.AddCommand(&cobra.Command{
+func (r *Root) newExitCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "exit",
 		Short: "Exit the prompt",
-		Long:  `Exit the prompt`,
-		Run: func(cmd *cobra.Command, args []string) {
-			r.Close()
+		Long:  "Exit the prompt",
+		Run: func(*cobra.Command, []string) {
+			_ = r.Close()
 			os.Exit(0)
 		},
-	})
+	}
+}
 
-	promptCmd := &cobra.Command{
+func (r *Root) newPromptCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "prompt",
 		Short: "Start an interactive prompt",
-		Long:  `Start an interactive prompt`,
-		Run: func(cmd *cobra.Command, args []string) {
-			if err := r.Connect(rootCmd.Context()); err != nil {
-				renderer.RenderError(err)
-				return
+		Long:  "Start an interactive prompt",
+		RunE: func(cmd *cobra.Command, _ []string) (runErr error) {
+			defer func() {
+				runErr = errors.Join(runErr, r.Close())
+			}()
+
+			ctx := cmd.Context()
+			if err := r.Connect(ctx); err != nil {
+				return err
 			}
-			defer r.Disconnect()
 
 			setupTracker := r.progress.UnitsTracker("Prompt setup", 0)
-			self, err := r.client.UserService.GetSelf(rootCmd.Context())
+			self, err := r.client.UserService.GetSelf(ctx)
 			if err != nil {
 				setupTracker.Fail()
-				r.progress.Wait(rootCmd.Context())
-				renderer.RenderError(err)
-				return
+				r.progress.Wait(ctx)
+				return err
 			}
 
 			enabled, path, maxEntries := r.promptHistorySettings()
-			var historyStore *promptHistoryStore
-			promptOptions := []prompt.Option{
-				prompt.OptionPrefix(fmt.Sprintf("%s> ", self.Raw().Username)),
-				prompt.OptionTitle("tgdownloader"),
-			}
-
+			var history *promptHistoryStore
 			if enabled {
-				historyStore, err = newPromptHistoryStore(path, maxEntries, r.shouldSkipPromptHistoryEntry)
+				history, err = newPromptHistoryStore(path, maxEntries, r.shouldSkipPromptHistoryEntry)
 				if err != nil {
-					renderer.RenderError(err)
-				} else {
-					promptOptions = append(promptOptions, prompt.OptionHistory(historyStore.Entries()))
+					renderer.RenderError(cmd.OutOrStdout(), err)
+					history = nil
 				}
 			}
 
 			setupTracker.Done()
-			r.progress.Wait(rootCmd.Context())
-			prompt.New(
-				r.newExecutor(rootCmd, historyStore),
-				r.newCompleter(rootCmd),
-				promptOptions...,
-			).Run()
+			r.progress.Wait(ctx)
+			return r.runPromptTUI(ctx, history, self.Raw().Username)
 		},
 	}
-
-	return promptCmd
 }

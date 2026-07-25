@@ -276,7 +276,12 @@ func (p *Downloader) AddDownloadQueue(ctx context.Context, files <-chan File) {
 					return
 				}
 
-				p.files <- p.reserveOutputPaths(file)
+				reserved := p.reserveOutputPaths(file)
+				select {
+				case p.files <- reserved:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()

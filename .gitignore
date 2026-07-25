@@ -47,3 +47,6 @@ storage.db
 /probe_hls.ps1
 /tmp_yadisk_page.html
 /tmp_yadisk_public_bundle.js
+
+# Local design and review artifacts
+/.superpowers/

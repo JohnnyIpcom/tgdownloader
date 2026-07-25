@@ -1,11 +1,15 @@
 package oauth2server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
+	"golang.org/x/oauth2"
 )
 
 func TestValidateOAuthCallbackStateSuccess(t *testing.T) {
@@ -68,5 +72,34 @@ func TestValidateOAuthCallbackStateInvalidQueryKindConfig(t *testing.T) {
 
 	if !apperr.IsKind(err, apperr.KindConfig) {
 		t.Fatalf("expected KindConfig, got: %v", err)
+	}
+}
+
+func TestRunOAuth2ServerUsesCallerContextAndEventWriter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan renderer.Event, 1)
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunOAuth2Server(ctx, renderer.NewEventWriter(renderer.NewChannelEventSink(events)), 0, oauth2.Config{})
+		done <- err
+	}()
+
+	select {
+	case event := <-events:
+		if event.Kind != renderer.EventLine || event.Text == "" {
+			t.Fatalf("authorization event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("authorization instruction was not routed through the event writer")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunOAuth2Server error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunOAuth2Server did not stop after caller cancellation")
 	}
 }

@@ -1,0 +1,768 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/johnnyipcom/tgdownloader/internal/renderer"
+)
+
+type promptCompleteFunc func(context.Context, string, int) completionResult
+
+type promptSubmitFunc func(context.Context, string) tea.Cmd
+
+type promptModelOptions struct {
+	Context      context.Context
+	Lifetime     context.Context
+	Username     string
+	Version      string
+	Connected    bool
+	Complete     promptCompleteFunc
+	Submit       promptSubmitFunc
+	Events       <-chan renderer.Event
+	History      []string
+	HistoryLimit int
+}
+
+type promptModel struct {
+	width, height     int
+	username, version string
+	connected         bool
+	ctx               context.Context
+	lifetime          context.Context
+	editor            textinput.Model
+	viewport          viewport.Model
+	complete          promptCompleteFunc
+	submit            promptSubmitFunc
+	events            <-chan renderer.Event
+	completions       []promptCandidate
+	selected          int
+	completionOffset  int
+	running           bool
+	quitting          bool
+	cancel            context.CancelFunc
+	activeCommandDone <-chan struct{}
+	history           []string
+	historyIndex      int
+	historyLimit      int
+	pendingDone       map[string]promptCommandDoneMsg
+	barriers          map[string]struct{}
+	completedRuns     map[string]struct{}
+
+	completionStart, completionEnd int
+	completionQuoted               bool
+	completionQuoteClosed          bool
+	completionStatus               string
+	transcript                     []string
+	activeRows                     map[string]string
+	activeRowOrder                 []string
+	terminalRows                   map[string]struct{}
+	followBottom                   bool
+}
+
+type promptCommandDoneMsg struct {
+	RunID         string
+	Line          string
+	Args          []string
+	Err           error
+	HistoryStored bool
+	HistoryOK     bool
+}
+
+type promptRendererEventMsg struct {
+	event renderer.Event
+}
+
+type promptRendererEventsClosedMsg struct{}
+
+type promptContextDoneMsg struct{}
+
+var (
+	promptHeaderStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	promptSelectedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6"))
+	promptCompletionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	promptHintStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	promptPanelBorder     = lipgloss.NormalBorder()
+	promptPanelStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+)
+
+const promptEditorPrefix = "tg> "
+
+const promptBorderedLayoutBaseLines = 1 + 2 + 2 + 2 + 1
+
+type promptLayout struct {
+	bordered       bool
+	outputRows     int
+	suggestionRows int
+	commandRows    int
+	showHint       bool
+}
+
+func newPromptModel(options promptModelOptions) *promptModel {
+	if options.Context == nil {
+		options.Context = context.Background()
+	}
+	if options.Lifetime == nil {
+		options.Lifetime = context.Background()
+	}
+	editor := textinput.New()
+	editor.Prompt = promptEditorPrefix
+	editor.SetWidth(0)
+	_ = editor.Focus()
+
+	m := &promptModel{
+		ctx:           options.Context,
+		lifetime:      options.Lifetime,
+		username:      options.Username,
+		version:       options.Version,
+		connected:     options.Connected,
+		editor:        editor,
+		viewport:      viewport.New(),
+		complete:      options.Complete,
+		submit:        options.Submit,
+		events:        options.Events,
+		history:       append([]string(nil), options.History...),
+		historyIndex:  len(options.History),
+		historyLimit:  options.HistoryLimit,
+		activeRows:    make(map[string]string),
+		terminalRows:  make(map[string]struct{}),
+		pendingDone:   make(map[string]promptCommandDoneMsg),
+		barriers:      make(map[string]struct{}),
+		completedRuns: make(map[string]struct{}),
+		followBottom:  true,
+	}
+	m.viewport.MouseWheelEnabled = true
+	m.resize(80, 24)
+	return m
+}
+
+func (m *promptModel) Init() tea.Cmd {
+	return tea.Batch(waitForRendererEvent(m.lifetime, m.events), waitForPromptContext(m.lifetime, m.ctx))
+}
+
+func (m *promptModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.resize(msg.Width, msg.Height)
+		return m, nil
+	case promptRendererEventMsg:
+		if msg.event.Kind == renderer.EventBarrier {
+			m.barriers[msg.event.ID] = struct{}{}
+			_, cmd := m.finalizeCommand(msg.event.ID)
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, waitForRendererEvent(m.lifetime, m.events)
+		}
+		m.applyRendererEvent(msg.event)
+		return m, waitForRendererEvent(m.lifetime, m.events)
+	case promptRendererEventsClosedMsg:
+		m.events = nil
+		return m, nil
+	case promptContextDoneMsg:
+		if m.running {
+			m.quitting = true
+			m.cancel()
+			return m, nil
+		}
+		return m, tea.Quit
+	case promptCommandDoneMsg:
+		m.pendingDone[msg.RunID] = msg
+		_, cmd := m.finalizeCommand(msg.RunID)
+		return m, cmd
+	case tea.KeyPressMsg:
+		return m.updateKey(msg)
+	case tea.MouseWheelMsg:
+		return m.updateViewport(msg)
+	default:
+		if m.running {
+			return m, nil
+		}
+		return m.updateEditor(msg)
+	}
+}
+
+func (m *promptModel) finalizeCommand(runID string) (bool, tea.Cmd) {
+	if _, completed := m.completedRuns[runID]; completed {
+		return false, nil
+	}
+	done, hasDone := m.pendingDone[runID]
+	_, hasBarrier := m.barriers[runID]
+	if !hasDone || !hasBarrier {
+		return false, nil
+	}
+
+	clear(m.pendingDone)
+	clear(m.barriers)
+	clear(m.completedRuns)
+	m.completedRuns[runID] = struct{}{}
+	m.finishCommand(done)
+	if m.quitting {
+		return true, tea.Quit
+	}
+	return true, nil
+}
+
+func (m promptModel) View() tea.View {
+	view := tea.NewView(m.render())
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
+	view.WindowTitle = "tgdownloader"
+	return view
+}
+
+func (m *promptModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.Code == tea.KeyPgUp || msg.Code == tea.KeyPgDown {
+		if len(m.completions) > 0 {
+			m.pageCompletions(msg.Code == tea.KeyPgDown)
+			return m, nil
+		}
+		return m.updateViewport(msg)
+	}
+
+	if m.running {
+		if msg.Keystroke() == "ctrl+c" && m.cancel != nil {
+			m.cancel()
+		}
+		return m, nil
+	}
+
+	if msg.Keystroke() == "ctrl+c" || msg.Keystroke() == "ctrl+d" {
+		return m, tea.Quit
+	}
+
+	switch msg.Code {
+	case tea.KeyEscape:
+		m.clearCompletions()
+		return m, nil
+	case tea.KeyUp:
+		if len(m.completions) > 0 {
+			m.selected = (m.selected - 1 + len(m.completions)) % len(m.completions)
+			m.ensureCompletionVisible(m.visibleCompletionCount())
+		} else {
+			m.historyPrevious()
+		}
+		return m, nil
+	case tea.KeyDown:
+		if len(m.completions) > 0 {
+			m.selected = (m.selected + 1) % len(m.completions)
+			m.ensureCompletionVisible(m.visibleCompletionCount())
+		} else {
+			m.historyNext()
+		}
+		return m, nil
+	case tea.KeyEnter, tea.KeyKpEnter:
+		if len(m.completions) > 0 {
+			m.acceptCompletion()
+			return m, nil
+		}
+		return m.submitLine()
+	}
+
+	return m.updateEditor(msg)
+}
+
+func (m *promptModel) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
+	value, position := m.editor.Value(), m.editor.Position()
+	var cmd tea.Cmd
+	m.editor, cmd = m.editor.Update(msg)
+	if m.editor.Value() != value || m.editor.Position() != position {
+		m.refreshCompletions()
+	}
+	return m, cmd
+}
+
+func (m *promptModel) submitLine() (tea.Model, tea.Cmd) {
+	line := strings.TrimSpace(m.editor.Value())
+	if line == "" {
+		return m, nil
+	}
+	if isPromptExitLine(line) {
+		return m, tea.Quit
+	}
+
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.cancel = cancel
+	m.running = true
+	m.editor.Blur()
+	m.clearCompletions()
+	m.transcript = append(m.transcript, promptEditorPrefix+line)
+	m.syncViewportContent()
+	m.editor.SetValue("")
+
+	if m.submit == nil {
+		return m, nil
+	}
+	command := m.submit(ctx, line)
+	if command == nil {
+		return m, nil
+	}
+	done := make(chan struct{})
+	m.activeCommandDone = done
+	return m, func() tea.Msg {
+		defer close(done)
+		return command()
+	}
+}
+
+func (m *promptModel) finishCommand(msg promptCommandDoneMsg) {
+	if msg.Err != nil {
+		if errors.Is(msg.Err, context.Canceled) {
+			m.transcript = append(m.transcript, "Interrupted")
+		} else {
+			var rendered strings.Builder
+			renderer.RenderErrorConcise(&rendered, msg.Err)
+			if text := sanitizePromptModelText(rendered.String()); text != "" {
+				m.transcript = append(m.transcript, text)
+			}
+		}
+	}
+	m.syncViewportContent()
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.activeCommandDone = nil
+	m.running = false
+	_ = m.editor.Focus()
+	if msg.HistoryOK && msg.HistoryStored {
+		m.history = append(m.history, msg.Line)
+		if m.historyLimit > 0 && len(m.history) > m.historyLimit {
+			m.history = m.history[len(m.history)-m.historyLimit:]
+		}
+	}
+	m.historyIndex = len(m.history)
+}
+
+func (m *promptModel) refreshCompletions() {
+	m.clearCompletions()
+	if m.complete == nil {
+		return
+	}
+	result := m.complete(m.lifetime, m.editor.Value(), m.editor.Position())
+	if result.Err != nil {
+		m.completionStatus = sanitizePromptModelText(fmt.Sprintf("Completion: %v", result.Err))
+		return
+	}
+	m.completions = append([]promptCandidate(nil), result.Candidates...)
+	m.completionStart = result.Start
+	m.completionEnd = result.End
+	m.completionQuoted = result.Quoted
+	m.completionQuoteClosed = result.QuoteClosed
+}
+
+func (m *promptModel) acceptCompletion() {
+	if len(m.completions) == 0 || m.selected >= len(m.completions) {
+		return
+	}
+	candidate := m.completions[m.selected]
+	runes := []rune(m.editor.Value())
+	start := min(max(0, m.completionStart), len(runes))
+	end := min(max(start, m.completionEnd), len(runes))
+	value := encodePromptCompletionValue(candidate.Value, m.completionQuoted, m.completionQuoteClosed)
+	updated := string(runes[:start]) + value + string(runes[end:])
+	m.editor.SetValue(updated)
+	m.editor.SetCursor(start + len([]rune(value)))
+	m.clearCompletions()
+}
+
+func (m *promptModel) clearCompletions() {
+	m.completions = nil
+	m.selected = 0
+	m.completionOffset = 0
+	m.completionStart = 0
+	m.completionEnd = 0
+	m.completionQuoted = false
+	m.completionQuoteClosed = false
+	m.completionStatus = ""
+}
+
+func encodePromptCompletionValue(value string, quoted, quoteClosed bool) string {
+	value = strings.ReplaceAll(value, `"`, `""`)
+	if quoted {
+		if !quoteClosed {
+			return value + `"`
+		}
+		return value
+	}
+	if strings.ContainsAny(value, " \t\"") {
+		return `"` + value + `"`
+	}
+	return value
+}
+
+func (m *promptModel) visibleCompletions() []promptCandidate {
+	count := m.visibleCompletionCount()
+	if count == 0 || len(m.completions) == 0 {
+		return nil
+	}
+	m.ensureCompletionVisible(count)
+	end := min(m.completionOffset+count, len(m.completions))
+	return m.completions[m.completionOffset:end]
+}
+
+func (m *promptModel) visibleCompletionCount() int {
+	return promptLayoutForHeight(m.height).suggestionRows
+}
+
+func (m *promptModel) ensureCompletionVisible(count int) {
+	if count <= 0 || len(m.completions) == 0 {
+		return
+	}
+	m.selected = min(max(0, m.selected), len(m.completions)-1)
+	if m.selected < m.completionOffset {
+		m.completionOffset = m.selected
+	} else if m.selected >= m.completionOffset+count {
+		m.completionOffset = m.selected - count + 1
+	}
+	m.completionOffset = min(max(0, m.completionOffset), max(0, len(m.completions)-count))
+}
+
+func (m *promptModel) pageCompletions(down bool) {
+	count := m.visibleCompletionCount()
+	if count == 0 {
+		return
+	}
+	if down {
+		m.selected = (m.selected + count) % len(m.completions)
+	} else {
+		m.selected = ((m.selected-count)%len(m.completions) + len(m.completions)) % len(m.completions)
+	}
+	m.ensureCompletionVisible(count)
+}
+
+func (m *promptModel) historyPrevious() {
+	if len(m.history) == 0 || m.historyIndex == 0 {
+		return
+	}
+	m.historyIndex--
+	m.editor.SetValue(m.history[m.historyIndex])
+	m.editor.CursorEnd()
+}
+
+func (m *promptModel) historyNext() {
+	if len(m.history) == 0 || m.historyIndex >= len(m.history) {
+		return
+	}
+	m.historyIndex++
+	if m.historyIndex == len(m.history) {
+		m.editor.SetValue("")
+		return
+	}
+	m.editor.SetValue(m.history[m.historyIndex])
+	m.editor.CursorEnd()
+}
+
+func (m *promptModel) resize(width, height int) {
+	m.width = max(1, width)
+	m.height = max(1, height)
+	contentWidth := m.width
+	if promptLayoutForHeight(m.height).bordered {
+		contentWidth = promptPanelBodyWidth(m.width)
+	}
+	m.editor.Prompt = promptSingleLine(promptEditorPrefix, max(0, contentWidth-1))
+	m.editor.SetWidth(max(0, contentWidth-lipgloss.Width(m.editor.Prompt)-1))
+	m.viewport.SetWidth(contentWidth)
+	m.viewport.SoftWrap = true
+	m.viewport.FillHeight = true
+	m.syncViewportContent()
+}
+
+func (m *promptModel) applyRendererEvent(event renderer.Event) {
+	event.Text = sanitizePromptModelLine(event.Text)
+	if event.Kind == renderer.EventLine || event.ID == "" {
+		if event.Text != "" {
+			m.transcript = append(m.transcript, event.Text)
+			m.syncViewportContent()
+		}
+		return
+	}
+	if _, terminal := m.terminalRows[event.ID]; terminal {
+		return
+	}
+
+	switch event.Kind {
+	case renderer.EventProgressDone, renderer.EventProgressFail:
+		delete(m.activeRows, event.ID)
+		m.removeActiveRowID(event.ID)
+		m.terminalRows[event.ID] = struct{}{}
+		if event.Text != "" {
+			m.transcript = append(m.transcript, event.Text)
+		}
+		m.syncViewportContent()
+	case renderer.EventProgressCreate, renderer.EventProgressUpdate, "":
+		if _, exists := m.activeRows[event.ID]; !exists {
+			m.activeRowOrder = append(m.activeRowOrder, event.ID)
+		}
+		m.activeRows[event.ID] = event.Text
+		m.syncViewportContent()
+	}
+}
+
+func (m *promptModel) removeActiveRowID(id string) {
+	for i, activeID := range m.activeRowOrder {
+		if activeID == id {
+			m.activeRowOrder = append(m.activeRowOrder[:i], m.activeRowOrder[i+1:]...)
+			return
+		}
+	}
+}
+
+func (m *promptModel) render() string {
+	connection := "disconnected"
+	if m.connected {
+		connection = "connected"
+	}
+	header := promptHeaderStyle.Render(promptSingleLine(fmt.Sprintf("tgdownloader  %s  %s  %s", m.username, connection, m.version), m.width))
+	m.syncViewportContent()
+	layout := promptLayoutForHeight(m.height)
+	if !layout.bordered {
+		return m.renderCompact(header, layout)
+	}
+
+	lines := []string{header}
+	lines = append(lines, renderPromptPanel("OUTPUT", m.outputBody(layout.outputRows), m.width)...)
+
+	visible := m.visibleCompletions()
+	suggestions := make([]string, layout.suggestionRows)
+	contentWidth := promptPanelBodyWidth(m.width)
+	for i := 0; i < layout.suggestionRows; i++ {
+		if i == 0 && m.completionStatus != "" {
+			suggestions[i] = promptHintStyle.Render(promptSingleLine(m.completionStatus, contentWidth))
+			continue
+		}
+		if i >= len(visible) {
+			continue
+		}
+		prefix := "  "
+		if i == m.selected-m.completionOffset {
+			prefix = "> "
+		}
+		text := formatPromptCandidate(visible[i], max(0, contentWidth-lipgloss.Width(prefix)))
+		if i == m.selected-m.completionOffset {
+			suggestions[i] = promptSelectedStyle.Render(prefix + text)
+		} else {
+			suggestions[i] = promptCompletionStyle.Render(prefix + text)
+		}
+	}
+	lines = append(lines, renderPromptPanel(m.suggestionPanelTitle(), suggestions, m.width)...)
+
+	command := make([]string, layout.commandRows)
+	if layout.commandRows > 0 {
+		command[0] = m.editor.View()
+	}
+	lines = append(lines, renderPromptPanel("COMMAND", command, m.width)...)
+	if layout.showHint {
+		lines = append(lines, m.renderHint())
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *promptModel) renderCompact(header string, layout promptLayout) string {
+	lines := []string{header}
+	lines = append(lines, m.outputBody(layout.outputRows)...)
+	if layout.commandRows > 0 {
+		lines = append(lines, m.editor.View())
+	}
+	if layout.showHint {
+		lines = append(lines, m.renderHint())
+	}
+	for len(lines) < m.height {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines[:m.height], "\n")
+}
+
+func (m *promptModel) outputBody(rows int) []string {
+	body := make([]string, 0, rows)
+	if m.viewport.Height() > 0 {
+		body = append(body, strings.Split(m.viewport.View(), "\n")...)
+	}
+	contentWidth := m.viewport.Width()
+	for _, id := range m.visibleActiveRowIDs() {
+		body = append(body, promptSingleLine(m.activeRows[id], contentWidth))
+	}
+	if len(body) > rows {
+		body = body[:rows]
+	}
+	for len(body) < rows {
+		body = append(body, "")
+	}
+	return body
+}
+
+func (m *promptModel) suggestionPanelTitle() string {
+	total := len(m.completions)
+	current := 0
+	if total > 0 {
+		current = min(max(0, m.selected), total-1) + 1
+	}
+	return fmt.Sprintf("SUGGESTIONS %d/%d", current, total)
+}
+
+func (m *promptModel) renderHint() string {
+	hint := "enter run  up/down history  ctrl+c exit"
+	if m.running {
+		hint = "ctrl+c cancel"
+	} else if len(m.completions) > 0 {
+		hint = "up/down select  enter insert  esc close"
+	}
+	return promptHintStyle.Render(promptSingleLine(hint, m.width))
+}
+
+func renderPromptPanel(title string, body []string, width int) []string {
+	width = max(1, width)
+	if width == 1 {
+		lines := []string{promptPanelStyle.Render(promptSingleLine(promptPanelBorder.TopLeft, width))}
+		for _, line := range body {
+			lines = append(lines, promptPanelLine(line, width))
+		}
+		return append(lines, promptPanelStyle.Render(promptSingleLine(promptPanelBorder.BottomLeft, width)))
+	}
+
+	bodyWidth := promptPanelBodyWidth(width)
+	topContent := strings.Repeat(promptPanelBorder.Top, bodyWidth)
+	if bodyWidth > 1 {
+		label := promptSingleLine(" "+sanitizePromptModelText(title)+" ", bodyWidth-1)
+		topContent = promptPanelBorder.Top + label + strings.Repeat(promptPanelBorder.Top, bodyWidth-1-lipgloss.Width(label))
+	}
+	lines := []string{promptPanelStyle.Render(promptPanelBorder.TopLeft + topContent + promptPanelBorder.TopRight)}
+	for _, line := range body {
+		lines = append(lines,
+			promptPanelStyle.Render(promptPanelBorder.Left)+
+				promptPanelLine(line, bodyWidth)+
+				promptPanelStyle.Render(promptPanelBorder.Right),
+		)
+	}
+	bottom := promptPanelBorder.BottomLeft + strings.Repeat(promptPanelBorder.Bottom, bodyWidth) + promptPanelBorder.BottomRight
+	return append(lines, promptPanelStyle.Render(bottom))
+}
+
+func promptPanelLine(line string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(line) > width {
+		line = promptSingleLine(line, width)
+	}
+	return line + strings.Repeat(" ", max(0, width-lipgloss.Width(line)))
+}
+
+func promptPanelBodyWidth(width int) int {
+	return max(0, width-lipgloss.Width(promptPanelBorder.Left)-lipgloss.Width(promptPanelBorder.Right))
+}
+
+func promptLayoutForHeight(height int) promptLayout {
+	height = max(1, height)
+	if height < promptBorderedLayoutBaseLines+2 {
+		layout := promptLayout{outputRows: height - 1}
+		if height >= 2 {
+			layout.commandRows = 1
+			layout.outputRows--
+		}
+		if height >= 3 {
+			layout.showHint = true
+			layout.outputRows--
+		}
+		layout.outputRows = max(0, layout.outputRows)
+		return layout
+	}
+
+	layout := promptLayout{bordered: true, showHint: true}
+	remaining := height - promptBorderedLayoutBaseLines
+	layout.commandRows = min(1, remaining)
+	remaining -= layout.commandRows
+	layout.outputRows = min(1, remaining)
+	remaining -= layout.outputRows
+	layout.suggestionRows = min(maxPromptVisibleCompletions, remaining)
+	remaining -= layout.suggestionRows
+	layout.outputRows += remaining
+	return layout
+}
+
+func (m *promptModel) resizeViewport() {
+	m.viewport.SetHeight(max(0, m.contentHeight()-len(m.visibleActiveRowIDs())))
+}
+
+func (m *promptModel) syncViewportContent() {
+	m.resizeViewport()
+	m.viewport.SetContent(strings.Join(m.transcript, "\n"))
+	if m.followBottom {
+		m.viewport.GotoBottom()
+	}
+}
+
+func (m *promptModel) updateViewport(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.syncViewportContent()
+	before := m.viewport.YOffset()
+	updated, cmd := m.viewport.Update(msg)
+	m.viewport = updated
+	if m.viewport.YOffset() != before {
+		m.followBottom = m.viewport.AtBottom()
+	} else if m.viewport.AtBottom() {
+		m.followBottom = true
+	}
+	return m, cmd
+}
+
+func (m *promptModel) contentHeight() int {
+	return promptLayoutForHeight(m.height).outputRows
+}
+
+func (m *promptModel) visibleActiveRowIDs() []string {
+	return m.activeRowOrder[:min(len(m.activeRowOrder), m.contentHeight())]
+}
+
+func promptSingleLine(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return truncatePromptText(sanitizePromptModelText(value), width)
+}
+
+func waitForRendererEvent(lifetime context.Context, events <-chan renderer.Event) tea.Cmd {
+	if events == nil {
+		return nil
+	}
+	if lifetime == nil {
+		lifetime = context.Background()
+	}
+	return func() tea.Msg {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return promptRendererEventsClosedMsg{}
+			}
+			return promptRendererEventMsg{event: event}
+		case <-lifetime.Done():
+			return promptRendererEventsClosedMsg{}
+		}
+	}
+}
+
+func waitForPromptContext(lifetime, ctx context.Context) tea.Cmd {
+	if ctx == nil || ctx.Done() == nil {
+		return nil
+	}
+	if lifetime == nil {
+		lifetime = context.Background()
+	}
+	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+		case <-lifetime.Done():
+		}
+		return promptContextDoneMsg{}
+	}
+}
+
+func isPromptExitLine(line string) bool {
+	args, err := splitPromptLine(line)
+	return err == nil && len(args) == 1 && args[0] == "exit"
+}

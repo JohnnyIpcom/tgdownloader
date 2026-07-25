@@ -2,7 +2,7 @@ package renderer
 
 import (
 	"context"
-	"os"
+	"io"
 	"time"
 
 	"github.com/gotd/td/telegram/peers"
@@ -11,9 +11,9 @@ import (
 )
 
 // RenderUser renders a single user.
-func RenderUser(user peers.User) string {
+func RenderUser(writer io.Writer, user peers.User) string {
 	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
+	t.SetOutputMirror(outputWriter(writer))
 	t.AppendHeader(
 		table.Row{
 			"ID",
@@ -39,9 +39,9 @@ func RenderUser(user peers.User) string {
 }
 
 // RenderUserAsync renders a user one by one asynchronously.
-func RenderUsersAsync(ctx context.Context, u <-chan peers.User) error {
+func RenderUsersAsync(ctx context.Context, writer io.Writer, u <-chan peers.User) error {
 	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
+	t.SetOutputMirror(outputWriter(writer))
 	t.AppendHeader(
 		table.Row{
 			"ID",
@@ -65,6 +65,7 @@ func RenderUsersAsync(ctx context.Context, u <-chan peers.User) error {
 	})
 
 	ticker := time.NewTicker(time.Second * 1)
+	defer ticker.Stop()
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -106,9 +107,9 @@ func RenderUsersAsync(ctx context.Context, u <-chan peers.User) error {
 }
 
 // RenderUserTable renders a table of users.
-func RenderUserTable(users []peers.User) {
+func RenderUserTable(writer io.Writer, users []peers.User) {
 	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
+	t.SetOutputMirror(outputWriter(writer))
 	t.SetAutoIndex(true)
 	t.AppendHeader(
 		table.Row{
@@ -141,6 +142,6 @@ func RenderUserTable(users []peers.User) {
 }
 
 // RenderUserTableAsync renders a table of users asynchronously.
-func RenderUserTableAsync(ctx context.Context, u <-chan peers.User, total int) error {
-	return renderAsync(ctx, u, "Fetching users...", total, RenderUserTable)
+func RenderUserTableAsync(ctx context.Context, writer io.Writer, u <-chan peers.User, total int) error {
+	return renderAsync(ctx, writer, u, "Fetching users...", total, RenderUserTable)
 }

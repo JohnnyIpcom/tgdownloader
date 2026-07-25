@@ -3,6 +3,7 @@ package renderer
 import (
 	"context"
 	"fmt"
+	"io"
 	"regexp"
 	"unicode/utf8"
 
@@ -89,12 +90,13 @@ func getPeerTypename(p peers.Peer) string {
 
 func renderAsync[T any](
 	ctx context.Context,
+	writer io.Writer,
 	ch <-chan T,
 	msg string,
 	total int,
-	renderSync func([]T),
+	renderSync func(io.Writer, []T),
 ) error {
-	p := NewProgress()
+	p := NewProgressForContext(ctx)
 	t := p.UnitsTracker(msg, total)
 
 	var collection []T
@@ -125,6 +127,6 @@ func renderAsync[T any](
 	t.Done()
 	p.WaitAndStop(ctx)
 
-	renderSync(collection)
+	renderSync(writer, collection)
 	return nil
 }

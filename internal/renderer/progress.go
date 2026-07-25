@@ -12,10 +12,10 @@ import (
 )
 
 type Progress interface {
-	progress.Writer
 	EnablePS(ctx context.Context)
 	Wait(ctx context.Context)
 	WaitAndStop(ctx context.Context)
+	Stop()
 
 	UnitsTracker(message string, total int) Tracker
 	BytesTracker(writer io.Writer, message string, total int64) BytesTracker
@@ -28,6 +28,31 @@ type progressImpl struct {
 var _ Progress = (*progressImpl)(nil)
 
 func NewProgress() Progress {
+	return newProgress(true)
+}
+
+// NewProgressWithoutValue preserves the compact root-level progress style.
+func NewProgressWithoutValue() Progress {
+	return newProgress(false)
+}
+
+// NewProgressForContext uses TUI events when the command context carries a sink.
+func NewProgressForContext(ctx context.Context) Progress {
+	return ProgressForContext(ctx, nil)
+}
+
+// ProgressForContext preserves fallback progress for ordinary commands.
+func ProgressForContext(ctx context.Context, fallback Progress) Progress {
+	if sink, ok := eventSinkFromContext(ctx); ok {
+		return NewTUIProgress(sink)
+	}
+	if fallback != nil {
+		return fallback
+	}
+	return NewProgress()
+}
+
+func newProgress(showValue bool) Progress {
 	pw := progress.NewWriter()
 	pw.SetAutoStop(false)
 	pw.SetMessageLength(50)
@@ -41,6 +66,7 @@ func NewProgress() Progress {
 	pw.Style().Options.PercentFormat = "%4.1f%%"
 	pw.Style().Visibility.ETA = true
 	pw.Style().Visibility.ETAOverall = true
+	pw.Style().Visibility.Value = showValue
 
 	go pw.Render()
 	return &progressImpl{Writer: pw}

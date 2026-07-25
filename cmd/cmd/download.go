@@ -19,7 +19,9 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		Use:   "history",
 		Short: "Download files from a peer history",
 		Long:  `Download files from a chat, channel or user history.`,
-		Args:  peerInputArgs,
+		Example: `  tgdownloader download history "Cherry Channel"
+  tgdownloader download history 0xFFFFFF000000007B --limit 25`,
+		Args: peerInputArgs,
 		Annotations: map[string]string{
 			"prompt_suggest": "any",
 		},
@@ -30,7 +32,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFilesFromPeer(cmd.Context(), peer, opts)
+			return r.downloadFilesFromPeer(cmd.Context(), cmd.OutOrStdout(), peer, opts)
 		},
 	}
 
@@ -40,13 +42,14 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 	downloadHistoryCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
 	downloadHistoryCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
 	downloadHistoryCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
-	downloadHistoryCmd.Flags().BoolVar(&opts.ps, "ps", false, "Enable status information")
+	addStatusFlags(downloadHistoryCmd, &opts.ps)
 
 	downloadWatcherCmd := &cobra.Command{
-		Use:   "watcher",
-		Short: "Watch a peer for new files",
-		Long:  `Watch a peer for new files.`,
-		Args:  peerInputArgs,
+		Use:     "watcher",
+		Short:   "Watch a peer for new files",
+		Long:    `Watch a peer for new files.`,
+		Example: `  tgdownloader download watcher "Cherry Channel" --status`,
+		Args:    peerInputArgs,
 		Annotations: map[string]string{
 			"prompt_suggest": "any",
 		},
@@ -57,14 +60,14 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFilesFromNewMessages(cmd.Context(), peer, opts)
+			return r.downloadFilesFromNewMessages(cmd.Context(), cmd.OutOrStdout(), peer, opts)
 		},
 	}
 
 	downloadWatcherCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
 	downloadWatcherCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
 	downloadWatcherCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
-	downloadWatcherCmd.Flags().BoolVar(&opts.ps, "ps", false, "Enable status information")
+	addStatusFlags(downloadWatcherCmd, &opts.ps)
 
 	downloadMessageCmd := &cobra.Command{
 		Use:   "message",
@@ -78,7 +81,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadFilesFromMessage(cmd.Context(), peer, msgId, opts)
+			return r.downloadFilesFromMessage(cmd.Context(), cmd.OutOrStdout(), peer, msgId, opts)
 		},
 	}
 
@@ -86,7 +89,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 	downloadMessageCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
 	downloadMessageCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
 	downloadMessageCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
-	downloadMessageCmd.Flags().BoolVar(&opts.ps, "ps", false, "Enable status information")
+	addStatusFlags(downloadMessageCmd, &opts.ps)
 
 	downloadYandexDiskCmd := &cobra.Command{
 		Use:   "yadisk",
@@ -103,7 +106,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 				return err
 			}
 
-			return r.downloadYandexDiskFromPeer(cmd.Context(), peer, opts)
+			return r.downloadYandexDiskFromPeer(cmd.Context(), cmd.OutOrStdout(), peer, opts)
 		},
 	}
 
@@ -113,7 +116,7 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 	downloadYandexDiskCmd.Flags().BoolVar(&opts.hashtags, "hashtags", false, "Save hashtags as folders")
 	downloadYandexDiskCmd.Flags().BoolVar(&opts.rewrite, "rewrite", false, "Rewrite files if they already exist")
 	downloadYandexDiskCmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Do not download files, just print what would be downloaded")
-	downloadYandexDiskCmd.Flags().BoolVar(&opts.ps, "ps", false, "Enable status information")
+	addStatusFlags(downloadYandexDiskCmd, &opts.ps)
 
 	downloadCmd.AddCommand(
 		downloadHistoryCmd,
@@ -129,4 +132,10 @@ func (r *Root) newDownloadCmd() *cobra.Command {
 		downloadYandexDiskCmd,
 	)
 	return downloadCmd
+}
+
+func addStatusFlags(cmd *cobra.Command, enabled *bool) {
+	cmd.Flags().BoolVar(enabled, "status", false, "Enable status information")
+	cmd.Flags().BoolVar(enabled, "ps", false, "Enable status information")
+	_ = cmd.Flags().MarkDeprecated("ps", "use --status")
 }

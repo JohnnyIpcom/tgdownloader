@@ -1,17 +1,13 @@
 package cmd
 
 import (
-	"context"
 	"strings"
 	"testing"
 
-	prompt "github.com/c-bata/go-prompt"
 	"github.com/gotd/contrib/storage"
 	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/tg"
-	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
-	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 )
 
@@ -29,59 +25,17 @@ func cachedUser(id int64, firstName, username string) telegram.DialogPeer {
 	}}
 }
 
-func TestDialogPeerSuggestMatchesNameInput(t *testing.T) {
-	peer := cachedChannel(123, "Cherry Channel")
-
-	suggest, ok := dialogPeerSuggest(peer, "che")
+func TestPeerCandidateMatchesSubstringAndPreservesFullName(t *testing.T) {
+	name := "Очень длинное название канала с фотографиями внутреннего танца и окончанием"
+	candidate, ok := peerCandidate(cachedChannel(1, name), "фото")
 	if !ok {
-		t.Fatal("expected suggestion")
+		t.Fatal("expected substring match")
 	}
-
-	if suggest.Text != "Cherry Channel" {
-		t.Fatalf("expected name text, got %q", suggest.Text)
+	if candidate.Value != name {
+		t.Fatalf("value = %q, want full name", candidate.Value)
 	}
-
-	if suggest.Description != "" {
-		t.Fatalf("expected empty description, got %q", suggest.Description)
-	}
-}
-
-func TestCompleterUsesRootContextForPeerSuggestions(t *testing.T) {
-	type contextKey struct{}
-	wantCtx := context.WithValue(context.Background(), contextKey{}, "prompt")
-	cache := &dialogCacheStub{}
-	r := &Root{client: &telegram.Client{DialogCache: cache}}
-
-	rootCmd := &cobra.Command{Use: "tgdownloader"}
-	downloadCmd := &cobra.Command{Use: "download"}
-	historyCmd := &cobra.Command{
-		Use: "history",
-		Annotations: map[string]string{
-			"prompt_suggest": "any",
-		},
-	}
-	downloadCmd.AddCommand(historyCmd)
-	rootCmd.AddCommand(downloadCmd)
-	rootCmd.SetContext(wantCtx)
-
-	buffer := prompt.NewBuffer()
-	buffer.InsertText("download history che", false, true)
-	r.newCompleter(rootCmd)(*buffer.Document())
-
-	if cache.ctx != wantCtx {
-		t.Fatalf("expected root prompt context, got %v", cache.ctx)
-	}
-}
-
-func TestDialogPeerSuggestSearchesUsernameButDisplaysVisibleName(t *testing.T) {
-	peer := cachedUser(7, "_anastasiia_", "lscptd")
-
-	suggest, ok := dialogPeerSuggest(peer, "lsc")
-	if !ok {
-		t.Fatal("expected username alias suggestion")
-	}
-	if suggest.Text != "_anastasiia_" {
-		t.Fatalf("expected visible name, got %q", suggest.Text)
+	if candidate.Display != name {
+		t.Fatalf("display = %q, want full name", candidate.Display)
 	}
 }
 
@@ -111,77 +65,6 @@ func TestPeerInputArgsRequiresInput(t *testing.T) {
 	}
 	if err := peerInputArgs(cmd, []string{"Фотограф", "внутреннего", "танца"}); err != nil {
 		t.Fatalf("expected multi-word input to be accepted, got %v", err)
-	}
-}
-
-func TestDialogPeerSuggestMatchesIDInput(t *testing.T) {
-	peer := cachedChannel(123, "Cherry Channel")
-	id := renderer.RenderTDLibPeerID(peer.TDLibPeerID())
-
-	suggest, ok := dialogPeerSuggest(peer, strings.ToLower(id[:6]))
-	if !ok {
-		t.Fatal("expected suggestion")
-	}
-
-	if suggest.Text != id {
-		t.Fatalf("expected ID text, got %q", suggest.Text)
-	}
-	if suggest.Description != "" {
-		t.Fatalf("expected empty description, got %q", suggest.Description)
-	}
-}
-
-func TestDialogPeerSuggestSkipsEmptyNameInNameMode(t *testing.T) {
-	peer := cachedChannel(123, "")
-
-	if suggest, ok := dialogPeerSuggest(peer, "nat"); ok {
-		t.Fatalf("expected empty-name peer to be skipped, got %+v", suggest)
-	}
-	if suggest, ok := dialogPeerSuggest(peer, ""); ok {
-		t.Fatalf("expected empty-name peer to be skipped for empty query, got %+v", suggest)
-	}
-	if suggest, ok := dialogPeerSuggest(peer, `"`); ok {
-		t.Fatalf("expected empty-name peer to be skipped for quote query, got %+v", suggest)
-	}
-}
-
-func TestDialogPeerSuggestLimitsLongNames(t *testing.T) {
-	longName := "very long channel name with more than forty eight visible cells and suffix"
-	peer := cachedChannel(123, longName)
-
-	suggest, ok := dialogPeerSuggest(peer, "very")
-	if !ok {
-		t.Fatal("expected suggestion")
-	}
-	if runewidth.StringWidth(suggest.Text) > maxPromptPeerSuggestionWidth {
-		t.Fatalf("expected suggestion width <= %d, got %d for %q", maxPromptPeerSuggestionWidth, runewidth.StringWidth(suggest.Text), suggest.Text)
-	}
-	if !strings.HasPrefix(longName, suggest.Text) {
-		t.Fatalf("expected truncated suggestion to remain a prefix, got %q", suggest.Text)
-	}
-}
-
-func TestDialogPeerSuggestSanitizesControlWhitespace(t *testing.T) {
-	peer := cachedChannel(123, "Cherry\nChannel\tName")
-
-	suggest, ok := dialogPeerSuggest(peer, "cher")
-	if !ok {
-		t.Fatal("expected suggestion")
-	}
-	if suggest.Text != "Cherry Channel Name" {
-		t.Fatalf("expected sanitized suggestion, got %q", suggest.Text)
-	}
-}
-
-func TestDialogPeerSuggestDropsSymbolsAndMarks(t *testing.T) {
-	peer := cachedChannel(123, "Kharkiv Office Only \u00a4\ufe0f")
-
-	suggest, ok := dialogPeerSuggest(peer, "khark")
-	if !ok {
-		t.Fatal("expected suggestion")
-	}
-	if suggest.Text != "Kharkiv Office Only" {
-		t.Fatalf("expected safe suggestion, got %q", suggest.Text)
 	}
 }
 

@@ -97,13 +97,18 @@ func (s *promptHistoryStore) Entries() []string {
 }
 
 func (s *promptHistoryStore) Save(entry string, args []string) error {
+	_, err := s.Record(entry, args)
+	return err
+}
+
+func (s *promptHistoryStore) Record(entry string, args []string) (bool, error) {
 	entry = strings.TrimSpace(entry)
 	if entry == "" || entry == s.lastEntry {
-		return nil
+		return false, nil
 	}
 
 	if s.shouldSkip != nil && s.shouldSkip(entry, args) {
-		return nil
+		return false, nil
 	}
 
 	s.entries = append(s.entries, entry)
@@ -111,10 +116,10 @@ func (s *promptHistoryStore) Save(entry string, args []string) error {
 
 	if len(s.entries) > s.maxEntries {
 		s.entries = s.entries[len(s.entries)-s.maxEntries:]
-		return s.rewrite()
+		return true, s.rewrite()
 	}
 
-	return s.append(entry)
+	return true, s.append(entry)
 }
 
 func (s *promptHistoryStore) append(entry string) error {
@@ -203,7 +208,22 @@ func (r *Root) shouldSkipPromptHistoryEntry(entry string, args []string) bool {
 	if hasSensitivePromptArgs(args) {
 		return true
 	}
+	if hasSensitivePromptText(entry) {
+		return true
+	}
 
+	return false
+}
+
+func hasSensitivePromptText(entry string) bool {
+	entry = strings.ToLower(entry)
+	for _, token := range []string{
+		"password", "passwd", "token", "secret", "apikey", "api-key", "api_key", "authorization", "cookie",
+	} {
+		if strings.Contains(entry, "--"+token) {
+			return true
+		}
+	}
 	return false
 }
 

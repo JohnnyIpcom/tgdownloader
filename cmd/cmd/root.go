@@ -3,8 +3,12 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
@@ -36,6 +40,16 @@ type Root struct {
 	zap      *zap.Logger
 	log      logr.Logger
 	level    zap.AtomicLevel
+
+	runtimeMu           sync.Mutex
+	runtimeInitialized  bool
+	runtimeErr          error
+	promptRootFactory   func() *cobra.Command
+	promptGateOnce      sync.Once
+	promptGate          chan struct{}
+	promptProgramRunner func(*promptModel) error
+	promptLogs          *promptLogRouter
+	promptRunID         atomic.Uint64
 }
 
 type progressAdapter struct {
@@ -50,14 +64,26 @@ func (p *progressAdapter) Tracker(msg string) telegram.Tracker {
 
 // NewRoot creates a new root command.
 func NewRoot(version string) (*Root, error) {
+	return &Root{version: version}, nil
+}
+
+func (r *Root) initializeRuntime() error {
+	r.runtimeMu.Lock()
+	defer r.runtimeMu.Unlock()
+	if r.runtimeInitialized || r.runtimeErr != nil {
+		return r.runtimeErr
+	}
+
 	cfg := viper.NewConfig()
 	if err := cfg.Load("tgdownloader", ""); err != nil {
-		return nil, err
+		r.runtimeErr = err
+		return err
 	}
 
 	zapConfig := zap.NewDevelopmentConfig()
 	if err := cfg.Sub("logger").Unmarshal(&zapConfig); err != nil {
-		return nil, err
+		r.runtimeErr = err
+		return err
 	}
 
 	enc := zap.NewDevelopmentEncoderConfig()
@@ -65,30 +91,39 @@ func NewRoot(version string) (*Root, error) {
 	zapConfig.EncoderConfig = enc
 
 	level := zap.NewAtomicLevelAt(zapcore.InfoLevel)
+	requestedLevel, err := zap.ParseAtomicLevel(r.verbosity)
+	if err != nil {
+		r.runtimeErr = err
+		return err
+	}
+	level.SetLevel(requestedLevel.Level())
 	zapConfig.Level = level
 
-	zap, err := zapConfig.Build(zap.AddStacktrace(zapcore.ErrorLevel))
+	promptLogs := newPromptLogRouter()
+	runtimeZap, err := buildPromptLogger(zapConfig, promptLogs)
 	if err != nil {
-		return nil, err
+		r.runtimeErr = err
+		return err
 	}
 
-	client, err := telegram.NewClient(cfg.Sub("telegram"), zap.Named("telegram"))
+	client, err := telegram.NewClient(cfg.Sub("telegram"), runtimeZap.Named("telegram"))
 	if err != nil {
-		return nil, err
+		_ = runtimeZap.Sync()
+		r.runtimeErr = err
+		return err
 	}
 
-	progress := renderer.NewProgress()
-	progress.Style().Visibility.Value = false
+	progress := renderer.NewProgressWithoutValue()
 	client.SetProgress(&progressAdapter{progress})
-	return &Root{
-		version:  version,
-		cfg:      cfg,
-		client:   client,
-		progress: progress,
-		zap:      zap,
-		log:      zapr.NewLogger(zap),
-		level:    level,
-	}, nil
+	r.cfg = cfg
+	r.client = client
+	r.progress = progress
+	r.zap = runtimeZap
+	r.log = zapr.NewLogger(runtimeZap)
+	r.level = level
+	r.promptLogs = promptLogs
+	r.runtimeInitialized = true
+	return nil
 }
 
 // newVersionCmd creates a command to print the version.
@@ -98,7 +133,7 @@ func (r *Root) newVersionCmd() *cobra.Command {
 		Short: "Print version info",
 		Long:  "Print version info",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("Telegram CLI Downloader %s\n", r.version)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Telegram CLI Downloader %s\n", r.version)
 		},
 	}
 
@@ -107,6 +142,29 @@ func (r *Root) newVersionCmd() *cobra.Command {
 
 // newRootCmd returns the root command.
 func (r *Root) newRootCmd() *cobra.Command {
+	return r.newRootCmdWithPrompt(true)
+}
+
+func (r *Root) newPromptRootCmd() *cobra.Command {
+	if r.promptRootFactory != nil {
+		return r.promptRootFactory()
+	}
+	return r.newRootCmdWithPrompt(false)
+}
+
+func (r *Root) promptCommandGate() chan struct{} {
+	r.promptGateOnce.Do(func() {
+		r.promptGate = make(chan struct{}, 1)
+		r.promptGate <- struct{}{}
+	})
+	return r.promptGate
+}
+
+func (r *Root) newRootCmdWithPrompt(includePrompt bool) *cobra.Command {
+	verbosity := r.verbosity
+	if strings.TrimSpace(verbosity) == "" {
+		verbosity = "debug"
+	}
 	rootCmd := &cobra.Command{
 		Use:           "tgdownloader",
 		Short:         "Telegram CLI Downloader",
@@ -119,32 +177,24 @@ func (r *Root) newRootCmd() *cobra.Command {
 	}
 
 	rootCmd.PersistentFlags().StringVarP(
-		&r.verbosity,
+		&verbosity,
 		"verbosity",
 		"v",
-		"debug",
+		verbosity,
 		"verbosity level (debug, info, warn, error, fatal, panic)",
 	)
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		stop := make(chan os.Signal, 1)
-		signal.Notify(stop, os.Interrupt)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		go func() {
-			<-stop
-
-			cancel()
-			signal.Stop(stop)
-		}()
-
-		cmd.SetContext(logr.NewContext(ctx, r.log))
-		level, err := zap.ParseAtomicLevel(r.verbosity)
+		level, err := zap.ParseAtomicLevel(verbosity)
 		if err != nil {
 			return err
 		}
+		r.verbosity = verbosity
 
-		r.level.SetLevel(level.Level())
+		if r.runtimeInitialized {
+			cmd.SetContext(logr.NewContext(cmd.Context(), r.log))
+			r.level.SetLevel(level.Level())
+		}
 		return nil
 	}
 
@@ -159,14 +209,22 @@ func (r *Root) newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(r.newPeerCmd())
 	rootCmd.AddCommand(r.newDialogsCmd())
 	rootCmd.AddCommand(r.newDownloadCmd())
+	rootCmd.AddCommand(r.newExitCmd())
 
-	// Prompt command must be the last one to initialize all other commands first.
-	rootCmd.AddCommand(r.newPromptCmd(rootCmd))
+	if includePrompt {
+		// Prompt command must be the last one to initialize all other commands first.
+		promptCmd := r.newPromptCmd()
+		r.setupRuntimeForCmd(promptCmd)
+		rootCmd.AddCommand(promptCmd)
+	}
 	return rootCmd
 }
 
 func (r *Root) Execute() error {
 	rootCmd := r.newRootCmd()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	rootCmd.SetContext(ctx)
 
 	cc.Init(&cc.Config{
 		RootCmd:  rootCmd,
@@ -182,14 +240,29 @@ func (r *Root) Execute() error {
 
 func (r *Root) Close() error {
 	r.Disconnect()
-	if err := r.client.Close(); err != nil {
-		return err
+	if r.client != nil {
+		if err := r.client.Close(); err != nil {
+			return err
+		}
+	}
+
+	if !r.runtimeInitialized {
+		return nil
+	}
+
+	r.runtimeInitialized = false
+	runtimeZap := r.zap
+	if runtimeZap == nil {
+		return nil
 	}
 
 	//r.progress.Stop()
 
-	renderer.RenderBye()
-	return r.zap.Sync()
+	renderer.RenderBye(os.Stdout)
+	if err := runtimeZap.Sync(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *Root) IsConnected() bool {
@@ -221,7 +294,16 @@ type needCloseKey struct{}
 
 func (r *Root) setupConnectionForCmd(cmds ...*cobra.Command) {
 	for _, cmd := range cmds {
+		if cmd.Annotations == nil {
+			cmd.Annotations = make(map[string]string)
+		}
+		cmd.Annotations["runtime"] = "requires_connection"
 		cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+			if err := r.initializeRuntime(); err != nil {
+				return err
+			}
+			cmd.SetContext(logr.NewContext(cmd.Context(), r.log))
+
 			ctx := context.WithValue(cmd.Context(), needCloseKey{}, !r.IsConnected())
 			cmd.SetContext(ctx)
 
@@ -238,7 +320,23 @@ func (r *Root) setupConnectionForCmd(cmds ...*cobra.Command) {
 	}
 }
 
-func (r *Root) newDownloader(opts ...downloader.Option) (*downloader.Downloader, error) {
+func (r *Root) setupRuntimeForCmd(cmds ...*cobra.Command) {
+	for _, cmd := range cmds {
+		if cmd.Annotations == nil {
+			cmd.Annotations = make(map[string]string)
+		}
+		cmd.Annotations["runtime"] = "runtime_only"
+		cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+			if err := r.initializeRuntime(); err != nil {
+				return err
+			}
+			cmd.SetContext(logr.NewContext(cmd.Context(), r.log))
+			return nil
+		}
+	}
+}
+
+func (r *Root) newDownloader(ctx context.Context, writer io.Writer, opts ...downloader.Option) (*downloader.Downloader, error) {
 	dCfg := r.cfg.Sub("downloader")
 
 	workers := dCfg.GetInt("workers")
@@ -252,7 +350,7 @@ func (r *Root) newDownloader(opts ...downloader.Option) (*downloader.Downloader,
 		opts = append(opts, downloader.WithRetry(retryCount, retryDelay))
 	}
 
-	fs, err := downloader.GetFS(dCfg, zap.NewStdLog(r.zap))
+	fs, err := downloader.GetFS(ctx, dCfg, zap.NewStdLog(r.zap), writer)
 	if err != nil {
 		return nil, err
 	}
@@ -270,10 +368,10 @@ func (r *Root) newDownloader(opts ...downloader.Option) (*downloader.Downloader,
 func Run() {
 	root, err := NewRoot(version.Version())
 	if err != nil {
-		renderer.RenderError(err)
+		renderer.RenderError(os.Stdout, err)
 		return
 	}
 
-	renderer.RenderError(root.Execute())
+	renderer.RenderError(os.Stdout, root.Execute())
 	type contextCleanupKey struct{}
 }

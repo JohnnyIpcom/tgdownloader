@@ -1,6 +1,7 @@
 package renderer
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -16,7 +17,11 @@ func TestRenderDialogsTableShowsDialogFieldsOnly(t *testing.T) {
 		Channel: &tg.Channel{ID: 123, Title: "Cherry Channel"},
 	}}
 
-	got := RenderDialogsTable([]telegram.DialogPeer{peer})
+	var output bytes.Buffer
+	got := RenderDialogsTable(&output, []telegram.DialogPeer{peer})
+	if output.String() != got+"\n" {
+		t.Fatalf("writer output differs from rendered table:\nwriter=%q\nrender=%q", output.String(), got)
+	}
 	for _, want := range []string{"NAME", "ID", "TDLIB PEER ID", "TYPE", "Cherry Channel", "Channel"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected table to contain %q:\n%s", want, got)

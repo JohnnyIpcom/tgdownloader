@@ -2,16 +2,16 @@ package renderer
 
 import (
 	"context"
-	"os"
+	"io"
 
 	"github.com/gotd/td/telegram/peers"
 	"github.com/jedib0t/go-pretty/v6/table"
 )
 
 // RenderPeerTable renders a list of peers.
-func RenderPeerTable(peers []peers.Peer) {
+func RenderPeerTable(writer io.Writer, peers []peers.Peer) {
 	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
+	t.SetOutputMirror(outputWriter(writer))
 	t.SetAutoIndex(true)
 	t.AppendHeader(
 		table.Row{
@@ -43,6 +43,6 @@ func RenderPeerTable(peers []peers.Peer) {
 	t.Render()
 }
 
-func RenderPeerTableAsync(ctx context.Context, u <-chan peers.Peer, total int) error {
-	return renderAsync(ctx, u, "Fetching peers...", total, RenderPeerTable)
+func RenderPeerTableAsync(ctx context.Context, writer io.Writer, u <-chan peers.Peer, total int) error {
+	return renderAsync(ctx, writer, u, "Fetching peers...", total, RenderPeerTable)
 }

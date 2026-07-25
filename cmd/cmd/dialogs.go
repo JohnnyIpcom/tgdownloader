@@ -28,45 +28,36 @@ func (r *Root) newDialogsCmd() *cobra.Command {
 				return err
 			}
 
-			renderer.RenderDialogsTable(peers)
+			renderer.RenderDialogsTable(cmd.OutOrStdout(), peers)
 			return nil
 		},
 	}
 
 	dialogRefreshCmd := &cobra.Command{
-		Use:   "refresh",
-		Short: "Refresh dialogs",
-		Long:  "Refresh dialogs from Telegram",
+		Use:     "refresh",
+		Short:   "Refresh dialogs",
+		Long:    "Refresh dialogs from Telegram",
+		Example: "  tgdownloader dialog refresh",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dialogs, total, err := r.client.DialogService.GetAllDialogs(cmd.Context())
 			if err != nil {
 				return err
 			}
-			var tracker renderer.Tracker
-			if r.progress != nil {
-				tracker = r.progress.UnitsTracker("Refreshing dialogs", total)
-			}
+			progress := renderer.ProgressForContext(cmd.Context(), r.progress)
+			tracker := progress.UnitsTracker("Refreshing dialogs", total)
 			for dialog := range dialogs {
 				if dialog.Err() != nil {
-					if tracker != nil {
-						tracker.Fail()
-					}
+					tracker.Fail()
 					return dialog.Err()
 				}
-				if tracker != nil {
-					tracker.Increment(1)
-				}
+				tracker.Increment(1)
 			}
 			if err := cmd.Context().Err(); err != nil {
-				if tracker != nil {
-					tracker.Fail()
-				}
+				tracker.Fail()
 				return err
 			}
-			if tracker != nil {
-				tracker.Done()
-				r.progress.Wait(cmd.Context())
-			}
+			tracker.Done()
+			progress.Wait(cmd.Context())
 
 			peers, err := r.client.DialogCache.GetDialogPeers(cmd.Context())
 			if err != nil {
@@ -79,6 +70,7 @@ func (r *Root) newDialogsCmd() *cobra.Command {
 
 	dialogCmd.AddCommand(dialogListCmd, dialogRefreshCmd)
 
+	r.setupRuntimeForCmd(dialogListCmd)
 	r.setupConnectionForCmd(dialogRefreshCmd)
 	return dialogCmd
 }
