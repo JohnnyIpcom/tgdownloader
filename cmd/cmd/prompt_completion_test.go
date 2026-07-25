@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
@@ -169,6 +170,43 @@ func TestCompletePromptPreservesEmojiAndFullID(t *testing.T) {
 	candidate := result.Candidates[0]
 	if candidate.Display != "🍒🍒🍒" || !strings.Contains(candidate.Description, fullID) {
 		t.Fatalf("candidate = %+v, want emoji display and full ID %q", candidate, fullID)
+	}
+}
+
+func TestFormatPromptPeerCandidateAlignsColumns(t *testing.T) {
+	const width = 72
+	const userID = "0x0000000000000001"
+	const channelID = "0xFFFFFF0000000002"
+	user := formatPromptCandidate(promptCandidate{
+		Display: "Ann", Description: "User | " + userID,
+	}, width)
+	channel := formatPromptCandidate(promptCandidate{
+		Display: "A much longer channel name", Description: "Channel | " + channelID,
+	}, width)
+	flag := formatPromptCandidate(promptCandidate{
+		Display: "Cyber Dark 🇺🇦", Description: "Channel | " + channelID,
+	}, width)
+	column := func(row, field string) int {
+		return lipgloss.Width(row[:strings.Index(row, field)])
+	}
+
+	if userType, channelType := column(user, "User"), column(channel, "Channel"); userType != channelType {
+		t.Fatalf("type columns differ: user=%d channel=%d\n%s\n%s", userType, channelType, user, channel)
+	}
+	if userIDColumn, channelIDColumn := column(user, userID), column(channel, channelID); userIDColumn != channelIDColumn {
+		t.Fatalf("ID columns differ: user=%d channel=%d\n%s\n%s", userIDColumn, channelIDColumn, user, channel)
+	}
+	if flagType := column(flag, "Channel"); flagType != column(channel, "Channel") {
+		t.Fatalf("flag type column = %d, want %d\n%s\n%s", flagType, column(channel, "Channel"), flag, channel)
+	}
+	if got := lipgloss.Width(user); got != width {
+		t.Fatalf("user row width = %d, want %d: %q", got, width, user)
+	}
+	if got := lipgloss.Width(channel); got != width {
+		t.Fatalf("channel row width = %d, want %d: %q", got, width, channel)
+	}
+	if got := lipgloss.Width(flag); got != width {
+		t.Fatalf("flag row width = %d, want %d: %q", got, width, flag)
 	}
 }
 

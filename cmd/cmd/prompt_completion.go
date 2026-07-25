@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
-	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 	"github.com/spf13/cobra"
 )
@@ -286,14 +286,14 @@ func peerMatchRank(peer telegram.DialogPeer, id, query string) int {
 }
 
 func truncatePromptText(value string, width int) string {
-	if width <= 0 || runewidth.StringWidth(value) <= width {
+	if width <= 0 || lipgloss.Width(value) <= width {
 		return value
 	}
 
 	const suffix = "..."
-	limit := width - runewidth.StringWidth(suffix)
+	limit := width - lipgloss.Width(suffix)
 	if limit <= 0 {
-		return runewidth.Truncate(suffix, width, "")
+		return suffix[:width]
 	}
 
 	var b strings.Builder
@@ -301,7 +301,7 @@ func truncatePromptText(value string, width int) string {
 	graphemes := uniseg.NewGraphemes(value)
 	for graphemes.Next() {
 		cluster := graphemes.Str()
-		clusterWidth := runewidth.StringWidth(cluster)
+		clusterWidth := lipgloss.Width(cluster)
 		if used+clusterWidth > limit {
 			break
 		}
@@ -315,9 +315,9 @@ func formatPromptCandidate(candidate promptCandidate, width int) string {
 	display := sanitizePromptModelText(candidate.Display)
 	description := sanitizePromptModelText(candidate.Description)
 	if peerType, peerID, ok := splitPromptPeerDescription(description); ok {
-		return promptSingleLine(formatPromptPeerCandidate(display, peerType, peerID, width), width)
+		return truncatePromptText(formatPromptPeerCandidate(display, peerType, peerID, width), width)
 	}
-	return promptSingleLine(formatPromptCommandCandidate(display, description, width), width)
+	return truncatePromptText(formatPromptCommandCandidate(display, description, width), width)
 }
 
 func splitPromptPeerDescription(description string) (string, string, bool) {
@@ -335,17 +335,24 @@ func formatPromptPeerCandidate(display, peerType, peerID string, width int) stri
 
 	const fieldSeparator = "  "
 	const typeSeparator = " | "
-	fullDescription := peerType + typeSeparator + peerID
-	if availableNameWidth := width - runewidth.StringWidth(fieldSeparator) - runewidth.StringWidth(fullDescription); availableNameWidth > 0 {
-		return truncatePromptText(display, availableNameWidth) + fieldSeparator + fullDescription
+	const typeWidth = len("Channel")
+	fullDescriptionWidth := typeWidth + lipgloss.Width(typeSeparator) + lipgloss.Width(peerID)
+	if availableNameWidth := width - lipgloss.Width(fieldSeparator) - fullDescriptionWidth; availableNameWidth > 0 {
+		return padPromptText(display, availableNameWidth) + fieldSeparator +
+			padPromptText(peerType, typeWidth) + typeSeparator + peerID
 	}
 
-	if availableNameWidth := width - runewidth.StringWidth(fieldSeparator) - runewidth.StringWidth(peerID); availableNameWidth > 0 {
-		return truncatePromptText(display, availableNameWidth) + fieldSeparator + peerID
+	if availableNameWidth := width - lipgloss.Width(fieldSeparator) - lipgloss.Width(peerID); availableNameWidth > 0 {
+		return padPromptText(display, availableNameWidth) + fieldSeparator + peerID
 	} else if availableNameWidth == 0 {
 		return peerID
 	}
 	return truncatePromptText(peerID, width)
+}
+
+func padPromptText(value string, width int) string {
+	value = truncatePromptText(value, width)
+	return value + strings.Repeat(" ", max(0, width-lipgloss.Width(value)))
 }
 
 func formatPromptCommandCandidate(display, description string, width int) string {
@@ -354,8 +361,8 @@ func formatPromptCommandCandidate(display, description string, width int) string
 	}
 
 	const fieldSeparator = "  "
-	descriptionWidth := width - runewidth.StringWidth(display) - runewidth.StringWidth(fieldSeparator)
-	if descriptionWidth < runewidth.StringWidth("...") {
+	descriptionWidth := width - lipgloss.Width(display) - lipgloss.Width(fieldSeparator)
+	if descriptionWidth < lipgloss.Width("...") {
 		return truncatePromptText(display, width)
 	}
 	return display + fieldSeparator + truncatePromptText(description, descriptionWidth)
