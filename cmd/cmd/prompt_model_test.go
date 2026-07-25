@@ -250,6 +250,49 @@ func TestPromptModelKeepsActiveRowsInEventOrder(t *testing.T) {
 	}
 }
 
+func TestPromptModelRendersBarForMeasuredProgress(t *testing.T) {
+	m := newTestPromptModel(nil)
+	m = updateKey(t, m, tea.WindowSizeMsg{Width: 80, Height: 12})
+	m.applyRendererEvent(renderer.Event{
+		Kind:    renderer.EventProgressUpdate,
+		ID:      "video",
+		Text:    "video.mp4: 50 B/100 B",
+		Current: 50,
+		Total:   100,
+	})
+
+	view := m.render()
+	if !strings.Contains(view, "video.mp4") {
+		t.Fatalf("progress label missing:\n%s", view)
+	}
+	if !strings.Contains(view, "█") || !strings.Contains(view, "░") {
+		t.Fatalf("measured progress has no visible bar:\n%s", view)
+	}
+}
+
+func TestPromptModelAlignsMeasuredProgressBars(t *testing.T) {
+	m := newTestPromptModel(nil)
+	const width = 72
+	short := sanitizePromptModelLine(m.renderProgressRow(renderer.Event{
+		Text: "a.mp4: 50 B/100 B", Current: 50, Total: 100,
+	}, width))
+	long := sanitizePromptModelLine(m.renderProgressRow(renderer.Event{
+		Text: "a much longer video filename.mp4: 50 B/100 B", Current: 50, Total: 100,
+	}, width))
+
+	if shortBar, longBar := strings.IndexRune(short, '█'), strings.IndexRune(long, '█'); shortBar != longBar {
+		t.Fatalf("progress bars start at different columns: short=%d long=%d\n%s\n%s", shortBar, longBar, short, long)
+	}
+}
+
+func TestPromptModelDoesNotCaptureTerminalMouse(t *testing.T) {
+	m := newTestPromptModel(nil)
+
+	if got := m.View().MouseMode; got != tea.MouseModeNone {
+		t.Fatalf("mouse mode = %v, want MouseModeNone so terminal selection works", got)
+	}
+}
+
 func TestPromptModelPromotesDoneRowOnce(t *testing.T) {
 	m := newTestPromptModel(nil)
 	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "work", Text: "starting"})
@@ -462,6 +505,27 @@ func TestPromptModelFollowsOutputUntilUserScrolls(t *testing.T) {
 	m = updateKey(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	if m.viewport.AtBottom() {
 		t.Fatal("mouse wheel did not scroll the transcript")
+	}
+}
+
+func TestPromptModelScrollsOutputWithCtrlArrows(t *testing.T) {
+	m := newTestPromptModel(nil)
+	m = updateKey(t, m, tea.WindowSizeMsg{Width: 60, Height: 12})
+	for i := 1; i <= 12; i++ {
+		m.applyRendererEvent(renderer.Event{Kind: renderer.EventLine, Text: fmt.Sprintf("line-%02d", i)})
+	}
+	bottom := m.viewport.YOffset()
+
+	m = updateKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModCtrl})
+	if got := m.viewport.YOffset(); got != bottom-1 {
+		t.Fatalf("ctrl+up offset = %d, want %d", got, bottom-1)
+	}
+	m = updateKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+	if got := m.viewport.YOffset(); got != bottom {
+		t.Fatalf("ctrl+down offset = %d, want %d", got, bottom)
+	}
+	if hint := sanitizePromptModelText(m.renderHint()); !strings.Contains(hint, "ctrl+up/down scroll") {
+		t.Fatalf("scroll shortcut missing from hint: %q", hint)
 	}
 }
 

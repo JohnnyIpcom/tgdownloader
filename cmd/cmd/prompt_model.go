@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -38,6 +39,7 @@ type promptModel struct {
 	lifetime          context.Context
 	editor            textinput.Model
 	viewport          viewport.Model
+	progressBar       progress.Model
 	complete          promptCompleteFunc
 	submit            promptSubmitFunc
 	events            <-chan renderer.Event
@@ -60,7 +62,7 @@ type promptModel struct {
 	completionQuoteClosed          bool
 	completionStatus               string
 	transcript                     []string
-	activeRows                     map[string]string
+	activeRows                     map[string]renderer.Event
 	activeRowOrder                 []string
 	terminalRows                   map[string]struct{}
 	followBottom                   bool
@@ -117,20 +119,24 @@ func newPromptModel(options promptModelOptions) *promptModel {
 	_ = editor.Focus()
 
 	m := &promptModel{
-		ctx:           options.Context,
-		lifetime:      options.Lifetime,
-		username:      options.Username,
-		version:       options.Version,
-		connected:     options.Connected,
-		editor:        editor,
-		viewport:      viewport.New(),
+		ctx:       options.Context,
+		lifetime:  options.Lifetime,
+		username:  options.Username,
+		version:   options.Version,
+		connected: options.Connected,
+		editor:    editor,
+		viewport:  viewport.New(),
+		progressBar: progress.New(
+			progress.WithColors(lipgloss.Color("6"), lipgloss.Color("2")),
+			progress.WithFillCharacters('█', '░'),
+		),
 		complete:      options.Complete,
 		submit:        options.Submit,
 		events:        options.Events,
 		history:       append([]string(nil), options.History...),
 		historyIndex:  len(options.History),
 		historyLimit:  options.HistoryLimit,
-		activeRows:    make(map[string]string),
+		activeRows:    make(map[string]renderer.Event),
 		terminalRows:  make(map[string]struct{}),
 		pendingDone:   make(map[string]promptCommandDoneMsg),
 		barriers:      make(map[string]struct{}),
@@ -212,12 +218,22 @@ func (m *promptModel) finalizeCommand(runID string) (bool, tea.Cmd) {
 func (m promptModel) View() tea.View {
 	view := tea.NewView(m.render())
 	view.AltScreen = true
-	view.MouseMode = tea.MouseModeCellMotion
 	view.WindowTitle = "tgdownloader"
 	return view
 }
 
 func (m *promptModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.Mod == tea.ModCtrl && (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
+		m.syncViewportContent()
+		if msg.Code == tea.KeyUp {
+			m.viewport.ScrollUp(1)
+		} else {
+			m.viewport.ScrollDown(1)
+		}
+		m.followBottom = m.viewport.AtBottom()
+		return m, nil
+	}
+
 	if msg.Code == tea.KeyPgUp || msg.Code == tea.KeyPgDown {
 		if len(m.completions) > 0 {
 			m.pageCompletions(msg.Code == tea.KeyPgDown)
@@ -500,7 +516,7 @@ func (m *promptModel) applyRendererEvent(event renderer.Event) {
 		if _, exists := m.activeRows[event.ID]; !exists {
 			m.activeRowOrder = append(m.activeRowOrder, event.ID)
 		}
-		m.activeRows[event.ID] = event.Text
+		m.activeRows[event.ID] = event
 		m.syncViewportContent()
 	}
 }
@@ -586,7 +602,7 @@ func (m *promptModel) outputBody(rows int) []string {
 	}
 	contentWidth := m.viewport.Width()
 	for _, id := range m.visibleActiveRowIDs() {
-		body = append(body, promptSingleLine(m.activeRows[id], contentWidth))
+		body = append(body, m.renderProgressRow(m.activeRows[id], contentWidth))
 	}
 	if len(body) > rows {
 		body = body[:rows]
@@ -595,6 +611,22 @@ func (m *promptModel) outputBody(rows int) []string {
 		body = append(body, "")
 	}
 	return body
+}
+
+func (m *promptModel) renderProgressRow(event renderer.Event, width int) string {
+	if event.Total <= 0 || width < 12 {
+		return promptSingleLine(event.Text, width)
+	}
+
+	bar := m.progressBar
+	bar.SetWidth(min(25, max(8, width/3)))
+	percent := float64(event.Current) / float64(event.Total)
+	barView := bar.ViewAs(percent)
+	labelWidth := max(0, width-lipgloss.Width(barView)-1)
+	if labelWidth == 0 {
+		return promptSingleLine(barView, width)
+	}
+	return promptPanelLine(promptSingleLine(event.Text, labelWidth), labelWidth) + " " + barView
 }
 
 func (m *promptModel) suggestionPanelTitle() string {
@@ -607,11 +639,11 @@ func (m *promptModel) suggestionPanelTitle() string {
 }
 
 func (m *promptModel) renderHint() string {
-	hint := "enter run  up/down history  ctrl+c exit"
+	hint := "enter run  up/down history  ctrl+up/down scroll  ctrl+c exit"
 	if m.running {
-		hint = "ctrl+c cancel"
+		hint = "ctrl+c cancel  ctrl+up/down scroll"
 	} else if len(m.completions) > 0 {
-		hint = "up/down select  enter insert  esc close"
+		hint = "up/down select  enter insert  esc close  ctrl+up/down scroll"
 	}
 	return promptHintStyle.Render(promptSingleLine(hint, m.width))
 }
