@@ -79,6 +79,25 @@ func TestSubmitPromptCommandRunsQuotedCobraArgument(t *testing.T) {
 	}
 }
 
+func TestSubmitRuntimeCommandPreservesParsedMultiwordArgument(t *testing.T) {
+	var got []string
+	r := rootWithPromptCommand("capture", func(_ *cobra.Command, args []string) error {
+		got = append([]string(nil), args...)
+		return nil
+	})
+
+	msg := r.submitRuntimeCommand(
+		context.Background(),
+		[]string{"capture", "Фотограф внутреннего танца"},
+		renderer.DiscardEvents(),
+	)()
+	done := msg.(promptCommandDoneMsg)
+
+	if done.Err != nil || !reflect.DeepEqual(got, []string{"Фотограф внутреннего танца"}) {
+		t.Fatalf("done=%+v args=%q", done, got)
+	}
+}
+
 func TestSubmitPromptCommandPreservesWindowsPathBackslashes(t *testing.T) {
 	const path = `C:\Users\evgen\Downloads`
 	var got []string

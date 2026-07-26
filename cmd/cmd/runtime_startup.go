@@ -13,6 +13,45 @@ type promptRuntimeStartupResult struct {
 	Err      error
 }
 
+func (r *Root) startOneShotRuntime(
+	ctx context.Context,
+	sink renderer.EventSink,
+	provider telegram.CodeProvider,
+	mode string,
+) error {
+	if r.oneShotStartupRunner != nil {
+		return r.oneShotStartupRunner(ctx, sink, provider, mode)
+	}
+
+	progress := renderer.NewTUIProgress(sink)
+	output := renderer.NewEventWriter(sink)
+
+	runtimeTracker := progress.UnitsTracker("Runtime setup", 0)
+	if err := r.initializeRuntime(
+		withRuntimeProgress(progress),
+		withRuntimeOutput(output),
+		withRuntimeEventSink(sink),
+		withTelegramClientOptions(telegram.WithCodeProvider(provider)),
+	); err != nil {
+		runtimeTracker.Fail()
+		progress.Wait(ctx)
+		return err
+	}
+
+	if r.promptLogs != nil {
+		r.promptLogs.SetSink(sink)
+	}
+
+	runtimeTracker.Done()
+	progress.Wait(ctx)
+
+	if mode == runtimeModeRequiresConnection {
+		return r.Connect(ctx)
+	}
+
+	return nil
+}
+
 func (r *Root) startPromptRuntime(
 	ctx context.Context,
 	sink renderer.EventSink,

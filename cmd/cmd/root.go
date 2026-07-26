@@ -41,16 +41,19 @@ type Root struct {
 	log      logr.Logger
 	level    zap.AtomicLevel
 
-	runtimeMu           sync.Mutex
-	runtimeInitialized  bool
-	runtimeErr          error
-	promptRootFactory   func() *cobra.Command
-	promptGateOnce      sync.Once
-	promptGate          chan struct{}
-	promptProgramRunner func(*promptModel) error
-	promptLogs          *promptLogRouter
-	promptRunID         atomic.Uint64
-	promptStartupRunner func(context.Context, renderer.EventSink, telegram.CodeProvider) promptRuntimeStartupResult
+	runtimeMu            sync.Mutex
+	runtimeInitialized   bool
+	runtimeErr           error
+	promptRootFactory    func() *cobra.Command
+	promptGateOnce       sync.Once
+	promptGate           chan struct{}
+	promptProgramRunner  func(*promptModel) error
+	promptLogs           *promptLogRouter
+	promptRunID          atomic.Uint64
+	promptStartupRunner  func(context.Context, renderer.EventSink, telegram.CodeProvider) promptRuntimeStartupResult
+	runtimeCommandRunner func(context.Context, runtimeCommandRequest) error
+	oneShotProgramRunner func(*oneShotModel) error
+	oneShotStartupRunner func(context.Context, renderer.EventSink, telegram.CodeProvider, string) error
 }
 
 type runtimeInitOptions struct {
@@ -265,6 +268,7 @@ func (r *Root) newRootCmdWithPrompt(includePrompt bool) *cobra.Command {
 		promptCmd.Annotations["runtime"] = "runtime_only"
 
 		rootCmd.AddCommand(promptCmd)
+		r.routeRuntimeCommands(rootCmd)
 	}
 
 	return rootCmd
@@ -341,35 +345,12 @@ func (r *Root) Disconnect() {
 	}
 }
 
-type needCloseKey struct{}
-
 func (r *Root) setupConnectionForCmd(cmds ...*cobra.Command) {
 	for _, cmd := range cmds {
 		if cmd.Annotations == nil {
 			cmd.Annotations = make(map[string]string)
 		}
-		cmd.Annotations["runtime"] = "requires_connection"
-
-		cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
-			if err := r.initializeRuntime(); err != nil {
-				return err
-			}
-
-			cmd.SetContext(logr.NewContext(cmd.Context(), r.log))
-
-			ctx := context.WithValue(cmd.Context(), needCloseKey{}, !r.IsConnected())
-			cmd.SetContext(ctx)
-
-			return r.Connect(ctx)
-		}
-
-		cmd.PostRunE = func(cmd *cobra.Command, args []string) error {
-			if needDisconnect, ok := cmd.Context().Value(needCloseKey{}).(bool); ok && needDisconnect {
-				return r.Close()
-			}
-
-			return nil
-		}
+		cmd.Annotations["runtime"] = runtimeModeRequiresConnection
 	}
 }
 
@@ -378,16 +359,7 @@ func (r *Root) setupRuntimeForCmd(cmds ...*cobra.Command) {
 		if cmd.Annotations == nil {
 			cmd.Annotations = make(map[string]string)
 		}
-		cmd.Annotations["runtime"] = "runtime_only"
-
-		cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
-			if err := r.initializeRuntime(); err != nil {
-				return err
-			}
-
-			cmd.SetContext(logr.NewContext(cmd.Context(), r.log))
-			return nil
-		}
+		cmd.Annotations["runtime"] = runtimeModeOnly
 	}
 }
 
@@ -427,6 +399,6 @@ func Run() {
 		return
 	}
 
-	renderer.RenderError(os.Stdout, root.Execute())
+	renderUnpresentedError(os.Stdout, root.Execute())
 	type contextCleanupKey struct{}
 }

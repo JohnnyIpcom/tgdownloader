@@ -20,13 +20,28 @@ func (r *Root) submitPromptCommand(
 	events renderer.EventSink,
 	histories ...*promptHistoryStore,
 ) tea.Cmd {
-	if events == nil {
-		events = renderer.DiscardEvents()
-	}
-
 	var history *promptHistoryStore
 	if len(histories) > 0 {
 		history = histories[0]
+	}
+
+	return r.submitCommand(parent, line, nil, false, events, history)
+}
+
+func (r *Root) submitRuntimeCommand(parent context.Context, args []string, events renderer.EventSink) tea.Cmd {
+	return r.submitCommand(parent, strings.Join(args, " "), args, true, events, nil)
+}
+
+func (r *Root) submitCommand(
+	parent context.Context,
+	line string,
+	providedArgs []string,
+	hasProvidedArgs bool,
+	events renderer.EventSink,
+	history *promptHistoryStore,
+) tea.Cmd {
+	if events == nil {
+		events = renderer.DiscardEvents()
 	}
 
 	return func() (msg tea.Msg) {
@@ -63,10 +78,14 @@ func (r *Root) submitPromptCommand(
 		}
 		defer r.releasePromptCommand()
 
-		args, err := splitPromptLine(line)
-		if err != nil {
-			done.Err = err
-			return
+		args := append([]string(nil), providedArgs...)
+		if !hasProvidedArgs {
+			var err error
+			args, err = splitPromptLine(line)
+			if err != nil {
+				done.Err = err
+				return
+			}
 		}
 		done.Args = append([]string(nil), args...)
 
