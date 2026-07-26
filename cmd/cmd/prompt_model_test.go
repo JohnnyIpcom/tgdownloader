@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
@@ -239,8 +240,8 @@ func TestPromptModelRendersStableLayoutAtCommonWidths(t *testing.T) {
 
 func TestPromptModelKeepsActiveRowsInEventOrder(t *testing.T) {
 	m := newTestPromptModel(nil)
-	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "first", Text: "first row"})
-	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "second", Text: "second row"})
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "first", Label: "first row"})
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "second", Label: "second row"})
 
 	for i := 0; i < 100; i++ {
 		view := m.render()
@@ -256,17 +257,49 @@ func TestPromptModelRendersBarForMeasuredProgress(t *testing.T) {
 	m.applyRendererEvent(renderer.Event{
 		Kind:    renderer.EventProgressUpdate,
 		ID:      "video",
-		Text:    "video.mp4: 50 B/100 B",
+		Label:   "video.mp4",
 		Current: 50,
 		Total:   100,
+		Unit:    renderer.ProgressUnitBytes,
 	})
 
 	view := m.render()
 	if !strings.Contains(view, "video.mp4") {
 		t.Fatalf("progress label missing:\n%s", view)
 	}
-	if !strings.Contains(view, "█") || !strings.Contains(view, "░") {
-		t.Fatalf("measured progress has no visible bar:\n%s", view)
+	if !strings.Contains(view, "#") || !strings.Contains(view, ".") {
+		t.Fatalf("measured progress has no ASCII bar:\n%s", view)
+	}
+	if strings.ContainsAny(view, "█░") {
+		t.Fatalf("measured progress contains legacy bar characters:\n%s", view)
+	}
+}
+
+func TestPromptModelAnimatesUnknownProgressWhileActive(t *testing.T) {
+	m := newTestPromptModel(nil)
+	m.activeRows["connect"] = renderer.Event{Kind: renderer.EventProgressUpdate, ID: "connect", Label: "Connecting"}
+
+	updated, cmd := m.Update(promptProgressTickMsg{})
+	m = updated.(*promptModel)
+	if m.progressFrame != 1 {
+		t.Fatalf("progress frame = %d, want 1", m.progressFrame)
+	}
+	if cmd == nil {
+		t.Fatal("unknown progress did not schedule next animation tick")
+	}
+}
+
+func TestPromptModelStopsProgressAnimationWithoutUnknownRows(t *testing.T) {
+	m := newTestPromptModel(nil)
+	m.progressTicking = true
+
+	updated, cmd := m.Update(promptProgressTickMsg{})
+	m = updated.(*promptModel)
+	if m.progressTicking {
+		t.Fatal("progress animation remained active without unknown rows")
+	}
+	if cmd != nil {
+		t.Fatal("progress animation scheduled another tick without unknown rows")
 	}
 }
 
@@ -274,13 +307,15 @@ func TestPromptModelAlignsMeasuredProgressBars(t *testing.T) {
 	m := newTestPromptModel(nil)
 	const width = 72
 	short := sanitizePromptModelLine(m.renderProgressRow(renderer.Event{
-		Text: "a.mp4: 50 B/100 B", Current: 50, Total: 100,
+		Label: "a.mp4", Current: 50, Total: 100, Unit: renderer.ProgressUnitBytes,
 	}, width))
 	long := sanitizePromptModelLine(m.renderProgressRow(renderer.Event{
-		Text: "a much longer video filename.mp4: 50 B/100 B", Current: 50, Total: 100,
+		Label: "a much longer video filename.mp4", Current: 50, Total: 100, Unit: renderer.ProgressUnitBytes,
 	}, width))
 
-	if shortBar, longBar := strings.IndexRune(short, '█'), strings.IndexRune(long, '█'); shortBar != longBar {
+	shortBar := lipgloss.Width(short[:strings.Index(short, "[")])
+	longBar := lipgloss.Width(long[:strings.Index(long, "[")])
+	if shortBar != longBar {
 		t.Fatalf("progress bars start at different columns: short=%d long=%d\n%s\n%s", shortBar, longBar, short, long)
 	}
 }
@@ -295,30 +330,30 @@ func TestPromptModelDoesNotCaptureTerminalMouse(t *testing.T) {
 
 func TestPromptModelPromotesDoneRowOnce(t *testing.T) {
 	m := newTestPromptModel(nil)
-	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "work", Text: "starting"})
-	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressUpdate, ID: "work", Text: "halfway"})
-	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressDone, ID: "work", Text: "complete"})
-	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressDone, ID: "work", Text: "duplicate"})
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "work", Label: "work", Total: 1})
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressUpdate, ID: "work", Label: "work", Current: 1, Total: 1})
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressDone, ID: "work", Label: "work", Current: 1, Total: 1, Elapsed: time.Millisecond})
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressDone, ID: "work", Label: "duplicate", Current: 1, Total: 1})
 
 	if len(m.activeRows) != 0 || len(m.activeRowOrder) != 0 {
 		t.Fatalf("active rows = %v order = %v, want empty", m.activeRows, m.activeRowOrder)
 	}
-	if got := m.transcript; !reflect.DeepEqual(got, []string{"complete"}) {
-		t.Fatalf("transcript = %q, want one promoted row", got)
+	if len(m.transcript) != 1 || !strings.Contains(sanitizePromptModelLine(m.transcript[0]), "done! [1ms]") {
+		t.Fatalf("transcript = %q, want one formatted done row", m.transcript)
 	}
 }
 
 func TestPromptModelPromotesFailedRowOnce(t *testing.T) {
 	m := newTestPromptModel(nil)
-	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "work", Text: "starting"})
-	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressFail, ID: "work", Text: "failed"})
-	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressUpdate, ID: "work", Text: "late"})
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "work", Label: "work", Total: 1})
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressFail, ID: "work", Label: "work", Total: 1, Elapsed: 2 * time.Millisecond})
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressUpdate, ID: "work", Label: "late", Total: 1})
 
 	if len(m.activeRows) != 0 {
 		t.Fatalf("active rows = %v, want empty", m.activeRows)
 	}
-	if got := m.transcript; !reflect.DeepEqual(got, []string{"failed"}) {
-		t.Fatalf("transcript = %q, want one promoted failure", got)
+	if len(m.transcript) != 1 || !strings.Contains(sanitizePromptModelLine(m.transcript[0]), "fail! [2ms]") {
+		t.Fatalf("transcript = %q, want one formatted failure row", m.transcript)
 	}
 }
 
@@ -539,9 +574,9 @@ func TestPromptModelSanitizesAllModelBoundText(t *testing.T) {
 		Text: "dialog Safe\x1b[31m Red\x1b[0m\x1b]0;owned\a\u202e\x00 end",
 	})
 	m.applyRendererEvent(renderer.Event{
-		Kind: renderer.EventProgressCreate,
-		ID:   "file",
-		Text: "file Safe\u009b31m Red\u009b0m\u009d0;owned\a\u2066 end",
+		Kind:  renderer.EventProgressCreate,
+		ID:    "file",
+		Label: "file Safe\u009b31m Red\u009b0m\u009d0;owned\a\u2066 end",
 	})
 	m.finishCommand(promptCommandDoneMsg{Err: errors.New("failure\x1b[2J\x1b]52;c;owned\a\u202e end")})
 

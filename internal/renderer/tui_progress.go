@@ -124,13 +124,14 @@ func (p *tuiProgress) BytesTracker(writer io.Writer, message string, total int64
 
 func (p *tuiProgress) newTracker(message string, total int64, bytes, counted bool) *tuiTracker {
 	tracker := &tuiTracker{
-		progress: p,
-		sink:     p.sink,
-		id:       fmt.Sprintf("progress-%d", tuiTrackerSequence.Add(1)),
-		message:  message,
-		total:    total,
-		bytes:    bytes,
-		counted:  counted,
+		progress:  p,
+		sink:      p.sink,
+		id:        fmt.Sprintf("progress-%d", tuiTrackerSequence.Add(1)),
+		message:   message,
+		total:     total,
+		bytes:     bytes,
+		counted:   counted,
+		startedAt: time.Now(),
 	}
 	if counted {
 		p.mu.Lock()
@@ -162,11 +163,12 @@ type tuiTracker struct {
 	bytes    bool
 	counted  bool
 
-	mu       sync.Mutex
-	message  string
-	current  int64
-	total    int64
-	terminal bool
+	mu        sync.Mutex
+	message   string
+	current   int64
+	total     int64
+	terminal  bool
+	startedAt time.Time
 }
 
 var _ Tracker = (*tuiTracker)(nil)
@@ -220,53 +222,19 @@ func (t *tuiTracker) emit(kind EventKind) {
 }
 
 func (t *tuiTracker) emitLocked(kind EventKind) {
+	unit := ProgressUnitCount
+	if t.bytes {
+		unit = ProgressUnitBytes
+	}
 	t.sink.Emit(Event{
 		Kind:    kind,
 		ID:      t.id,
-		Text:    t.textLocked(kind),
+		Label:   t.message,
 		Current: t.current,
 		Total:   t.total,
+		Unit:    unit,
+		Elapsed: time.Since(t.startedAt),
 	})
-}
-
-func (t *tuiTracker) textLocked(kind EventKind) string {
-	status := ""
-	switch kind {
-	case EventProgressDone:
-		status = "done"
-	case EventProgressFail:
-		status = "failed"
-	}
-
-	value := fmt.Sprintf("%d", t.current)
-	total := fmt.Sprintf("%d", t.total)
-	if t.bytes {
-		value = formatBytes(t.current)
-		total = formatBytes(t.total)
-	}
-	var text string
-	if t.total > 0 {
-		text = fmt.Sprintf("%s: %s/%s", t.message, value, total)
-	} else {
-		text = fmt.Sprintf("%s: %s", t.message, value)
-	}
-	if status != "" {
-		text += " (" + status + ")"
-	}
-	return text
-}
-
-func formatBytes(value int64) string {
-	const unit = int64(1024)
-	if value < unit {
-		return fmt.Sprintf("%d B", value)
-	}
-	div, exp := unit, 0
-	for n := value / unit; n >= unit && exp < 5; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(value)/float64(div), "KMGTPE"[exp])
 }
 
 type tuiBytesTracker struct {

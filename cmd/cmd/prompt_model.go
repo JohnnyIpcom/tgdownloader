@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
-	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -39,7 +39,8 @@ type promptModel struct {
 	lifetime          context.Context
 	editor            textinput.Model
 	viewport          viewport.Model
-	progressBar       progress.Model
+	progressFrame     int
+	progressTicking   bool
 	complete          promptCompleteFunc
 	submit            promptSubmitFunc
 	events            <-chan renderer.Event
@@ -85,6 +86,8 @@ type promptRendererEventsClosedMsg struct{}
 
 type promptContextDoneMsg struct{}
 
+type promptProgressTickMsg struct{}
+
 var (
 	promptHeaderStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	promptSelectedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6"))
@@ -119,17 +122,13 @@ func newPromptModel(options promptModelOptions) *promptModel {
 	_ = editor.Focus()
 
 	m := &promptModel{
-		ctx:       options.Context,
-		lifetime:  options.Lifetime,
-		username:  options.Username,
-		version:   options.Version,
-		connected: options.Connected,
-		editor:    editor,
-		viewport:  viewport.New(),
-		progressBar: progress.New(
-			progress.WithColors(lipgloss.Color("6"), lipgloss.Color("2")),
-			progress.WithFillCharacters('█', '░'),
-		),
+		ctx:           options.Context,
+		lifetime:      options.Lifetime,
+		username:      options.Username,
+		version:       options.Version,
+		connected:     options.Connected,
+		editor:        editor,
+		viewport:      viewport.New(),
 		complete:      options.Complete,
 		submit:        options.Submit,
 		events:        options.Events,
@@ -167,7 +166,12 @@ func (m *promptModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForRendererEvent(m.lifetime, m.events)
 		}
 		m.applyRendererEvent(msg.event)
-		return m, waitForRendererEvent(m.lifetime, m.events)
+		commands := []tea.Cmd{waitForRendererEvent(m.lifetime, m.events)}
+		if !m.progressTicking && m.hasUnknownProgress() {
+			m.progressTicking = true
+			commands = append(commands, tickPromptProgress())
+		}
+		return m, tea.Batch(commands...)
 	case promptRendererEventsClosedMsg:
 		m.events = nil
 		return m, nil
@@ -178,6 +182,13 @@ func (m *promptModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tea.Quit
+	case promptProgressTickMsg:
+		m.progressFrame++
+		if m.hasUnknownProgress() {
+			return m, tickPromptProgress()
+		}
+		m.progressTicking = false
+		return m, nil
 	case promptCommandDoneMsg:
 		m.pendingDone[msg.RunID] = msg
 		_, cmd := m.finalizeCommand(msg.RunID)
@@ -492,6 +503,10 @@ func (m *promptModel) resize(width, height int) {
 
 func (m *promptModel) applyRendererEvent(event renderer.Event) {
 	event.Text = sanitizePromptModelLine(event.Text)
+	event.Label = sanitizePromptModelLine(event.Label)
+	if event.Label == "" && event.Kind != renderer.EventLine {
+		event.Label = event.Text
+	}
 	if event.Kind == renderer.EventLine || event.ID == "" {
 		if event.Text != "" {
 			m.transcript = append(m.transcript, event.Text)
@@ -508,8 +523,8 @@ func (m *promptModel) applyRendererEvent(event renderer.Event) {
 		delete(m.activeRows, event.ID)
 		m.removeActiveRowID(event.ID)
 		m.terminalRows[event.ID] = struct{}{}
-		if event.Text != "" {
-			m.transcript = append(m.transcript, event.Text)
+		if event.Label != "" {
+			m.transcript = append(m.transcript, renderer.FormatProgress(event, m.viewport.Width(), m.progressFrame))
 		}
 		m.syncViewportContent()
 	case renderer.EventProgressCreate, renderer.EventProgressUpdate, "":
@@ -614,19 +629,22 @@ func (m *promptModel) outputBody(rows int) []string {
 }
 
 func (m *promptModel) renderProgressRow(event renderer.Event, width int) string {
-	if event.Total <= 0 || width < 12 {
-		return promptSingleLine(event.Text, width)
-	}
+	return renderer.FormatProgress(event, width, m.progressFrame)
+}
 
-	bar := m.progressBar
-	bar.SetWidth(min(25, max(8, width/3)))
-	percent := float64(event.Current) / float64(event.Total)
-	barView := bar.ViewAs(percent)
-	labelWidth := max(0, width-lipgloss.Width(barView)-1)
-	if labelWidth == 0 {
-		return promptSingleLine(barView, width)
+func (m *promptModel) hasUnknownProgress() bool {
+	for _, event := range m.activeRows {
+		if event.Total <= 0 {
+			return true
+		}
 	}
-	return promptPanelLine(promptSingleLine(event.Text, labelWidth), labelWidth) + " " + barView
+	return false
+}
+
+func tickPromptProgress() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		return promptProgressTickMsg{}
+	})
 }
 
 func (m *promptModel) suggestionPanelTitle() string {

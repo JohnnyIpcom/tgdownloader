@@ -5,13 +5,24 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
+)
+
+type ProgressUnit uint8
+
+const (
+	ProgressUnitCount ProgressUnit = iota
+	ProgressUnitBytes
 )
 
 // Event is the transport payload used by interactive renderers.
 type Event struct {
 	Kind           EventKind
 	ID, Text       string
+	Label          string
 	Current, Total int64
+	Unit           ProgressUnit
+	Elapsed        time.Duration
 }
 
 type EventKind string

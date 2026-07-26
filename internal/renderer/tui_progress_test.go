@@ -25,6 +25,7 @@ func TestTUITrackerUpdatesOneStableID(t *testing.T) {
 	sink := &recordingSink{}
 	progress := NewTUIProgress(sink)
 	tracker := progress.UnitsTracker("Scanning history", 100)
+	tracker.(*tuiTracker).startedAt = time.Now().Add(-time.Second)
 	tracker.Increment(40)
 	tracker.UpdateMessage("Scanning messages")
 	tracker.Done()
@@ -46,6 +47,20 @@ func TestTUITrackerUpdatesOneStableID(t *testing.T) {
 	}
 	if events[1].Current != 40 || events[1].Total != 100 {
 		t.Fatalf("increment event = %+v", events[1])
+	}
+	for _, event := range events {
+		if event.Text != "" {
+			t.Fatalf("progress event text = %q, want raw structured fields only", event.Text)
+		}
+		if event.Label != "Scanning history" && event.Label != "Scanning messages" {
+			t.Fatalf("event label = %q", event.Label)
+		}
+		if event.Unit != ProgressUnitCount {
+			t.Fatalf("event unit = %v, want count", event.Unit)
+		}
+	}
+	if events[len(events)-1].Elapsed < time.Second {
+		t.Fatalf("terminal elapsed = %v, want at least one second", events[len(events)-1].Elapsed)
 	}
 }
 
@@ -142,7 +157,12 @@ func TestTUIBytesTrackerWritesAndTracksBytes(t *testing.T) {
 	tracker.Done()
 
 	events := sink.Events()
-	if got := events[len(events)-1]; got.Current != 4 || got.Total != 4 {
+	if got := events[len(events)-1]; got.Current != 4 || got.Total != 4 || got.Label != "file.bin" {
 		t.Fatalf("terminal event = %+v", got)
+	}
+	for _, event := range events {
+		if event.Unit != ProgressUnitBytes {
+			t.Fatalf("event unit = %v, want bytes", event.Unit)
+		}
 	}
 }
