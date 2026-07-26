@@ -23,6 +23,7 @@ type Event struct {
 	Current, Total int64
 	Unit           ProgressUnit
 	Elapsed        time.Duration
+	Table          *TableData
 }
 
 type EventKind string
@@ -33,6 +34,7 @@ const (
 	EventProgressUpdate EventKind = "progress_update"
 	EventProgressDone   EventKind = "progress_done"
 	EventProgressFail   EventKind = "progress_fail"
+	EventTable          EventKind = "table"
 	EventBarrier        EventKind = "barrier"
 )
 
@@ -159,11 +161,23 @@ func (w *EventWriter) Write(p []byte) (int, error) {
 func (w *EventWriter) Flush() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.flushLocked()
+}
 
+func (w *EventWriter) flushLocked() {
 	if w.pending == "" {
 		return
 	}
 	line := strings.TrimSuffix(w.pending, "\r")
 	w.pending = ""
 	w.sink.Emit(Event{Kind: EventLine, Text: line})
+}
+
+// EmitTable preserves table structure for width-aware interactive renderers.
+func (w *EventWriter) EmitTable(data TableData) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.flushLocked()
+	clone := CloneTableData(data)
+	w.sink.Emit(Event{Kind: EventTable, Table: &clone})
 }

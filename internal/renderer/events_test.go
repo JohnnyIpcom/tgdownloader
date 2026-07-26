@@ -93,6 +93,39 @@ func TestChannelEventSinkDeliversEvent(t *testing.T) {
 	}
 }
 
+func TestEventCarriesStructuredTable(t *testing.T) {
+	table := &TableData{
+		Columns: []TableColumn{{Header: "Name", Required: true}},
+		Rows:    [][]string{{"dialog"}},
+	}
+	event := Event{Kind: EventTable, Table: table}
+
+	if event.Table != table || event.Kind != EventTable {
+		t.Fatalf("event = %+v, want structured table", event)
+	}
+}
+
+func TestEventWriterEmitsIndependentStructuredTable(t *testing.T) {
+	sink := &recordingSink{}
+	writer := NewEventWriter(sink)
+	table := TableData{
+		Columns: []TableColumn{{Header: "Name", Required: true}},
+		Rows:    [][]string{{"dialog"}},
+	}
+
+	writer.EmitTable(table)
+	table.Columns[0].Header = "Changed"
+	table.Rows[0][0] = "changed"
+
+	events := sink.Events()
+	if len(events) != 1 || events[0].Kind != EventTable || events[0].Table == nil {
+		t.Fatalf("events = %+v, want one table event", events)
+	}
+	if got := events[0].Table; got.Columns[0].Header != "Name" || got.Rows[0][0] != "dialog" {
+		t.Fatalf("event table changed with producer slices: %+v", got)
+	}
+}
+
 func eventTexts(events []Event) []string {
 	texts := make([]string, len(events))
 	for i, event := range events {

@@ -330,6 +330,7 @@ func TestPromptModelDoesNotCaptureTerminalMouse(t *testing.T) {
 
 func TestPromptModelPromotesDoneRowOnce(t *testing.T) {
 	m := newTestPromptModel(nil)
+	m.resize(120, 24)
 	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "work", Label: "work", Total: 1})
 	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressUpdate, ID: "work", Label: "work", Current: 1, Total: 1})
 	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressDone, ID: "work", Label: "work", Current: 1, Total: 1, Elapsed: time.Millisecond})
@@ -338,13 +339,14 @@ func TestPromptModelPromotesDoneRowOnce(t *testing.T) {
 	if len(m.activeRows) != 0 || len(m.activeRowOrder) != 0 {
 		t.Fatalf("active rows = %v order = %v, want empty", m.activeRows, m.activeRowOrder)
 	}
-	if len(m.transcript) != 1 || !strings.Contains(sanitizePromptModelLine(m.transcript[0]), "done! [1ms]") {
+	if len(m.transcript) != 1 || !strings.Contains(sanitizePromptModelLine(m.transcript[0]), "done! [1 in 1ms]") {
 		t.Fatalf("transcript = %q, want one formatted done row", m.transcript)
 	}
 }
 
 func TestPromptModelPromotesFailedRowOnce(t *testing.T) {
 	m := newTestPromptModel(nil)
+	m.resize(120, 24)
 	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressCreate, ID: "work", Label: "work", Total: 1})
 	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressFail, ID: "work", Label: "work", Total: 1, Elapsed: 2 * time.Millisecond})
 	m.applyRendererEvent(renderer.Event{Kind: renderer.EventProgressUpdate, ID: "work", Label: "late", Total: 1})
@@ -352,8 +354,57 @@ func TestPromptModelPromotesFailedRowOnce(t *testing.T) {
 	if len(m.activeRows) != 0 {
 		t.Fatalf("active rows = %v, want empty", m.activeRows)
 	}
-	if len(m.transcript) != 1 || !strings.Contains(sanitizePromptModelLine(m.transcript[0]), "fail! [2ms]") {
+	if len(m.transcript) != 1 || !strings.Contains(sanitizePromptModelLine(m.transcript[0]), "fail! [0 in 2ms]") {
 		t.Fatalf("transcript = %q, want one formatted failure row", m.transcript)
+	}
+}
+
+func TestPromptModelReflowsStructuredTableAfterResize(t *testing.T) {
+	m := newTestPromptModel(nil)
+	table := renderer.TableData{
+		Columns: []renderer.TableColumn{
+			{Header: "Name", MinWidth: 10, Priority: 100, Required: true},
+			{Header: "ID", MinWidth: 3, Priority: 10},
+			{Header: "TDLib Peer ID", MinWidth: 18, Priority: 100, Required: true},
+			{Header: "Type", MinWidth: 7, Priority: 20},
+		},
+		Rows: [][]string{{"Фотограф внутреннего танца", "123", "0xFFFFFFFFFFFFFF85", "Channel"}},
+	}
+	m.applyRendererEvent(renderer.Event{Kind: renderer.EventTable, Table: &table})
+
+	m.resize(120, 20)
+	wide := sanitizePromptModelText(m.viewport.View())
+	if !strings.Contains(wide, "TYPE") {
+		t.Fatalf("wide table lost optional type column:\n%s", wide)
+	}
+	m.resize(36, 20)
+	narrow := sanitizePromptModelText(m.viewport.View())
+	if strings.Contains(narrow, "TYPE") || !strings.Contains(narrow, "0xFFFFFFFFFFFFFF85") {
+		t.Fatalf("narrow table did not hide optional columns or lost required ID:\n%s", narrow)
+	}
+	m.resize(120, 20)
+	widened := sanitizePromptModelText(m.viewport.View())
+	if !strings.Contains(widened, "TYPE") || !strings.Contains(widened, "Фотограф внутреннего танца") {
+		t.Fatalf("widened table did not restore structured content:\n%s", widened)
+	}
+}
+
+func TestPromptModelReflowsTerminalProgressAfterResize(t *testing.T) {
+	m := newTestPromptModel(nil)
+	label := "a media filename restored after widening.mp4"
+	m.resize(48, 20)
+	m.applyRendererEvent(renderer.Event{
+		Kind: renderer.EventProgressDone, ID: "file", Label: label,
+		Current: 100, Total: 100, Unit: renderer.ProgressUnitBytes, Elapsed: time.Second,
+	})
+	if narrow := sanitizePromptModelText(m.viewport.View()); strings.Contains(narrow, label) {
+		t.Fatalf("narrow progress unexpectedly retained full label:\n%s", narrow)
+	}
+
+	m.resize(160, 20)
+	wide := sanitizePromptModelText(m.viewport.View())
+	if !strings.Contains(wide, label) {
+		t.Fatalf("wide progress did not restore full label:\n%s", wide)
 	}
 }
 

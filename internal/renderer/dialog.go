@@ -1,39 +1,37 @@
 package renderer
 
 import (
+	"fmt"
 	"io"
+	"sort"
+	"strings"
 
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 )
 
 func RenderDialogsTable(writer io.Writer, peers []telegram.DialogPeer) string {
-	t := table.NewWriter()
-	t.SetOutputMirror(outputWriter(writer))
-	t.SetAutoIndex(true)
-	t.AppendHeader(table.Row{
-		"Name",
-		"ID",
-		"TDLib Peer ID",
-		"Type",
-	})
-	t.SetColumnConfigs([]table.ColumnConfig{
-		getVisibleNameConfig("Name"),
-	})
-	t.SortBy([]table.SortBy{
-		{Name: "Name", Mode: table.Asc},
+	peers = append([]telegram.DialogPeer(nil), peers...)
+	sort.SliceStable(peers, func(i, j int) bool {
+		return strings.ToLower(peers[i].Name()) < strings.ToLower(peers[j].Name())
 	})
 
-	for _, peer := range peers {
-		t.AppendRow(table.Row{
-			ReplaceAllEmojis(peer.Name()),
-			peer.Key.ID,
+	data := TableData{Columns: []TableColumn{
+		{Header: "#", MinWidth: 2, Priority: 1, Align: TableAlignRight},
+		{Header: "Name", MinWidth: 12, Priority: 100, Required: true},
+		{Header: "ID", MinWidth: 3, Priority: 10, Align: TableAlignRight},
+		{Header: "TDLib Peer ID", MinWidth: 18, Priority: 100, Required: true},
+		{Header: "Type", MinWidth: 4, Priority: 20},
+	}}
+	for i, peer := range peers {
+		data.Rows = append(data.Rows, []string{
+			fmt.Sprintf("%d", i+1),
+			peer.Name(),
+			fmt.Sprintf("%d", peer.Key.ID),
 			RenderTDLibPeerID(peer.TDLibPeerID()),
 			dialogPeerTypename(peer),
 		})
 	}
-
-	return t.Render()
+	return renderTableData(writer, data)
 }
 
 func dialogPeerTypename(peer telegram.DialogPeer) string {

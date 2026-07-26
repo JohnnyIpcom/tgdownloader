@@ -2,13 +2,15 @@ package renderer
 
 import (
 	"context"
+	"fmt"
 	"io"
-	"strings"
+	"os"
+	"sync"
 	"time"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
-
-	"github.com/johnnyipcom/tgdownloader/pkg/ps"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 )
 
 type Progress interface {
@@ -21,27 +23,31 @@ type Progress interface {
 	BytesTracker(writer io.Writer, message string, total int64) BytesTracker
 }
 
-type progressImpl struct {
-	progress.Writer
+type Tracker interface {
+	Increment(n int64)
+	UpdateMessage(message string)
+	Fail()
+	Done()
 }
 
-var _ Progress = (*progressImpl)(nil)
+type BytesTracker interface {
+	io.Writer
+	Tracker
+}
 
 func NewProgress() Progress {
-	return newProgress(true)
+	return NewTUIProgress(newTerminalProgressSink(os.Stdout))
 }
 
-// NewProgressWithoutValue preserves the compact root-level progress style.
 func NewProgressWithoutValue() Progress {
-	return newProgress(false)
+	return NewProgress()
 }
 
-// NewProgressForContext uses TUI events when the command context carries a sink.
+// NewProgressForContext uses structured events when the command context carries a sink.
 func NewProgressForContext(ctx context.Context) Progress {
 	return ProgressForContext(ctx, nil)
 }
 
-// ProgressForContext preserves fallback progress for ordinary commands.
 func ProgressForContext(ctx context.Context, fallback Progress) Progress {
 	if sink, ok := eventSinkFromContext(ctx); ok {
 		return NewTUIProgress(sink)
@@ -52,169 +58,103 @@ func ProgressForContext(ctx context.Context, fallback Progress) Progress {
 	return NewProgress()
 }
 
-func newProgress(showValue bool) Progress {
-	pw := progress.NewWriter()
-	pw.SetAutoStop(false)
-	pw.SetMessageLength(50)
-	pw.SetTrackerLength(25)
-	pw.SetTrackerPosition(progress.PositionRight)
-	pw.SetSortBy(progress.SortByNone)
-	pw.SetStyle(progress.StyleDefault)
-	pw.SetUpdateFrequency(time.Millisecond * 100)
-	pw.SetNumTrackersExpected(5)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.PercentFormat = "%4.1f%%"
-	pw.Style().Visibility.ETA = true
-	pw.Style().Visibility.ETAOverall = true
-	pw.Style().Visibility.Value = showValue
-
-	go pw.Render()
-	return &progressImpl{Writer: pw}
+type terminalProgressSink struct {
+	mu       sync.Mutex
+	writer   io.Writer
+	terminal bool
+	fd       uintptr
+	active   *Event
+	activeAt time.Time
+	baseTime time.Duration
+	frame    int
 }
 
-func (p *progressImpl) EnablePS(ctx context.Context) {
-	go func() {
-		f := func() { p.SetPinnedMessages(strings.Join(ps.Humanize(ctx), " ")) }
-		f()
+func newTerminalProgressSink(writer io.Writer) EventSink {
+	sink := &terminalProgressSink{writer: outputWriter(writer)}
+	if file, ok := writer.(interface{ Fd() uintptr }); ok {
+		sink.fd = file.Fd()
+		sink.terminal = term.IsTerminal(sink.fd)
+	}
+	return sink
+}
 
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
+func (s *terminalProgressSink) Emit(event Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-		for {
-			select {
-			case <-ctx.Done():
-				p.SetPinnedMessages()
+	width := s.width()
+	switch event.Kind {
+	case EventProgressCreate, EventProgressUpdate, "":
+		if !s.terminal {
+			return
+		}
+		if s.active == nil {
+			if event.Total > 0 {
 				return
-
-			case <-ticker.C:
-				f()
 			}
-		}
-	}()
-}
-
-func (p *progressImpl) Stop() {
-	for i := 0; i < 10; i++ {
-		if stopProgressWriter(p.Writer) {
+		} else if s.active.ID != event.ID {
 			return
 		}
-
-		time.Sleep(time.Millisecond)
-	}
-}
-
-func stopProgressWriter(w progress.Writer) (ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
+		startAnimation := s.active == nil
+		active := event
+		s.active = &active
+		s.activeAt = time.Now()
+		s.baseTime = event.Elapsed
+		s.writeLive(event, width, s.frame)
+		if startAnimation {
+			go s.animate(event.ID)
 		}
-	}()
-
-	w.Stop()
-	return true
-}
-
-func (p *progressImpl) Wait(ctx context.Context) {
-	for p.IsRenderInProgress() {
-		if p.LengthActive() == 0 {
+	case EventProgressDone, EventProgressFail:
+		row := FormatProgress(event, width, 0)
+		if !s.terminal {
+			_, _ = fmt.Fprintln(s.writer, ansi.Strip(row))
 			return
 		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func (p *progressImpl) WaitAndStop(ctx context.Context) {
-	for p.IsRenderInProgress() {
-		if p.LengthActive() == 0 {
-			p.Stop()
+		if s.active != nil {
+			_, _ = fmt.Fprint(s.writer, "\r\x1b[K")
+		}
+		_, _ = fmt.Fprintln(s.writer, row)
+		if s.active != nil && s.active.ID == event.ID {
+			s.active = nil
 			return
 		}
-
-		time.Sleep(100 * time.Millisecond)
+		if s.active != nil {
+			s.writeLive(s.activeEvent(), width, s.frame)
+		}
 	}
 }
 
-type Tracker interface {
-	Increment(n int64)
-	UpdateMessage(message string)
-	Fail()
-	Done()
-}
-
-type tracker struct {
-	*progress.Tracker
-}
-
-func (t *tracker) Fail() {
-	t.MarkAsErrored()
-}
-
-func (t *tracker) Done() {
-	t.MarkAsDone()
-}
-
-func (t *tracker) UpdateMessage(message string) {
-	t.Tracker.UpdateMessage(message)
-}
-
-var _ Tracker = (*tracker)(nil)
-
-func (p *progressImpl) UnitsTracker(message string, size int) Tracker {
-	tracker := &tracker{
-		Tracker: &progress.Tracker{
-			Message: message,
-			Total:   int64(size),
-			Units:   progress.UnitsDefault,
-		},
+func (s *terminalProgressSink) width() int {
+	if s.fd != 0 {
+		if width, _, err := term.GetSize(s.fd); err == nil && width > 0 {
+			return width
+		}
 	}
-
-	p.Writer.AppendTracker(tracker.Tracker)
-	return tracker
+	return 120
 }
 
-type BytesTracker interface {
-	io.Writer
-	Tracker
+func (s *terminalProgressSink) writeLive(event Event, width, frame int) {
+	row := FormatProgress(event, width, frame)
+	_, _ = fmt.Fprint(s.writer, "\r", lipgloss.NewStyle().MaxWidth(width).Render(row), "\x1b[K")
 }
 
-type bytesTracker struct {
-	*tracker
-	writer io.Writer
-}
-
-var (
-	_ io.Writer = (*bytesTracker)(nil)
-	_ Tracker   = (*bytesTracker)(nil)
-)
-
-func (bt *bytesTracker) Write(p []byte) (int, error) {
-	n, err := bt.writer.Write(p)
-	if err != nil {
-		bt.Fail()
-		return n, err
+func (s *terminalProgressSink) animate(id string) {
+	ticker := time.NewTicker(120 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.Lock()
+		if s.active == nil || s.active.ID != id || s.active.Total > 0 {
+			s.mu.Unlock()
+			return
+		}
+		s.frame++
+		s.writeLive(s.activeEvent(), s.width(), s.frame)
+		s.mu.Unlock()
 	}
-
-	bt.Increment(int64(n))
-	return n, nil
 }
 
-func (p *progressImpl) BytesTracker(writer io.Writer, message string, total int64) BytesTracker {
-	if writer == nil {
-		writer = io.Discard
-	}
-
-	tracker := &bytesTracker{
-		writer: writer,
-		tracker: &tracker{
-			Tracker: &progress.Tracker{
-				Message: message,
-				Total:   total,
-				Units:   progress.UnitsBytes,
-			},
-		},
-	}
-
-	p.Writer.AppendTracker(tracker.Tracker)
-	return tracker
+func (s *terminalProgressSink) activeEvent() Event {
+	event := *s.active
+	event.Elapsed = s.baseTime + time.Since(s.activeAt)
+	return event
 }

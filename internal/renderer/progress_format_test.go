@@ -18,7 +18,7 @@ func TestFormatProgressKnownTotalUsesASCIIBar(t *testing.T) {
 		Elapsed: 1500 * time.Millisecond,
 	}, 140, 0))
 
-	want := "video.mp4" + strings.Repeat(" ", 41) + " ... 50.0% [###########............] [50 in 1.5s; ~ETA: 2s]"
+	want := "video.mp4" + strings.Repeat(" ", 41) + " ...  50.0% [###########............] [50 in 1.5s; ~ETA: 2s]"
 	if row != want {
 		t.Fatalf("row = %q\nwant  %q", row, want)
 	}
@@ -61,7 +61,7 @@ func TestFormatProgressFormatsByteValues(t *testing.T) {
 		Elapsed: time.Second,
 	}, 140, 0))
 
-	if !strings.Contains(row, " ... 40.0% [#########..............] [3.67MB in 1s; ~ETA: 2s]") {
+	if !strings.Contains(row, " ...  40.0% [#########..............] [3.67MB in 1s; ~ETA: 2s]") {
 		t.Fatalf("row = %q, want legacy decimal byte stats", row)
 	}
 }
@@ -89,6 +89,9 @@ func TestFormatProgressUnknownTotalAnimatesInsideASCIIBar(t *testing.T) {
 		t.Fatalf("unknown-total rows did not animate: %q", first)
 	}
 	for _, row := range []string{first, second} {
+		if strings.Contains(row, "???") {
+			t.Fatalf("row = %q, unknown total should be conveyed by moving bar only", row)
+		}
 		start, end := strings.Index(row, "["), strings.Index(row, "]")
 		if start < 0 || end <= start || !strings.Contains(row[start+1:end], "<#>") {
 			t.Fatalf("row = %q, want legacy moving marker", row)
@@ -116,6 +119,37 @@ func TestFormatProgressAlignsBarsForDifferentLabels(t *testing.T) {
 	longBar := lipgloss.Width(long[:strings.Index(long, "[")])
 	if shortBar != longBar {
 		t.Fatalf("bar columns differ: short=%d long=%d\n%s\n%s", shortBar, longBar, short, long)
+	}
+}
+
+func TestFormatProgressAlignsBarsForDifferentPercentages(t *testing.T) {
+	low := plainProgressRow(FormatProgress(Event{Label: "file", Current: 1, Total: 100}, 200, 0))
+	full := plainProgressRow(FormatProgress(Event{Label: "file", Current: 100, Total: 100}, 200, 0))
+
+	lowBar := lipgloss.Width(low[:strings.Index(low, "[")])
+	fullBar := lipgloss.Width(full[:strings.Index(full, "[")])
+	if lowBar != fullBar {
+		t.Fatalf("bar columns differ: low=%d full=%d\n%s\n%s", lowBar, fullBar, low, full)
+	}
+}
+
+func TestFormatProgressNarrowFailurePreservesUsefulLabel(t *testing.T) {
+	row := plainProgressRow(FormatProgress(Event{
+		Kind:    EventProgressFail,
+		Label:   "document with descriptive filename.pdf",
+		Current: 1,
+		Total:   100,
+		Elapsed: 15345 * time.Millisecond,
+	}, 60, 0))
+
+	if !strings.HasPrefix(row, "document") {
+		t.Fatalf("narrow failure destroyed useful label: %q", row)
+	}
+	if !strings.Contains(row, "] fail!") {
+		t.Fatalf("narrow failure lost status after bar: %q", row)
+	}
+	if lipgloss.Width(row) > 60 {
+		t.Fatalf("visible width = %d, want <= 60: %q", lipgloss.Width(row), row)
 	}
 }
 

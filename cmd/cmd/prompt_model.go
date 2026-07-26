@@ -63,6 +63,7 @@ type promptModel struct {
 	completionQuoteClosed          bool
 	completionStatus               string
 	transcript                     []string
+	outputBlocks                   []promptOutputBlock
 	activeRows                     map[string]renderer.Event
 	activeRowOrder                 []string
 	terminalRows                   map[string]struct{}
@@ -87,6 +88,21 @@ type promptRendererEventsClosedMsg struct{}
 type promptContextDoneMsg struct{}
 
 type promptProgressTickMsg struct{}
+
+type promptOutputBlockKind uint8
+
+const (
+	promptOutputText promptOutputBlockKind = iota
+	promptOutputTable
+	promptOutputProgress
+)
+
+type promptOutputBlock struct {
+	kind     promptOutputBlockKind
+	text     string
+	table    renderer.TableData
+	progress renderer.Event
+}
 
 var (
 	promptHeaderStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
@@ -319,7 +335,7 @@ func (m *promptModel) submitLine() (tea.Model, tea.Cmd) {
 	m.running = true
 	m.editor.Blur()
 	m.clearCompletions()
-	m.transcript = append(m.transcript, promptEditorPrefix+line)
+	m.appendTranscriptText(promptEditorPrefix + line)
 	m.syncViewportContent()
 	m.editor.SetValue("")
 
@@ -341,12 +357,12 @@ func (m *promptModel) submitLine() (tea.Model, tea.Cmd) {
 func (m *promptModel) finishCommand(msg promptCommandDoneMsg) {
 	if msg.Err != nil {
 		if errors.Is(msg.Err, context.Canceled) {
-			m.transcript = append(m.transcript, "Interrupted")
+			m.appendTranscriptText("Interrupted")
 		} else {
 			var rendered strings.Builder
 			renderer.RenderErrorConcise(&rendered, msg.Err)
 			if text := sanitizePromptModelText(rendered.String()); text != "" {
-				m.transcript = append(m.transcript, text)
+				m.appendTranscriptText(text)
 			}
 		}
 	}
@@ -504,12 +520,19 @@ func (m *promptModel) resize(width, height int) {
 func (m *promptModel) applyRendererEvent(event renderer.Event) {
 	event.Text = sanitizePromptModelLine(event.Text)
 	event.Label = sanitizePromptModelLine(event.Label)
+	if event.Kind == renderer.EventTable {
+		if event.Table != nil {
+			m.appendTranscriptTable(sanitizePromptTable(*event.Table))
+			m.syncViewportContent()
+		}
+		return
+	}
 	if event.Label == "" && event.Kind != renderer.EventLine {
 		event.Label = event.Text
 	}
 	if event.Kind == renderer.EventLine || event.ID == "" {
 		if event.Text != "" {
-			m.transcript = append(m.transcript, event.Text)
+			m.appendTranscriptText(event.Text)
 			m.syncViewportContent()
 		}
 		return
@@ -524,7 +547,7 @@ func (m *promptModel) applyRendererEvent(event renderer.Event) {
 		m.removeActiveRowID(event.ID)
 		m.terminalRows[event.ID] = struct{}{}
 		if event.Label != "" {
-			m.transcript = append(m.transcript, renderer.FormatProgress(event, m.viewport.Width(), m.progressFrame))
+			m.appendTranscriptProgress(event)
 		}
 		m.syncViewportContent()
 	case renderer.EventProgressCreate, renderer.EventProgressUpdate, "":
@@ -742,10 +765,69 @@ func (m *promptModel) resizeViewport() {
 
 func (m *promptModel) syncViewportContent() {
 	m.resizeViewport()
-	m.viewport.SetContent(strings.Join(m.transcript, "\n"))
+	content := strings.Join(m.transcript, "\n")
+	if len(m.outputBlocks) > 0 {
+		content = strings.Join(m.renderOutputBlocks(m.viewport.Width()), "\n")
+	}
+	m.viewport.SetContent(content)
 	if m.followBottom {
 		m.viewport.GotoBottom()
 	}
+}
+
+func (m *promptModel) appendTranscriptText(value string) {
+	m.ensureOutputBlocks()
+	m.transcript = append(m.transcript, value)
+	m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputText, text: value})
+}
+
+func (m *promptModel) appendTranscriptTable(data renderer.TableData) {
+	m.ensureOutputBlocks()
+	m.transcript = append(m.transcript, strings.Join(renderer.FormatTable(data, m.viewport.Width()), "\n"))
+	m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputTable, table: renderer.CloneTableData(data)})
+}
+
+func (m *promptModel) appendTranscriptProgress(event renderer.Event) {
+	m.ensureOutputBlocks()
+	m.transcript = append(m.transcript, renderer.FormatProgress(event, m.viewport.Width(), m.progressFrame))
+	m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputProgress, progress: event})
+}
+
+func (m *promptModel) ensureOutputBlocks() {
+	if len(m.outputBlocks) > 0 || len(m.transcript) == 0 {
+		return
+	}
+	for _, text := range m.transcript {
+		m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputText, text: text})
+	}
+}
+
+func (m *promptModel) renderOutputBlocks(width int) []string {
+	var lines []string
+	for _, block := range m.outputBlocks {
+		switch block.kind {
+		case promptOutputTable:
+			lines = append(lines, renderer.FormatTable(block.table, width)...)
+		case promptOutputProgress:
+			lines = append(lines, renderer.FormatProgress(block.progress, width, m.progressFrame))
+		default:
+			lines = append(lines, strings.Split(block.text, "\n")...)
+		}
+	}
+	return lines
+}
+
+func sanitizePromptTable(data renderer.TableData) renderer.TableData {
+	data = renderer.CloneTableData(data)
+	for i := range data.Columns {
+		data.Columns[i].Header = sanitizePromptModelText(data.Columns[i].Header)
+	}
+	for i := range data.Rows {
+		for j := range data.Rows[i] {
+			data.Rows[i][j] = sanitizePromptModelLine(data.Rows[i][j])
+		}
+	}
+	return data
 }
 
 func (m *promptModel) updateViewport(msg tea.Msg) (tea.Model, tea.Cmd) {

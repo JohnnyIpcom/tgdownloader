@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/gotd/td/constant"
 	"github.com/gotd/td/telegram/peers"
@@ -378,81 +377,7 @@ func sanitizePromptModelLine(value string) string {
 }
 
 func sanitizePromptText(value string, preserveSpaces bool) string {
-	var b strings.Builder
-	lastWasSpace := true
-	escapeState := 0
-	for _, r := range value {
-		switch escapeState {
-		case 1:
-			switch r {
-			case '[':
-				escapeState = 2
-			case ']':
-				escapeState = 3
-			default:
-				escapeState = 0
-			}
-			continue
-		case 2:
-			if r >= 0x40 && r <= 0x7e {
-				escapeState = 0
-			}
-			continue
-		case 3:
-			if r == '\a' {
-				escapeState = 0
-			} else if r == 0x1b {
-				escapeState = 4
-			}
-			continue
-		case 4:
-			if r == '\\' {
-				escapeState = 0
-			} else {
-				escapeState = 3
-			}
-			continue
-		}
-
-		switch {
-		case r == 0x1b:
-			escapeState = 1
-		case r == 0x9b:
-			escapeState = 2
-		case r == 0x9d:
-			escapeState = 3
-		case isBidiControl(r):
-			continue
-		case r == ' ':
-			if preserveSpaces || !lastWasSpace {
-				b.WriteRune(r)
-			}
-			lastWasSpace = true
-		case unicode.IsSpace(r):
-			if !lastWasSpace {
-				b.WriteByte(' ')
-				lastWasSpace = true
-			}
-		case unicode.IsControl(r):
-			if !preserveSpaces && !lastWasSpace {
-				b.WriteByte(' ')
-				lastWasSpace = true
-			}
-		case r == 0x200c || r == 0x200d:
-			b.WriteRune(r)
-		case unicode.IsGraphic(r):
-			b.WriteRune(r)
-			lastWasSpace = false
-		}
-	}
-
-	return strings.TrimSpace(b.String())
-}
-
-func isBidiControl(r rune) bool {
-	return r == 0x061c || r == 0x200e || r == 0x200f ||
-		(r >= 0x202a && r <= 0x202e) ||
-		(r >= 0x2066 && r <= 0x2069)
+	return renderer.SanitizeTerminalText(value, preserveSpaces)
 }
 
 func dialogPeerType(peer telegram.DialogPeer) string {

@@ -39,7 +39,7 @@ type progressRow struct {
 	eta        string
 }
 
-// FormatProgress reproduces the legacy go-pretty progress layout with responsive truncation.
+// FormatProgress reproduces the legacy progress layout with responsive truncation.
 func FormatProgress(event Event, width int, frame int) string {
 	if width <= 0 {
 		return ""
@@ -54,6 +54,9 @@ func FormatProgress(event Event, width int, frame int) string {
 	}
 	if row.width() > width {
 		row.value = ""
+	}
+	if row.width() > width && isTerminalProgress(event.Kind) {
+		row.elapsed = ""
 	}
 	for row.width() > width && labelWidth > progressLabelMinWidth {
 		labelWidth--
@@ -91,9 +94,7 @@ func newProgressRow(event Event, labelWidth, barWidth, frame int) progressRow {
 	if event.Total > 0 {
 		percentage := float64(event.Current) * 100 / float64(event.Total)
 		percentage = math.Max(0, math.Min(100, percentage))
-		row.percentage = fmt.Sprintf("%4.1f%%", percentage)
-	} else if !isTerminalProgress(event.Kind) {
-		row.percentage = " ??? "
+		row.percentage = fmt.Sprintf("%5.1f%%", percentage)
 	}
 
 	if event.Unit == ProgressUnitBytes {

@@ -11,6 +11,8 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/beevik/ntp v1.4.3
 	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/charmbracelet/x/term v0.2.2
 	github.com/dropbox/dropbox-sdk-go-unofficial/v6 v6.0.5
 	github.com/go-andiamo/splitter v1.2.5
 	github.com/go-logr/logr v1.4.3
@@ -19,7 +21,6 @@ require (
 	github.com/gotd/contrib v0.21.1
 	github.com/gotd/td v0.143.0
 	github.com/ivanpirog/coloredcobra v1.0.1
-	github.com/jedib0t/go-pretty/v6 v6.5.8
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
 	github.com/rivo/uniseg v0.4.7
@@ -41,10 +42,7 @@ require (
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
-	github.com/charmbracelet/harmonica v0.2.0 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7 // indirect
-	github.com/charmbracelet/x/ansi v0.11.7 // indirect
-	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
@@ -93,7 +91,6 @@ require (
 	golang.org/x/exp v0.0.0-20260529124908-c761662dc8c9 // indirect
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
