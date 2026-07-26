@@ -41,8 +41,10 @@ func TestCompletePromptReturnsAllPeerSubstringsWithoutTab(t *testing.T) {
 		cachedChannel(2, "Фотоархив"),
 		cachedChannel(3, "Офисное фото"),
 	)
+
 	line := "download history фо"
 	result := r.completePrompt(context.Background(), line, len([]rune(line)))
+
 	if result.Err != nil || len(result.Candidates) != 3 {
 		t.Fatalf("result = %+v, want three substring matches", result)
 	}
@@ -54,8 +56,10 @@ func TestCompletePromptRanksExactPrefixAndSubstring(t *testing.T) {
 		cachedChannel(2, "Cherry Team"),
 		cachedChannel(3, "Cherry"),
 	)
+
 	line := "download history cherry"
 	result := r.completePrompt(context.Background(), line, len([]rune(line)))
+
 	if result.Err != nil {
 		t.Fatalf("complete prompt: %v", result.Err)
 	}
@@ -63,6 +67,7 @@ func TestCompletePromptRanksExactPrefixAndSubstring(t *testing.T) {
 	for i, candidate := range result.Candidates {
 		got[i] = candidate.Value
 	}
+
 	want := []string{"Cherry", "Cherry Team", "Office Cherry Archive"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidate order = %q, want %q", got, want)
@@ -148,7 +153,9 @@ func TestCompletePromptCompletesTDLibIDPrefixes(t *testing.T) {
 	id := renderer.RenderTDLibPeerID(peer.TDLibPeerID())
 	r := rootWithDialogPeers(peer)
 	line := "download history " + id[:6]
+
 	result := r.completePrompt(context.Background(), line, len([]rune(line)))
+
 	if result.Err != nil || len(result.Candidates) != 1 {
 		t.Fatalf("result = %+v, want one ID candidate", result)
 	}
@@ -214,7 +221,9 @@ func TestCompletePromptReplacesOnlyQuotedActiveArgumentWithRuneOffsets(t *testin
 	name := "Фотограф внутреннего танца"
 	r := rootWithDialogPeers(cachedChannel(1, name))
 	line := `download history "Фотограф внут"`
+
 	result := r.completePrompt(context.Background(), line, len([]rune(line)))
+
 	if result.Err != nil || len(result.Candidates) != 1 {
 		t.Fatalf("result = %+v, want one candidate", result)
 	}

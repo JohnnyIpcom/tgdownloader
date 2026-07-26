@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
+	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -340,7 +341,7 @@ func TestRunPromptTUICancelsLifetimeAfterProgramReturns(t *testing.T) {
 		},
 	}
 
-	if err := r.runPromptTUI(context.Background(), nil, "tester"); err != nil {
+	if err := r.runPromptTUI(context.Background()); err != nil {
 		t.Fatalf("run prompt: %v", err)
 	}
 	if lifetime == nil {
@@ -367,7 +368,12 @@ func TestRunPromptTUICancelsAndJoinsActiveCommandOnProgramError(t *testing.T) {
 		}
 		return cmd.Context().Err()
 	})
+	r.promptStartupRunner = func(context.Context, renderer.EventSink, telegram.CodeProvider) promptRuntimeStartupResult {
+		return promptRuntimeStartupResult{Username: "tester"}
+	}
 	r.promptProgramRunner = func(model *promptModel) error {
+		updated, _ := model.Update(model.startup())
+		model = updated.(*promptModel)
 		model.editor.SetValue("wait")
 		updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		model = updated.(*promptModel)
@@ -389,7 +395,7 @@ func TestRunPromptTUICancelsAndJoinsActiveCommandOnProgramError(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		result <- r.runPromptTUI(context.Background(), nil, "tester")
+		result <- r.runPromptTUI(context.Background())
 	}()
 	var active *promptModel
 	select {
@@ -605,7 +611,7 @@ func TestRunPromptTUISuppressesTerminalLogsOnlyWhileProgramRuns(t *testing.T) {
 		return nil
 	}
 
-	if err := r.runPromptTUI(context.Background(), nil, "tester"); err != nil {
+	if err := r.runPromptTUI(context.Background()); err != nil {
 		t.Fatalf("run prompt: %v", err)
 	}
 	if got := configuredOutput.String(); got != "" {

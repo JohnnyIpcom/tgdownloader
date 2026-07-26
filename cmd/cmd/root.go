@@ -50,6 +50,34 @@ type Root struct {
 	promptProgramRunner func(*promptModel) error
 	promptLogs          *promptLogRouter
 	promptRunID         atomic.Uint64
+	promptStartupRunner func(context.Context, renderer.EventSink, telegram.CodeProvider) promptRuntimeStartupResult
+}
+
+type runtimeInitOptions struct {
+	progress      renderer.Progress
+	clientOptions []telegram.ClientOption
+	output        io.Writer
+	eventSink     renderer.EventSink
+}
+
+type runtimeInitOption func(*runtimeInitOptions)
+
+func withRuntimeProgress(progress renderer.Progress) runtimeInitOption {
+	return func(options *runtimeInitOptions) { options.progress = progress }
+}
+
+func withTelegramClientOptions(options ...telegram.ClientOption) runtimeInitOption {
+	return func(runtime *runtimeInitOptions) {
+		runtime.clientOptions = append(runtime.clientOptions, options...)
+	}
+}
+
+func withRuntimeOutput(writer io.Writer) runtimeInitOption {
+	return func(options *runtimeInitOptions) { options.output = writer }
+}
+
+func withRuntimeEventSink(sink renderer.EventSink) runtimeInitOption {
+	return func(options *runtimeInitOptions) { options.eventSink = sink }
 }
 
 type progressAdapter struct {
@@ -67,15 +95,26 @@ func NewRoot(version string) (*Root, error) {
 	return &Root{version: version}, nil
 }
 
-func (r *Root) initializeRuntime() error {
+func (r *Root) initializeRuntime(runtimeOptions ...runtimeInitOption) error {
 	r.runtimeMu.Lock()
 	defer r.runtimeMu.Unlock()
 	if r.runtimeInitialized || r.runtimeErr != nil {
 		return r.runtimeErr
 	}
 
+	options := runtimeInitOptions{}
+	for _, option := range runtimeOptions {
+		if option != nil {
+			option(&options)
+		}
+	}
+
+	if options.progress == nil {
+		options.progress = renderer.NewProgressWithoutValue()
+	}
+
 	cfg := viper.NewConfig()
-	if err := cfg.Load("tgdownloader", ""); err != nil {
+	if err := cfg.Load("tgdownloader", "", options.output); err != nil {
 		r.runtimeErr = err
 		return err
 	}
@@ -100,20 +139,23 @@ func (r *Root) initializeRuntime() error {
 	zapConfig.Level = level
 
 	promptLogs := newPromptLogRouter()
+	if options.eventSink != nil {
+		promptLogs.SetSink(options.eventSink)
+	}
 	runtimeZap, err := buildPromptLogger(zapConfig, promptLogs)
 	if err != nil {
 		r.runtimeErr = err
 		return err
 	}
 
-	client, err := telegram.NewClient(cfg.Sub("telegram"), runtimeZap.Named("telegram"))
+	client, err := telegram.NewClient(cfg.Sub("telegram"), runtimeZap.Named("telegram"), options.clientOptions...)
 	if err != nil {
 		_ = runtimeZap.Sync()
 		r.runtimeErr = err
 		return err
 	}
 
-	progress := renderer.NewProgressWithoutValue()
+	progress := options.progress
 	client.SetProgress(&progressAdapter{progress})
 	r.cfg = cfg
 	r.client = client
@@ -122,6 +164,7 @@ func (r *Root) initializeRuntime() error {
 	r.log = zapr.NewLogger(runtimeZap)
 	r.level = level
 	r.promptLogs = promptLogs
+
 	r.runtimeInitialized = true
 	return nil
 }
@@ -149,6 +192,7 @@ func (r *Root) newPromptRootCmd() *cobra.Command {
 	if r.promptRootFactory != nil {
 		return r.promptRootFactory()
 	}
+
 	return r.newRootCmdWithPrompt(false)
 }
 
@@ -189,6 +233,7 @@ func (r *Root) newRootCmdWithPrompt(includePrompt bool) *cobra.Command {
 		if err != nil {
 			return err
 		}
+
 		r.verbosity = verbosity
 
 		if r.runtimeInitialized {
@@ -214,9 +259,14 @@ func (r *Root) newRootCmdWithPrompt(includePrompt bool) *cobra.Command {
 	if includePrompt {
 		// Prompt command must be the last one to initialize all other commands first.
 		promptCmd := r.newPromptCmd()
-		r.setupRuntimeForCmd(promptCmd)
+		if promptCmd.Annotations == nil {
+			promptCmd.Annotations = make(map[string]string)
+		}
+		promptCmd.Annotations["runtime"] = "runtime_only"
+
 		rootCmd.AddCommand(promptCmd)
 	}
+
 	return rootCmd
 }
 
@@ -224,6 +274,7 @@ func (r *Root) Execute() error {
 	rootCmd := r.newRootCmd()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
 	rootCmd.SetContext(ctx)
 
 	cc.Init(&cc.Config{
@@ -298,10 +349,12 @@ func (r *Root) setupConnectionForCmd(cmds ...*cobra.Command) {
 			cmd.Annotations = make(map[string]string)
 		}
 		cmd.Annotations["runtime"] = "requires_connection"
+
 		cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 			if err := r.initializeRuntime(); err != nil {
 				return err
 			}
+
 			cmd.SetContext(logr.NewContext(cmd.Context(), r.log))
 
 			ctx := context.WithValue(cmd.Context(), needCloseKey{}, !r.IsConnected())
@@ -326,10 +379,12 @@ func (r *Root) setupRuntimeForCmd(cmds ...*cobra.Command) {
 			cmd.Annotations = make(map[string]string)
 		}
 		cmd.Annotations["runtime"] = "runtime_only"
+
 		cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 			if err := r.initializeRuntime(); err != nil {
 				return err
 			}
+
 			cmd.SetContext(logr.NewContext(cmd.Context(), r.log))
 			return nil
 		}

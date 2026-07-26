@@ -55,6 +55,7 @@ func (c *promptRoutingCore) Check(entry zapcore.Entry, checked *zapcore.CheckedE
 	if c.Enabled(entry.Level) {
 		return checked.AddCore(entry, c)
 	}
+
 	return checked
 }
 
@@ -62,6 +63,7 @@ func (c *promptRoutingCore) Write(entry zapcore.Entry, fields []zapcore.Field) e
 	if c.router.Sink() != nil {
 		return nil
 	}
+
 	return c.base.Write(entry, fields)
 }
 
@@ -80,17 +82,21 @@ func buildPromptLogger(config zap.Config, router *promptLogRouter) (*zap.Logger,
 		cfg := config
 		cfg.OutputPaths = append([]string(nil), paths...)
 		cfg.ErrorOutputPaths = append([]string(nil), retainedErrorPaths...)
+
 		discardInternalErrors := len(cfg.ErrorOutputPaths) == 0
 		if discardInternalErrors {
 			cfg.ErrorOutputPaths = []string{"stderr"}
 		}
+
 		logger, err := cfg.Build(zap.AddStacktrace(zapcore.ErrorLevel))
 		if err != nil {
 			return nil, err
 		}
+
 		if discardInternalErrors {
 			logger = logger.WithOptions(zap.ErrorOutput(zapcore.AddSync(io.Discard)))
 		}
+
 		return logger, nil
 	}
 
@@ -98,6 +104,7 @@ func buildPromptLogger(config zap.Config, router *promptLogRouter) (*zap.Logger,
 	if err != nil {
 		return nil, err
 	}
+
 	terminalCore := newPromptRoutingCore(terminalLogger.Core(), router, promptLogEncoder(config))
 	if len(retainedPaths) == 0 {
 		return terminalLogger.WithOptions(zap.WrapCore(func(zapcore.Core) zapcore.Core {
@@ -109,6 +116,7 @@ func buildPromptLogger(config zap.Config, router *promptLogRouter) (*zap.Logger,
 	if err != nil {
 		return nil, err
 	}
+
 	return retainedLogger.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
 		return zapcore.NewTee(core, terminalCore)
 	})), nil
@@ -123,6 +131,7 @@ func splitZapTerminalPaths(paths []string) (terminal, retained []string) {
 			retained = append(retained, path)
 		}
 	}
+
 	return terminal, retained
 }
 
@@ -130,5 +139,6 @@ func promptLogEncoder(config zap.Config) zapcore.Encoder {
 	if strings.EqualFold(config.Encoding, "json") {
 		return zapcore.NewJSONEncoder(config.EncoderConfig)
 	}
+
 	return zapcore.NewConsoleEncoder(config.EncoderConfig)
 }

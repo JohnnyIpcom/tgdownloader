@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
@@ -9,7 +11,7 @@ import (
 
 const promptRendererEventBufferSize = 256
 
-func (r *Root) runPromptTUI(ctx context.Context, history *promptHistoryStore, username string) error {
+func (r *Root) runPromptTUI(ctx context.Context) error {
 	lifetime, cancelLifetime := context.WithCancel(context.Background())
 
 	events := make(chan renderer.Event, promptRendererEventBufferSize)
@@ -17,26 +19,90 @@ func (r *Root) runPromptTUI(ctx context.Context, history *promptHistoryStore, us
 	if r.promptLogs != nil {
 		r.promptLogs.SetSink(sink)
 	}
-	defer func() {
-		cancelLifetime()
-		if r.promptLogs != nil {
-			r.promptLogs.SetSink(nil)
+
+	provider := newTUIAuthCodeProvider(lifetime)
+	startupCtx, cancelStartup := context.WithCancel(ctx)
+	startupDone := make(chan struct{})
+
+	var startupClaimed atomic.Bool
+	var history *promptHistoryStore
+
+	startup := func() tea.Msg {
+		if !startupClaimed.CompareAndSwap(false, true) {
+			return promptStartupDoneMsg{Err: context.Canceled}
 		}
-	}()
-	model := r.newPromptTUIModel(ctx, lifetime, history, username, events, sink)
-	err := r.runPromptProgram(model)
+
+		defer close(startupDone)
+
+		result := r.startPromptRuntime(startupCtx, sink, provider)
+		history = result.History
+
+		return promptStartupDoneMsg{
+			Username:     result.Username,
+			History:      historyEntries(result.History),
+			HistoryLimit: historyLimit(result.History),
+			Err:          result.Err,
+		}
+	}
+
+	model := newPromptModel(promptModelOptions{
+		Context:       ctx,
+		Lifetime:      lifetime,
+		Version:       r.version,
+		Complete:      r.completePrompt,
+		Events:        events,
+		Startup:       startup,
+		StartupCancel: cancelStartup,
+		AuthRequests:  provider.Requests(),
+		Submit: func(commandCtx context.Context, line string) tea.Cmd {
+			return r.submitPromptCommand(commandCtx, line, sink, history)
+		},
+	})
+
+	runErr := r.runPromptProgram(model)
+
+	cancelStartup()
 	model.cancelAndWaitForActiveCommand()
-	return err
+	if startupClaimed.CompareAndSwap(false, true) {
+		close(startupDone)
+	}
+	waitForPromptStartup(startupDone, events)
+
+	cancelLifetime()
+	if r.promptLogs != nil {
+		r.promptLogs.SetSink(nil)
+	}
+
+	if model.startupErr != nil && !errors.Is(model.startupErr, context.Canceled) {
+		return errors.Join(runErr, model.startupErr)
+	}
+
+	return runErr
+}
+
+func waitForPromptStartup(done <-chan struct{}, events <-chan renderer.Event) {
+	for {
+		select {
+		case <-done:
+			return
+		case _, ok := <-events:
+			if !ok {
+				events = nil
+			}
+		}
+	}
 }
 
 func (m *promptModel) cancelAndWaitForActiveCommand() {
 	if m.cancel != nil {
 		m.cancel()
 	}
+
 	done := m.activeCommandDone
 	if done == nil {
 		return
 	}
+
 	events := m.events
 	for {
 		select {
@@ -54,6 +120,7 @@ func (r *Root) runPromptProgram(model *promptModel) error {
 	if r.promptProgramRunner != nil {
 		return r.promptProgramRunner(model)
 	}
+
 	_, err := tea.NewProgram(model).Run()
 	return err
 }
@@ -86,6 +153,7 @@ func historyEntries(history *promptHistoryStore) []string {
 	if history == nil {
 		return nil
 	}
+
 	return history.Entries()
 }
 
@@ -93,5 +161,6 @@ func historyLimit(history *promptHistoryStore) int {
 	if history == nil {
 		return 0
 	}
+
 	return history.maxEntries
 }

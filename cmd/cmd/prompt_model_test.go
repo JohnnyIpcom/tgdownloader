@@ -289,6 +289,24 @@ func TestPromptModelAnimatesUnknownProgressWhileActive(t *testing.T) {
 	}
 }
 
+func TestPromptModelAdvancesElapsedForUnknownProgress(t *testing.T) {
+	m := newTestPromptModel(nil)
+	m.applyRendererEvent(renderer.Event{
+		Kind:  renderer.EventProgressCreate,
+		ID:    "setup",
+		Label: "Prompt setup",
+	})
+	time.Sleep(10 * time.Millisecond)
+
+	view := sanitizePromptModelText(m.render())
+	if !strings.Contains(view, "Prompt setup") {
+		t.Fatalf("active progress missing: %q", view)
+	}
+	if strings.Contains(view, "[0s]") {
+		t.Fatalf("active elapsed remained static: %q", view)
+	}
+}
+
 func TestPromptModelStopsProgressAnimationWithoutUnknownRows(t *testing.T) {
 	m := newTestPromptModel(nil)
 	m.progressTicking = true

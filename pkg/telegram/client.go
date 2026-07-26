@@ -1,14 +1,12 @@
 package telegram
 
 import (
-	"bufio"
 	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,6 +65,7 @@ type Client struct {
 	storage        storage.PeerStorage
 	dialogCache    *dialogCache
 	progress       Progress
+	codeProvider   CodeProvider
 
 	common service // Reuse a single struct instead of allocating one for each service on the heap
 
@@ -85,7 +84,14 @@ type service struct {
 }
 
 // NewClient creates new Telegram client.
-func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
+func NewClient(cfg config.Config, log *zap.Logger, clientOpts ...ClientOption) (*Client, error) {
+	settings := clientOptions{codeProvider: unavailableCodeProvider{}}
+	for _, option := range clientOpts {
+		if option != nil {
+			option(&settings)
+		}
+	}
+
 	dispatcher := tg.NewUpdateDispatcher()
 	disableUpdates := cfg.GetBool("updates.disable")
 
@@ -204,6 +210,7 @@ func NewClient(cfg config.Config, log *zap.Logger) (*Client, error) {
 		storage:        peerStorage,
 		dialogCache:    dialogCache,
 		progress:       &progress{},
+		codeProvider:   settings.codeProvider,
 	}
 
 	// Set up services
@@ -425,18 +432,6 @@ func proxyDialContext(dialer proxy.Dialer) dcs.DialFunc {
 	}
 }
 
-type codeAuthenticator struct{}
-
-func (c *codeAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
-	fmt.Print("Enter code: ")
-	code, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-
-	return strings.TrimSpace(code), nil
-}
-
 func (c *Client) SetProgress(r Progress) {
 	c.progress = r
 }
@@ -447,7 +442,7 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 		auth.Constant(
 			c.config.GetString("phone"),
 			c.config.GetString("password"),
-			&codeAuthenticator{}),
+			c.codeProvider),
 		auth.SendCodeOptions{},
 	)
 

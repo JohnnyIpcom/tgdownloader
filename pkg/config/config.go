@@ -1,9 +1,12 @@
 package config
 
-import "time"
+import (
+	"io"
+	"time"
+)
 
 type Config interface {
-	Load(name string, path string) error
+	Load(name string, path string, writers ...io.Writer) error
 
 	IsSet(key string) bool
 	Get(key string) interface{}

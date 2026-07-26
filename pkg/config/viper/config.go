@@ -2,6 +2,8 @@ package viper
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/johnnyipcom/tgdownloader/pkg/config"
@@ -24,12 +26,16 @@ func NewConfig() config.Config {
 	}
 }
 
-func (c *configViper) Load(name string, path string) error {
+func (c *configViper) Load(name string, path string, writers ...io.Writer) error {
+	writer := io.Writer(os.Stdout)
+	if len(writers) > 0 && writers[0] != nil {
+		writer = writers[0]
+	}
 	if path != "" {
-		fmt.Println("Using config file:", path)
+		fmt.Fprintln(writer, "Using config file:", path)
 		c.Viper.SetConfigFile(path)
 	} else {
-		fmt.Println("Config file not specified, using default config file path")
+		fmt.Fprintln(writer, "Config file not specified, using default config file path")
 		home, err := homedir.Dir()
 		if err != nil {
 			return err
@@ -48,7 +54,7 @@ func (c *configViper) Load(name string, path string) error {
 		return err
 	}
 
-	fmt.Printf("Using config file: %s\n", c.Viper.ConfigFileUsed())
+	fmt.Fprintf(writer, "Using config file: %s\n", c.Viper.ConfigFileUsed())
 	return nil
 }
 

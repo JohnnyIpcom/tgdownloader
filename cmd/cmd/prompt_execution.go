@@ -23,6 +23,7 @@ func (r *Root) submitPromptCommand(
 	if events == nil {
 		events = renderer.DiscardEvents()
 	}
+
 	var history *promptHistoryStore
 	if len(histories) > 0 {
 		history = histories[0]
@@ -30,6 +31,7 @@ func (r *Root) submitPromptCommand(
 
 	return func() (msg tea.Msg) {
 		var stdoutWriter, stderrWriter *renderer.EventWriter
+
 		done := promptCommandDoneMsg{
 			RunID: strconv.FormatUint(r.promptRunID.Add(1), 10),
 			Line:  line,
@@ -38,12 +40,14 @@ func (r *Root) submitPromptCommand(
 			if recovered := recover(); recovered != nil {
 				done.Err = r.promptPanicError(recovered)
 			}
+
 			if stdoutWriter != nil {
 				stdoutWriter.Flush()
 			}
 			if stderrWriter != nil {
 				stderrWriter.Flush()
 			}
+
 			r.persistPromptHistory(&done, history, events)
 			events.Emit(renderer.Event{Kind: renderer.EventBarrier, ID: done.RunID})
 			msg = done
@@ -52,6 +56,7 @@ func (r *Root) submitPromptCommand(
 		if parent == nil {
 			parent = context.Background()
 		}
+
 		if err := r.acquirePromptCommand(parent); err != nil {
 			done.Err = err
 			return
@@ -73,6 +78,7 @@ func (r *Root) submitPromptCommand(
 				done.HistoryOK = false
 			}
 		}
+
 		parent = renderer.WithEventSink(parent, events)
 		stdoutWriter = renderer.NewEventWriter(events)
 		stderrWriter = renderer.NewEventWriter(events)
@@ -88,11 +94,13 @@ func (r *Root) persistPromptHistory(done *promptCommandDoneMsg, history *promptH
 	if history == nil || !done.HistoryOK {
 		return
 	}
+
 	stored, err := history.Record(done.Line, done.Args)
 	if err != nil {
 		events.Emit(renderer.Event{Kind: renderer.EventLine, Text: fmt.Sprintf("Error: %v", err)})
 		return
 	}
+
 	done.HistoryStored = stored
 }
 
@@ -129,5 +137,6 @@ func (r *Root) promptPanicError(recovered any) error {
 	if r.zap != nil {
 		r.zap.Debug("prompt command panicked", zap.Any("panic", recovered), zap.ByteString("stack", stack))
 	}
+
 	return fmt.Errorf("prompt command panicked: %v", recovered)
 }

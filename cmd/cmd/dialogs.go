@@ -43,8 +43,10 @@ func (r *Root) newDialogsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			progress := renderer.ProgressForContext(cmd.Context(), r.progress)
 			tracker := progress.UnitsTracker("Refreshing dialogs", total)
+
 			for dialog := range dialogs {
 				if dialog.Err() != nil {
 					tracker.Fail()
@@ -52,10 +54,12 @@ func (r *Root) newDialogsCmd() *cobra.Command {
 				}
 				tracker.Increment(1)
 			}
+
 			if err := cmd.Context().Err(); err != nil {
 				tracker.Fail()
 				return err
 			}
+
 			tracker.Done()
 			progress.Wait(cmd.Context())
 

@@ -42,6 +42,7 @@ func (r *Root) completePrompt(ctx context.Context, line string, cursor int) comp
 	if cursor < 0 {
 		cursor = 0
 	}
+
 	if cursor > len(runes) {
 		cursor = len(runes)
 	}
@@ -64,6 +65,7 @@ func (r *Root) completePrompt(ctx context.Context, line string, cursor int) comp
 	if err != nil || command == nil {
 		return completionResult{Start: active.start, End: active.end, Quoted: active.quoted, QuoteClosed: active.quoteClosed}
 	}
+
 	kind, ok := command.Annotations["prompt_suggest"]
 	if !ok {
 		return completionResult{
@@ -74,6 +76,7 @@ func (r *Root) completePrompt(ctx context.Context, line string, cursor int) comp
 			Candidates:  promptCommandCandidates(command, active.value),
 		}
 	}
+
 	if r.client == nil || r.client.DialogCache == nil {
 		return completionResult{Start: active.start, End: active.end, Quoted: active.quoted, QuoteClosed: active.quoteClosed, Err: fmt.Errorf("dialog cache is unavailable")}
 	}
@@ -94,6 +97,7 @@ func (r *Root) completePrompt(ctx context.Context, line string, cursor int) comp
 
 func promptCommandCandidates(command *cobra.Command, query string) []promptCandidate {
 	var candidates []promptCandidate
+
 	for _, subcommand := range command.Commands() {
 		if !subcommand.IsAvailableCommand() || !hasPrefixFold(subcommand.Name(), query) {
 			continue
@@ -104,19 +108,23 @@ func promptCommandCandidates(command *cobra.Command, query string) []promptCandi
 			Description: subcommand.Short,
 		})
 	}
+
 	return candidates
 }
 
 func splitPromptCompletionTokens(line []rune) []promptCompletionToken {
 	var tokens []promptCompletionToken
 	var value strings.Builder
+
 	rawStart, start, end := -1, -1, -1
 	inQuotes := false
 	quoted, quoteClosed := false, false
+
 	flush := func(rawEnd int) {
 		if rawStart < 0 {
 			return
 		}
+
 		if end < start {
 			end = start
 		}
@@ -129,6 +137,7 @@ func splitPromptCompletionTokens(line []rune) []promptCompletionToken {
 			quoted:      quoted,
 			quoteClosed: quoteClosed,
 		})
+
 		value.Reset()
 		rawStart, start, end = -1, -1, -1
 		quoted, quoteClosed = false, false
@@ -137,10 +146,12 @@ func splitPromptCompletionTokens(line []rune) []promptCompletionToken {
 
 	for i := 0; i < len(line); i++ {
 		r := line[i]
+
 		if !inQuotes && (r == ' ' || r == '\t') {
 			flush(i)
 			continue
 		}
+
 		if r == '"' {
 			if rawStart < 0 {
 				rawStart = i
@@ -148,12 +159,14 @@ func splitPromptCompletionTokens(line []rune) []promptCompletionToken {
 				end = start
 				quoted = true
 			}
+
 			if inQuotes && i+1 < len(line) && line[i+1] == '"' {
 				value.WriteRune('"')
 				end = i + 2
 				i++
 				continue
 			}
+
 			inQuotes = !inQuotes
 			if !inQuotes {
 				end = i
@@ -163,6 +176,7 @@ func splitPromptCompletionTokens(line []rune) []promptCompletionToken {
 			}
 			continue
 		}
+
 		if rawStart < 0 {
 			rawStart = i
 			start = i
@@ -170,6 +184,7 @@ func splitPromptCompletionTokens(line []rune) []promptCompletionToken {
 		value.WriteRune(r)
 		end = i + 1
 	}
+
 	flush(len(line))
 	return tokens
 }
@@ -180,11 +195,13 @@ func activePromptCompletionToken(tokens []promptCompletionToken, cursor int) (pr
 			return token, true
 		}
 	}
+
 	return promptCompletionToken{}, false
 }
 
 func promptCandidates(peers []telegram.DialogPeer, query string) []promptCandidate {
 	query = sanitizePromptPeerName(normalizePeerInput(query))
+
 	nameCounts := make(map[string]int, len(peers))
 	for _, peer := range peers {
 		nameCounts[strings.ToLower(sanitizePromptPeerName(peer.Name()))]++
@@ -194,6 +211,7 @@ func promptCandidates(peers []telegram.DialogPeer, query string) []promptCandida
 		promptCandidate
 		rank int
 	}
+
 	candidates := make([]rankedCandidate, 0, len(peers))
 	for _, peer := range peers {
 		id := renderer.RenderTDLibPeerID(peer.TDLibPeerID())
@@ -215,6 +233,7 @@ func promptCandidates(peers []telegram.DialogPeer, query string) []promptCandida
 		if !ok {
 			continue
 		}
+
 		if nameCounts[strings.ToLower(candidate.Value)] > 1 {
 			candidate.Value = id
 		}
@@ -229,12 +248,15 @@ func promptCandidates(peers []telegram.DialogPeer, query string) []promptCandida
 		if candidates[i].rank != candidates[j].rank {
 			return candidates[i].rank < candidates[j].rank
 		}
+
 		return strings.ToLower(candidates[i].Display) < strings.ToLower(candidates[j].Display)
 	})
+
 	result := make([]promptCandidate, len(candidates))
 	for i, candidate := range candidates {
 		result[i] = candidate.promptCandidate
 	}
+
 	return result
 }
 
@@ -261,8 +283,10 @@ func peerMatchRank(peer telegram.DialogPeer, id, query string) int {
 		if hasPrefixFold(id, query) {
 			return 0
 		}
+
 		return -1
 	}
+
 	if query == "" {
 		return 2
 	}
@@ -272,16 +296,19 @@ func peerMatchRank(peer telegram.DialogPeer, id, query string) int {
 			return 0
 		}
 	}
+
 	for _, alias := range peer.SearchNames() {
 		if hasPrefixFold(sanitizePromptPeerName(alias), query) {
 			return 1
 		}
 	}
+
 	for _, alias := range peer.SearchNames() {
 		if containsFold(sanitizePromptPeerName(alias), query) {
 			return 2
 		}
 	}
+
 	return -1
 }
 
@@ -298,6 +325,7 @@ func truncatePromptText(value string, width int) string {
 
 	var b strings.Builder
 	used := 0
+
 	graphemes := uniseg.NewGraphemes(value)
 	for graphemes.Next() {
 		cluster := graphemes.Str()
@@ -308,12 +336,14 @@ func truncatePromptText(value string, width int) string {
 		b.WriteString(cluster)
 		used += clusterWidth
 	}
+
 	return b.String() + suffix
 }
 
 func formatPromptCandidate(candidate promptCandidate, width int) string {
 	display := sanitizePromptModelText(candidate.Display)
 	description := sanitizePromptModelText(candidate.Description)
+
 	if peerType, peerID, ok := splitPromptPeerDescription(description); ok {
 		return truncatePromptText(formatPromptPeerCandidate(display, peerType, peerID, width), width)
 	}
@@ -325,6 +355,7 @@ func splitPromptPeerDescription(description string) (string, string, bool) {
 	if !ok || peerType == "" || !strings.HasPrefix(peerID, "0x") {
 		return "", "", false
 	}
+
 	return peerType, peerID, true
 }
 
@@ -352,6 +383,7 @@ func formatPromptPeerCandidate(display, peerType, peerID string, width int) stri
 
 func padPromptText(value string, width int) string {
 	value = truncatePromptText(value, width)
+
 	return value + strings.Repeat(" ", max(0, width-lipgloss.Width(value)))
 }
 
@@ -365,5 +397,6 @@ func formatPromptCommandCandidate(display, description string, width int) string
 	if descriptionWidth < lipgloss.Width("...") {
 		return truncatePromptText(display, width)
 	}
+
 	return display + fieldSeparator + truncatePromptText(description, descriptionWidth)
 }

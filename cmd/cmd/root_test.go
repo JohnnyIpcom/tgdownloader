@@ -78,6 +78,15 @@ func TestPromptCommandTreeDoesNotResetSharedVerbosity(t *testing.T) {
 	}
 }
 
+func TestRuntimeEventSinkOptionIsAppliedBeforeClientSetup(t *testing.T) {
+	sink := renderer.DiscardEvents()
+	options := runtimeInitOptions{}
+	withRuntimeEventSink(sink)(&options)
+	if options.eventSink != sink {
+		t.Fatal("runtime event sink option was not retained")
+	}
+}
+
 func TestNewDownloaderCancelsDropboxOAuthThroughPromptContext(t *testing.T) {
 	cfg := configviper.NewConfig()
 	cfg.Set("downloader.type", "dropbox")
