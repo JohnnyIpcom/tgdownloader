@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gotd/td/constant"
 	"github.com/gotd/td/telegram/peers"
@@ -83,7 +84,10 @@ func (r *Root) downloadFilesFromPeer(ctx context.Context, writer io.Writer, peer
 		return apperr.Wrap("cmd.download.history.get_all_files", err)
 	}
 
-	return apperr.Wrap("cmd.download.history.download", r.downloadFiles(ctx, writer, files, opts))
+	return apperr.Wrap(
+		"cmd.download.history.download",
+		r.downloadFiles(ctx, writer, files, []string{dialogDownloadDirectory(peer)}, opts),
+	)
 }
 
 func (r *Root) downloadFilesFromNewMessages(ctx context.Context, writer io.Writer, peer peers.Peer, opts downloadOptions) error {
@@ -92,7 +96,10 @@ func (r *Root) downloadFilesFromNewMessages(ctx context.Context, writer io.Write
 		return apperr.Wrap("cmd.download.watcher.get_new_files", err)
 	}
 
-	return apperr.Wrap("cmd.download.watcher.download", r.downloadFiles(ctx, writer, files, opts))
+	return apperr.Wrap(
+		"cmd.download.watcher.download",
+		r.downloadFiles(ctx, writer, files, []string{dialogDownloadDirectory(peer)}, opts),
+	)
 }
 
 type trackerAdapter struct {
@@ -143,7 +150,13 @@ func newTrackerAdapter(p renderer.Progress) *trackerAdapter {
 	return &trackerAdapter{p}
 }
 
-func (r *Root) downloadFiles(ctx context.Context, writer io.Writer, files <-chan telegram.File, opts downloadOptions) error {
+func (r *Root) downloadFiles(
+	ctx context.Context,
+	writer io.Writer,
+	files <-chan telegram.File,
+	subdirs []string,
+	opts downloadOptions,
+) error {
 	startedAt := time.Now()
 	p := renderer.NewProgressForContext(ctx)
 	if opts.ps {
@@ -184,8 +197,13 @@ func (r *Root) downloadFiles(ctx context.Context, writer io.Writer, files <-chan
 				}
 
 				scanProgress.FileFound(d.Stats())
+				downloadFile := downloader.NewFile(
+					file,
+					downloader.WithSubdirs(subdirs...),
+					downloader.WithSaveByHashtags(opts.hashtags),
+				)
 				select {
-				case queue <- downloader.NewFile(file, downloader.WithSaveByHashtags(opts.hashtags)):
+				case queue <- downloadFile:
 				case <-ctx.Done():
 					return
 				}
@@ -225,6 +243,49 @@ func promptResolvedPeerType(peer peers.Peer) string {
 	}
 }
 
+func dialogDownloadDirectory(peer peers.Peer) string {
+	fallback := renderer.RenderTDLibPeerID(peer.TDLibPeerID())
+	return sanitizeDownloadDirectoryComponent(peer.VisibleName(), fallback)
+}
+
+func sanitizeDownloadDirectoryComponent(name, fallback string) string {
+	var sanitized strings.Builder
+	for _, r := range name {
+		if unicode.IsControl(r) || strings.ContainsRune(`<>:"/\|?*`, r) {
+			continue
+		}
+
+		sanitized.WriteRune(r)
+	}
+
+	component := strings.TrimSpace(sanitized.String())
+	component = strings.TrimRight(component, ". ")
+	if component == "" || isReservedWindowsPathComponent(component) {
+		return fallback
+	}
+
+	return component
+}
+
+func isReservedWindowsPathComponent(component string) bool {
+	base := component
+	if index := strings.IndexByte(base, '.'); index >= 0 {
+		base = base[:index]
+	}
+	base = strings.ToUpper(base)
+
+	switch base {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+
+	if len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) {
+		return base[3] >= '1' && base[3] <= '9'
+	}
+
+	return false
+}
+
 func sendSliceToChannel[T any](ctx context.Context, slice []*T) <-chan T {
 	ch := make(chan T)
 	go func() {
@@ -253,7 +314,16 @@ func (r *Root) downloadFilesFromMessage(ctx context.Context, writer io.Writer, p
 		return apperr.Wrap("cmd.download.message.get_files", err)
 	}
 
-	return apperr.Wrap("cmd.download.message.download", r.downloadFiles(ctx, writer, sendSliceToChannel(ctx, files), opts))
+	return apperr.Wrap(
+		"cmd.download.message.download",
+		r.downloadFiles(
+			ctx,
+			writer,
+			sendSliceToChannel(ctx, files),
+			[]string{dialogDownloadDirectory(peer)},
+			opts,
+		),
+	)
 }
 
 func parseTDLibPeerID(peerID string) (constant.TDLibPeerID, error) {

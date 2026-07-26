@@ -52,10 +52,6 @@ func NewFile(file telegram.File, opts ...FileOption) File {
 
 	metadata := file.Metadata()
 	if metadata != nil {
-		if peername, ok := metadata["peername"]; ok {
-			f.subdirs = append(f.subdirs, peername.(string))
-		}
-
 		if f.saveByHashtags {
 			if hashtags, ok := metadata["hashtags"]; ok {
 				f.subdirs = append(f.subdirs, hashtags.([]string)...)
