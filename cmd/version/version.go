@@ -2,6 +2,7 @@ package version
 
 import (
 	_ "embed"
+	"strings"
 )
 
 //go:embed version.txt
@@ -17,5 +18,5 @@ func removeBOM(s string) string {
 
 // Version returns the version of the application.
 func Version() string {
-	return removeBOM(version)
+	return strings.TrimSpace(removeBOM(version))
 }
