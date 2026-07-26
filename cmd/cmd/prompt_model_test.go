@@ -19,8 +19,24 @@ import (
 func TestPromptModelShowsSubstringCandidatesWhileTyping(t *testing.T) {
 	m := newTestPromptModel(candidateNames("Фотограф внутреннего танца", "Фотоархив"))
 	m = updateKeys(t, m, "download history фо")
+
 	if got := len(m.completions); got != 2 {
 		t.Fatalf("completion count = %d, want 2", got)
+	}
+}
+
+func TestPromptModelAcceptsSingleCompletionWithTab(t *testing.T) {
+	m := newTestPromptModel(candidateNames("dialog"))
+	m = updateKeys(t, m, "dia")
+	m.completionEnd = len([]rune(m.editor.Value()))
+
+	m = updateKey(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+
+	if got := m.editor.Value(); got != "dialog" {
+		t.Fatalf("accepted completion = %q, want dialog", got)
+	}
+	if len(m.completions) != 0 {
+		t.Fatalf("completion count = %d, want 0", len(m.completions))
 	}
 }
 

@@ -369,6 +369,13 @@ func (m *promptModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEscape:
 		m.clearCompletions()
 		return m, nil
+
+	case tea.KeyTab:
+		if len(m.completions) > 0 {
+			m.acceptCompletion()
+		}
+		return m, nil
+
 	case tea.KeyUp:
 		if len(m.completions) > 0 {
 			m.selected = (m.selected - 1 + len(m.completions)) % len(m.completions)
@@ -377,6 +384,7 @@ func (m *promptModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.historyPrevious()
 		}
 		return m, nil
+
 	case tea.KeyDown:
 		if len(m.completions) > 0 {
 			m.selected = (m.selected + 1) % len(m.completions)
@@ -385,6 +393,7 @@ func (m *promptModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.historyNext()
 		}
 		return m, nil
+
 	case tea.KeyEnter, tea.KeyKpEnter:
 		if len(m.completions) > 0 {
 			m.acceptCompletion()
@@ -806,7 +815,7 @@ func (m *promptModel) renderHint() string {
 	} else if m.running {
 		hint = "ctrl+c cancel  ctrl+up/down scroll"
 	} else if len(m.completions) > 0 {
-		hint = "up/down select  enter insert  esc close  ctrl+up/down scroll"
+		hint = "up/down select  tab/enter insert  esc close  ctrl+up/down scroll"
 	}
 	return promptHintStyle.Render(promptSingleLine(hint, m.width))
 }
