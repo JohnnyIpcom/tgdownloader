@@ -65,6 +65,21 @@ func TestSubmitPromptCommandFlushesFinalOutputBeforeBarrier(t *testing.T) {
 	}
 }
 
+func TestSplitPromptLinePreservesMessageLinkQuery(t *testing.T) {
+	const link = "https://t.me/c/3716475718/499?single&thread=483"
+
+	for _, argument := range []string{link, `"` + link + `"`} {
+		args, err := splitPromptLine("download message " + argument)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !reflect.DeepEqual(args, []string{"download", "message", link}) {
+			t.Fatalf("args = %q", args)
+		}
+	}
+}
+
 func TestSubmitPromptCommandRunsQuotedCobraArgument(t *testing.T) {
 	var got []string
 	r := rootWithPromptCommand("capture", func(cmd *cobra.Command, args []string) error {

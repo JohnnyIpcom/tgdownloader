@@ -16,6 +16,7 @@ import (
 	"github.com/gotd/contrib/bbolt"
 	"github.com/gotd/contrib/middleware/ratelimit"
 	"github.com/gotd/contrib/storage"
+	"github.com/gotd/td/constant"
 	"github.com/gotd/td/session"
 	tgclient "github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
@@ -696,6 +697,33 @@ func (c *Client) ParseMessageLink(ctx context.Context, s string) (peers.Peer, in
 		return ch, m, nil
 	}
 
+	parseChannel := func(from, msg string) (peers.Peer, int, error) {
+		id, err := strconv.ParseInt(from, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, 0, fmt.Errorf("invalid channel ID: %q", from)
+		}
+
+		messageID, err := strconv.Atoi(msg)
+		if err != nil || messageID <= 0 {
+			return nil, 0, fmt.Errorf("invalid message ID: %q", msg)
+		}
+
+		// /c/ identifies a channel, not an ambiguous peer ID. The typed
+		// resolver also restores its access hash from persistent storage.
+		var peerID constant.TDLibPeerID
+		peerID.Channel(id)
+		if !peerID.IsChannel() || peerID.ToPlain() != id {
+			return nil, 0, fmt.Errorf("invalid channel ID: %q", from)
+		}
+
+		channel, err := c.PeerService.ResolveTDLibID(ctx, peerID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("resolve channel %d: %w", id, err)
+		}
+
+		return channel, messageID, nil
+	}
+
 	u, err := url.Parse(s)
 	if err != nil {
 		return nil, 0, err
@@ -737,7 +765,9 @@ func (c *Client) ParseMessageLink(ctx context.Context, s string) (peers.Peer, in
 		// https://t.me/c/1697797156/151
 		// https://t.me/iFreeKnow/45662/55005
 		if paths[0] == "c" {
-			return parse(paths[1], paths[2])
+			// Query parameters such as thread describe the UI context;
+			// the target message is always the final path component.
+			return parseChannel(paths[1], paths[2])
 		}
 
 		// "45662" means topic id, we don't need it
@@ -749,7 +779,7 @@ func (c *Client) ParseMessageLink(ctx context.Context, s string) (peers.Peer, in
 		}
 
 		// "251015" means topic id, we don't need it
-		return parse(paths[1], paths[3])
+		return parseChannel(paths[1], paths[3])
 	default:
 		return nil, 0, fmt.Errorf("invalid message link: %s", s)
 	}
