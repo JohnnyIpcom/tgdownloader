@@ -39,6 +39,9 @@ func (s *dialogService) sendDialog(ctx context.Context, out chan<- Dialog, dialo
 }
 
 func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan Dialog, int, error) {
+	// Capture revisions before Count and pagination can interleave with updates.
+	refreshToken := s.client.dialogCache.startRefresh()
+
 	queryBuilder := query.GetDialogs(s.client.API())
 	queryBuilder.BatchSize(100)
 
@@ -57,9 +60,11 @@ func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan Dialog, int, 
 			peer, ok := dialogPeer(elem)
 			if !ok {
 				err := fmt.Errorf("dialog peer entity not found for %T", elem.Dialog.GetPeer())
+
 				if sendErr := s.sendDialog(ctx, dialogsChan, Dialog{err: err}); sendErr != nil {
 					return sendErr
 				}
+
 				return err
 			}
 
@@ -68,16 +73,19 @@ func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan Dialog, int, 
 			if err := s.sendDialog(ctx, dialogsChan, Dialog{DialogPeer: DialogPeer{Peer: peer}}); err != nil {
 				return err
 			}
+
 			return nil
 		})
+
 		if refreshErr != nil {
 			if !errors.Is(refreshErr, context.Canceled) {
 				s.logger.Error("failed to get dialogs", zap.Error(refreshErr))
 			}
+
 			return
 		}
 
-		if err := s.client.dialogCache.ReplaceDialogs(ctx, peers); err != nil {
+		if err := s.commitDialogRefresh(ctx, peers, refreshToken); err != nil {
 			s.logger.Error("failed to replace dialog cache", zap.Error(err))
 			_ = s.sendDialog(ctx, dialogsChan, Dialog{err: err})
 		}
@@ -86,21 +94,44 @@ func (s *dialogService) GetAllDialogs(ctx context.Context) (<-chan Dialog, int, 
 	return dialogsChan, count, err
 }
 
+// commitDialogRefresh applies one canonical snapshot to both the dialog cache
+// and gotd's runtime peer manager while live update handling is paused.
+func (s *dialogService) commitDialogRefresh(
+	ctx context.Context,
+	peers []storage.Peer,
+	token dialogRefreshToken,
+) error {
+	return s.client.peerSync.Do(func() error {
+		if err := s.client.dialogCache.ReplaceDialogsFromRefresh(ctx, peers, token); err != nil {
+			return err
+		}
+
+		if err := s.client.applyStoredPeers(ctx, s.client.dialogCache.snapshot()); err != nil {
+			return fmt.Errorf("apply dialogs to peer manager: %w", err)
+		}
+
+		return nil
+	})
+}
+
 func (c *Client) bootstrapDialogCache(ctx context.Context) error {
 	dialogsChan, _, err := c.DialogService.GetAllDialogs(ctx)
 	if err != nil {
 		return err
 	}
+
 	for dialog := range dialogsChan {
 		if dialog.Err() != nil {
 			return dialog.Err()
 		}
 	}
+
 	return nil
 }
 
 func dialogPeer(elem dialogs.Elem) (storage.Peer, bool) {
 	var peer storage.Peer
+
 	switch dialog := elem.Dialog.GetPeer().(type) {
 	case *tg.PeerUser:
 		user, ok := elem.Entities.User(dialog.UserID)

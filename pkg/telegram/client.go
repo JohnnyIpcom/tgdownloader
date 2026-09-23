@@ -60,6 +60,8 @@ type Client struct {
 	logger         *zap.Logger
 	db             *bboltdb.DB
 	peerMgr        *peers.Manager
+	peerApplier    peerEntityApplier
+	peerSync       *peerSyncCoordinator
 	updMgr         *updates.Manager
 	dispatcher     tg.UpdateDispatcher
 	storage        storage.PeerStorage
@@ -100,17 +102,19 @@ func NewClient(cfg config.Config, log *zap.Logger, clientOpts ...ClientOption) (
 		return nil, err
 	}
 
-	peerStorage := bbolt.NewPeerStorage(db, []byte("peers"))
+	peerStorage := newCoherentPeerStorage(bbolt.NewPeerStorage(db, []byte("peers")))
 	dialogStore, err := newDialogCacheStore(db, peerStorage)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+
 	dialogCache, err := newDialogCache(context.Background(), dialogStore)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+
 	registerDialogCacheHandlers(dispatcher, dialogCache, log.Named("dialog_cache"))
 
 	floodWaiter := newFloodWaiter(cfg, log)
@@ -133,16 +137,28 @@ func NewClient(cfg config.Config, log *zap.Logger, clientOpts ...ClientOption) (
 		},
 	}
 
-	var gaps *updates.Manager
+	var (
+		gaps           *updates.Manager
+		peerUpdateBase tgclient.UpdateHandler
+		peerUpdates    *deferredUpdateHandler
+	)
+
+	peerSync := &peerSyncCoordinator{}
+
 	if !disableUpdates {
-		var handler tgclient.UpdateHandler = dispatcher
+		peerUpdateBase = dispatcher
+
 		if peerStorage != nil {
-			handler = storage.UpdateHook(dispatcher, peerStorage)
+			peerUpdateBase = storage.UpdateHook(dispatcher, peerStorage)
 		}
+
+		// Install the runtime manager hook after tgclient exists, while keeping
+		// one stable handler reference inside updates.Manager.
+		peerUpdates = newDeferredUpdateHandler(peerUpdateBase, peerSync)
 
 		gapsLog := log.Named("gaps")
 		gaps = updates.New(updates.Config{
-			Handler:      handler,
+			Handler:      peerUpdates,
 			Storage:      bbolt.NewStateStorage(db),
 			AccessHasher: newBoltChannelAccessHasher(db),
 			OnChannelTooLong: func(channelID int64) {
@@ -196,6 +212,9 @@ func NewClient(cfg config.Config, log *zap.Logger, clientOpts ...ClientOption) (
 	peerMgr := peers.Options{
 		Logger: log.Named("peers"),
 	}.Build(c.API())
+	if peerUpdates != nil {
+		peerUpdates.Set(peerMgr.UpdateHook(peerUpdateBase))
+	}
 
 	cli := &Client{
 		config:         cfg,
@@ -205,6 +224,8 @@ func NewClient(cfg config.Config, log *zap.Logger, clientOpts ...ClientOption) (
 		logger:         log,
 		db:             db,
 		peerMgr:        peerMgr,
+		peerApplier:    peerMgr,
+		peerSync:       peerSync,
 		updMgr:         gaps,
 		dispatcher:     dispatcher,
 		storage:        peerStorage,
@@ -222,6 +243,7 @@ func NewClient(cfg config.Config, log *zap.Logger, clientOpts ...ClientOption) (
 	cli.LinkService = (*linkService)(&cli.common)
 	cli.DialogService = (*dialogService)(&cli.common)
 	cli.DialogCache = dialogCache
+
 	return cli, nil
 }
 
@@ -453,15 +475,25 @@ func (c *Client) Auth(ctx context.Context) (LogoutFunc, error) {
 
 	authTracker.Done()
 	c.progress.Wait(ctx)
+
 	if c.dialogCache.Empty() {
 		dialogCacheTracker := c.progress.Tracker("Dialog cache")
+
 		if err := c.bootstrapDialogCache(ctx); err != nil {
 			dialogCacheTracker.Fail()
 			c.progress.Wait(ctx)
+
 			return func() error { return nil }, fmt.Errorf("bootstrap dialog cache: %w", err)
 		}
+
 		dialogCacheTracker.Done()
 		c.progress.Wait(ctx)
+	}
+
+	// Authentication responses may have updated bbolt. Seed gotd from that
+	// canonical state before commands can resolve cached dialog IDs.
+	if err := c.syncPeerManager(ctx); err != nil {
+		return func() error { return nil }, fmt.Errorf("sync peer manager: %w", err)
 	}
 
 	if c.disableUpdates || c.updMgr == nil {

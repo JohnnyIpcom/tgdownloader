@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	contribbbolt "github.com/gotd/contrib/bbolt"
+	"github.com/gotd/contrib/storage"
+	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 )
@@ -13,15 +15,17 @@ func newDialogUpdateTestCache(t *testing.T) *dialogCache {
 	t.Helper()
 
 	db := openDialogCacheStoreTestDB(t)
-	peerStorage := contribbbolt.NewPeerStorage(db, []byte("peers"))
+	peerStorage := newCoherentPeerStorage(contribbbolt.NewPeerStorage(db, []byte("peers")))
 	store, err := newDialogCacheStore(db, peerStorage)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	cache, err := newDialogCache(context.Background(), store)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return cache
 }
 
@@ -38,6 +42,7 @@ func TestDialogUpdateHandlersAddDirectUserDialog(t *testing.T) {
 			&tg.User{ID: 7, FirstName: "Visible", LastName: "User", Username: "alias"},
 		},
 	}
+
 	if err := dispatcher.Handle(context.Background(), updates); err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +51,7 @@ func TestDialogUpdateHandlersAddDirectUserDialog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(peers) != 1 || peers[0].Name() != "Visible User" {
 		t.Fatalf("expected direct user dialog, got %+v", peers)
 	}
@@ -53,7 +59,19 @@ func TestDialogUpdateHandlersAddDirectUserDialog(t *testing.T) {
 
 func TestDialogUpdateHandlersRefreshUserName(t *testing.T) {
 	cache := newDialogUpdateTestCache(t)
-	if err := cache.UpsertDialog(context.Background(), testStoredUser(7, "Old")); err != nil {
+
+	initial := testStoredUser(7, "Old")
+	initial.Key.AccessHash = 11
+
+	if err := cache.UpsertDialog(context.Background(), initial); err != nil {
+		t.Fatal(err)
+	}
+
+	canonical := initial
+	canonical.Key.AccessHash = 22
+	canonical.User = &tg.User{ID: 7, AccessHash: 22, FirstName: "Canonical", Phone: "123"}
+
+	if err := cache.store.peerStorage.Add(context.Background(), canonical); err != nil {
 		t.Fatal(err)
 	}
 
@@ -69,6 +87,7 @@ func TestDialogUpdateHandlersRefreshUserName(t *testing.T) {
 			},
 		},
 	}
+
 	if err := dispatcher.Handle(context.Background(), updates); err != nil {
 		t.Fatal(err)
 	}
@@ -77,10 +96,25 @@ func TestDialogUpdateHandlersRefreshUserName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(peers) != 1 || peers[0].Name() != "New Name" {
 		t.Fatalf("expected refreshed visible name, got %+v", peers)
 	}
+
 	if peers[0].User.Username != "new_alias" {
 		t.Fatalf("expected refreshed username, got %q", peers[0].User.Username)
+	}
+
+	if peers[0].User.Phone != "123" || peers[0].Key.AccessHash != 22 {
+		t.Fatalf("expected canonical peer data, got %#v", peers[0].Peer)
+	}
+
+	persisted, err := cache.store.peerStorage.Find(context.Background(), storage.PeerKey{
+		Kind: dialogs.User,
+		ID:   7,
+	})
+
+	if err != nil || persisted.Key.AccessHash != 22 {
+		t.Fatalf("persisted hash=%d err=%v", persisted.Key.AccessHash, err)
 	}
 }

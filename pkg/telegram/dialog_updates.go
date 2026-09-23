@@ -15,10 +15,12 @@ func registerDialogCacheHandlers(dispatcher tg.UpdateDispatcher, cache *dialogCa
 		if !ok {
 			return
 		}
+
 		peer, ok := dialogPeerFromUpdate(entities, msg.GetPeerID())
 		if !ok {
 			return
 		}
+
 		if err := cache.UpsertDialog(ctx, peer); err != nil {
 			log.Warn("failed to update dialog cache from message", zap.Error(err))
 		}
@@ -26,10 +28,12 @@ func registerDialogCacheHandlers(dispatcher tg.UpdateDispatcher, cache *dialogCa
 
 	dispatcher.OnNewMessage(func(ctx context.Context, entities tg.Entities, update *tg.UpdateNewMessage) error {
 		upsertMessagePeer(ctx, entities, update.Message)
+
 		return nil
 	})
 	dispatcher.OnNewChannelMessage(func(ctx context.Context, entities tg.Entities, update *tg.UpdateNewChannelMessage) error {
 		upsertMessagePeer(ctx, entities, update.Message)
+
 		return nil
 	})
 
@@ -38,10 +42,12 @@ func registerDialogCacheHandlers(dispatcher tg.UpdateDispatcher, cache *dialogCa
 		if !ok {
 			return
 		}
+
 		key := storage.KeyFromPeer(peer)
 		if _, exists := cache.dialog(key); !exists {
 			return
 		}
+
 		if err := cache.UpsertDialog(ctx, peer); err != nil {
 			log.Warn("failed to refresh cached dialog", zap.Error(err))
 		}
@@ -49,14 +55,17 @@ func registerDialogCacheHandlers(dispatcher tg.UpdateDispatcher, cache *dialogCa
 
 	dispatcher.OnUser(func(ctx context.Context, entities tg.Entities, update *tg.UpdateUser) error {
 		refreshKnown(ctx, entities, &tg.PeerUser{UserID: update.UserID})
+
 		return nil
 	})
 	dispatcher.OnChat(func(ctx context.Context, entities tg.Entities, update *tg.UpdateChat) error {
 		refreshKnown(ctx, entities, &tg.PeerChat{ChatID: update.ChatID})
+
 		return nil
 	})
 	dispatcher.OnChannel(func(ctx context.Context, entities tg.Entities, update *tg.UpdateChannel) error {
 		refreshKnown(ctx, entities, &tg.PeerChannel{ChannelID: update.ChannelID})
+
 		return nil
 	})
 
@@ -67,22 +76,36 @@ func registerDialogCacheHandlers(dispatcher tg.UpdateDispatcher, cache *dialogCa
 			return nil
 		}
 
-		peer := cached.Peer
+		// Patch the canonical entity, not the potentially stale visible snapshot.
+		peer, err := cache.store.peerStorage.Find(ctx, key)
+		if err != nil {
+			log.Warn("failed to load cached user name", zap.Error(err))
+
+			return nil
+		}
+
+		if peer.User == nil {
+			return nil
+		}
+
 		user := *peer.User
 		user.FirstName = update.FirstName
 		user.LastName = update.LastName
 		user.Usernames = update.Usernames
 		user.Username = activeUsername(update.Usernames)
 		peer.User = &user
+
 		if err := cache.UpsertDialog(ctx, peer); err != nil {
 			log.Warn("failed to refresh cached user name", zap.Error(err))
 		}
+
 		return nil
 	})
 }
 
 func dialogPeerFromUpdate(entities tg.Entities, peerID tg.PeerClass) (storage.Peer, bool) {
 	var peer storage.Peer
+
 	switch id := peerID.(type) {
 	case *tg.PeerUser:
 		user, ok := entities.Users[id.UserID]
@@ -102,6 +125,7 @@ func dialogPeerFromUpdate(entities tg.Entities, peerID tg.PeerClass) (storage.Pe
 	default:
 		return storage.Peer{}, false
 	}
+
 	return peer, true
 }
 
@@ -111,8 +135,10 @@ func activeUsername(usernames []tg.Username) string {
 			return username.Username
 		}
 	}
+
 	if len(usernames) > 0 {
 		return usernames[0].Username
 	}
+
 	return ""
 }

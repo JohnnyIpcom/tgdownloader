@@ -23,8 +23,15 @@ type dialogCacheStore struct {
 	peerStorage storage.PeerStorage
 }
 
+// refreshPeerStorage is the optional revision-aware extension used only by a
+// paginated dialog refresh.
+type refreshPeerStorage interface {
+	AddRefresh(context.Context, storage.Peer, uint64) error
+}
+
 func newDialogCacheStore(db *bolt.DB, peerStorage storage.PeerStorage) (*dialogCacheStore, error) {
 	store := &dialogCacheStore{db: db, peerStorage: peerStorage}
+
 	if err := db.Update(func(tx *bolt.Tx) error {
 		metadata, err := tx.CreateBucketIfNotExists(dialogCacheMetadata)
 		if err != nil {
@@ -36,6 +43,7 @@ func newDialogCacheStore(db *bolt.DB, peerStorage storage.PeerStorage) (*dialogC
 			if err := tx.DeleteBucket(dialogCachePeersBucket); err != nil && err != bolt.ErrBucketNotFound {
 				return fmt.Errorf("reset peer cache: %w", err)
 			}
+
 			if err := tx.DeleteBucket(dialogCacheBucket); err != nil && err != bolt.ErrBucketNotFound {
 				return fmt.Errorf("reset dialog cache: %w", err)
 			}
@@ -44,6 +52,7 @@ func newDialogCacheStore(db *bolt.DB, peerStorage storage.PeerStorage) (*dialogC
 		if _, err := tx.CreateBucketIfNotExists(dialogCachePeersBucket); err != nil {
 			return fmt.Errorf("create peer cache: %w", err)
 		}
+
 		if _, err := tx.CreateBucketIfNotExists(dialogCacheBucket); err != nil {
 			return fmt.Errorf("create dialog cache: %w", err)
 		}
@@ -72,10 +81,13 @@ func (s *dialogCacheStore) load(ctx context.Context) ([]storage.Peer, error) {
 
 		return bucket.ForEach(func(k, _ []byte) error {
 			var key storage.PeerKey
+
 			if err := key.Parse(k); err != nil {
 				return fmt.Errorf("parse dialog cache key: %w", err)
 			}
+
 			keys = append(keys, key)
+
 			return nil
 		})
 	}); err != nil {
@@ -92,6 +104,7 @@ func (s *dialogCacheStore) load(ctx context.Context) ([]storage.Peer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load dialog peer %s: %w", key.String(), err)
 		}
+
 		peers = append(peers, peer)
 	}
 
@@ -99,11 +112,39 @@ func (s *dialogCacheStore) load(ctx context.Context) ([]storage.Peer, error) {
 }
 
 func (s *dialogCacheStore) replace(ctx context.Context, peers []storage.Peer) error {
+	return s.replaceWith(ctx, peers, s.peerStorage.Add)
+}
+
+// replaceRefresh uses revision-aware writes when the configured peer storage
+// supports them, while retaining compatibility with the generic interface.
+func (s *dialogCacheStore) replaceRefresh(
+	ctx context.Context,
+	peers []storage.Peer,
+	startedRevision uint64,
+) error {
+	refreshStorage, ok := s.peerStorage.(refreshPeerStorage)
+	if !ok {
+		return s.replace(ctx, peers)
+	}
+
+	return s.replaceWith(ctx, peers, func(ctx context.Context, peer storage.Peer) error {
+		return refreshStorage.AddRefresh(ctx, peer, startedRevision)
+	})
+}
+
+// replaceWith stores canonical peer entities first, then atomically replaces
+// the lightweight dialog-membership index.
+func (s *dialogCacheStore) replaceWith(
+	ctx context.Context,
+	peers []storage.Peer,
+	add func(context.Context, storage.Peer) error,
+) error {
 	for _, peer := range peers {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.peerStorage.Add(ctx, peer); err != nil {
+
+		if err := add(ctx, peer); err != nil {
 			return fmt.Errorf("store dialog peer %s: %w", storage.KeyFromPeer(peer).String(), err)
 		}
 	}
@@ -112,15 +153,18 @@ func (s *dialogCacheStore) replace(ctx context.Context, peers []storage.Peer) er
 		if err := tx.DeleteBucket(dialogCacheBucket); err != nil && err != bolt.ErrBucketNotFound {
 			return fmt.Errorf("replace dialog cache: %w", err)
 		}
+
 		bucket, err := tx.CreateBucket(dialogCacheBucket)
 		if err != nil {
 			return fmt.Errorf("create replacement dialog cache: %w", err)
 		}
+
 		for _, peer := range peers {
 			if err := bucket.Put(storage.KeyFromPeer(peer).Bytes(nil), nil); err != nil {
 				return fmt.Errorf("index dialog peer: %w", err)
 			}
 		}
+
 		return nil
 	})
 }
@@ -135,6 +179,7 @@ func (s *dialogCacheStore) upsert(ctx context.Context, peer storage.Peer) error 
 		if err != nil {
 			return fmt.Errorf("create dialog cache: %w", err)
 		}
+
 		return bucket.Put(storage.KeyFromPeer(peer).Bytes(nil), nil)
 	})
 }
@@ -145,6 +190,7 @@ func (s *dialogCacheStore) remove(_ context.Context, key storage.PeerKey) error 
 		if bucket == nil {
 			return nil
 		}
+
 		return bucket.Delete(key.Bytes(nil))
 	})
 }

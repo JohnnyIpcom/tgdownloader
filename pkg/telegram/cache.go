@@ -169,9 +169,25 @@ type DialogCache interface {
 }
 
 type dialogCache struct {
-	mu    sync.RWMutex
-	store *dialogCacheStore
-	peers map[storage.PeerKey]DialogPeer
+	mu        sync.RWMutex
+	store     *dialogCacheStore
+	peers     map[storage.PeerKey]DialogPeer
+	revision  uint64
+	changedAt map[storage.PeerKey]uint64
+	removedAt map[storage.PeerKey]uint64
+}
+
+// dialogRefreshToken captures both independently changing parts of the cache.
+// It lets a slow dialog refresh preserve live peer and membership updates.
+type dialogRefreshToken struct {
+	dialogRevision uint64
+	peerRevision   uint64
+}
+
+// peerRevisionStorage is the optional revision source paired with
+// refreshPeerStorage.
+type peerRevisionStorage interface {
+	Revision() uint64
 }
 
 var _ DialogCache = (*dialogCache)(nil)
@@ -183,10 +199,14 @@ func newDialogCache(ctx context.Context, store *dialogCacheStore) (*dialogCache,
 	}
 
 	s := &dialogCache{
-		store: store,
-		peers: make(map[storage.PeerKey]DialogPeer, len(peers)),
+		store:     store,
+		peers:     make(map[storage.PeerKey]DialogPeer, len(peers)),
+		changedAt: make(map[storage.PeerKey]uint64),
+		removedAt: make(map[storage.PeerKey]uint64),
 	}
+
 	s.replaceMemory(peers)
+
 	return s, nil
 }
 
@@ -228,7 +248,37 @@ func (s *dialogCache) ReplaceDialogs(ctx context.Context, peers []storage.Peer) 
 	if err := s.store.replace(ctx, peers); err != nil {
 		return err
 	}
+
+	peers, err := s.store.load(ctx)
+	if err != nil {
+		return err
+	}
+
 	s.replaceMemory(peers)
+
+	return nil
+}
+
+// ReplaceDialogsFromRefresh merges a paginated snapshot with changes received
+// after the refresh started, then reloads the canonical peer data from bbolt.
+func (s *dialogCache) ReplaceDialogsFromRefresh(
+	ctx context.Context,
+	peers []storage.Peer,
+	token dialogRefreshToken,
+) error {
+	peers = s.mergeRefresh(peers, token.dialogRevision)
+
+	if err := s.store.replaceRefresh(ctx, peers, token.peerRevision); err != nil {
+		return err
+	}
+
+	peers, err := s.store.load(ctx)
+	if err != nil {
+		return err
+	}
+
+	s.replaceMemory(peers)
+
 	return nil
 }
 
@@ -237,9 +287,22 @@ func (s *dialogCache) UpsertDialog(ctx context.Context, peer storage.Peer) error
 		return err
 	}
 
+	peer, err := s.store.peerStorage.Find(ctx, storage.KeyFromPeer(peer))
+	if err != nil {
+		return err
+	}
+
 	s.mu.Lock()
-	s.peers[storage.KeyFromPeer(peer)] = DialogPeer{Peer: peer}
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+
+	s.ensureRevisionMaps()
+
+	key := storage.KeyFromPeer(peer)
+	s.revision++
+	s.peers[key] = DialogPeer{Peer: peer}
+	s.changedAt[key] = s.revision
+	delete(s.removedAt, key)
+
 	return nil
 }
 
@@ -249,8 +312,15 @@ func (s *dialogCache) RemoveDialog(ctx context.Context, key storage.PeerKey) err
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ensureRevisionMaps()
+
+	s.revision++
 	delete(s.peers, key)
-	s.mu.Unlock()
+	delete(s.changedAt, key)
+	s.removedAt[key] = s.revision
+
 	return nil
 }
 
@@ -267,6 +337,82 @@ func (s *dialogCache) dialog(key storage.PeerKey) (DialogPeer, bool) {
 	return peer, ok
 }
 
+func (s *dialogCache) snapshot() []storage.Peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	peers := make([]storage.Peer, 0, len(s.peers))
+	for _, peer := range s.peers {
+		peers = append(peers, peer.Peer)
+	}
+
+	return peers
+}
+
+// canonicalSnapshot reloads peer entities from durable storage while retaining
+// the in-memory dialog membership index.
+func (s *dialogCache) canonicalSnapshot(ctx context.Context) ([]storage.Peer, error) {
+	if s.store == nil {
+		return s.snapshot(), nil
+	}
+
+	return s.store.load(ctx)
+}
+
+// startRefresh records the revisions before any network pagination begins.
+func (s *dialogCache) startRefresh() dialogRefreshToken {
+	s.mu.RLock()
+	dialogRevision := s.revision
+	s.mu.RUnlock()
+
+	var peerRevision uint64
+	if s.store != nil {
+		if revisioned, ok := s.store.peerStorage.(peerRevisionStorage); ok {
+			peerRevision = revisioned.Revision()
+		}
+	}
+
+	return dialogRefreshToken{
+		dialogRevision: dialogRevision,
+		peerRevision:   peerRevision,
+	}
+}
+
+// mergeRefresh keeps live membership changes. For the same peer, a complete
+// refresh entity still wins over a newer minimal entity.
+func (s *dialogCache) mergeRefresh(peers []storage.Peer, startedRevision uint64) []storage.Peer {
+	next := make(map[storage.PeerKey]storage.Peer, len(peers))
+	for _, peer := range peers {
+		next[storage.KeyFromPeer(peer)] = peer
+	}
+
+	s.mu.RLock()
+	for key, peer := range s.peers {
+		if s.changedAt[key] > startedRevision {
+			refreshed, found := next[key]
+			if !found || storedPeerCompleteness(peer.Peer) >= storedPeerCompleteness(refreshed) {
+				next[key] = peer.Peer
+			}
+		}
+	}
+
+	for key, removedAt := range s.removedAt {
+		if removedAt > startedRevision {
+			delete(next, key)
+		}
+	}
+	s.mu.RUnlock()
+
+	merged := make([]storage.Peer, 0, len(next))
+	for _, peer := range next {
+		merged = append(merged, peer)
+	}
+
+	return merged
+}
+
+// replaceMemory publishes one canonical snapshot and clears revision markers
+// already incorporated into it.
 func (s *dialogCache) replaceMemory(peers []storage.Peer) {
 	next := make(map[storage.PeerKey]DialogPeer, len(peers))
 	for _, peer := range peers {
@@ -274,6 +420,21 @@ func (s *dialogCache) replaceMemory(peers []storage.Peer) {
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ensureRevisionMaps()
+
 	s.peers = next
-	s.mu.Unlock()
+	clear(s.changedAt)
+	clear(s.removedAt)
+}
+
+func (s *dialogCache) ensureRevisionMaps() {
+	if s.changedAt == nil {
+		s.changedAt = make(map[storage.PeerKey]uint64)
+	}
+
+	if s.removedAt == nil {
+		s.removedAt = make(map[storage.PeerKey]uint64)
+	}
 }
