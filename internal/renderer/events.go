@@ -18,6 +18,7 @@ const (
 // Event is the transport payload used by interactive renderers.
 type Event struct {
 	Kind           EventKind
+	Level          LineLevel
 	ID, Text       string
 	Label          string
 	Current, Total int64
@@ -25,6 +26,15 @@ type Event struct {
 	Elapsed        time.Duration
 	Table          *TableData
 }
+
+// LineLevel preserves message meaning without embedding terminal escapes.
+type LineLevel uint8
+
+const (
+	LinePlain LineLevel = iota
+	LineError
+	LineWarning
+)
 
 type EventKind string
 
@@ -171,6 +181,17 @@ func (w *EventWriter) flushLocked() {
 	line := strings.TrimSuffix(w.pending, "\r")
 	w.pending = ""
 	w.sink.Emit(Event{Kind: EventLine, Text: line})
+}
+
+// EmitLine keeps diagnostic severity separate from untrusted message text.
+func (w *EventWriter) EmitLine(text string, level LineLevel) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.flushLocked()
+	for _, line := range strings.Split(text, "\n") {
+		w.sink.Emit(Event{Kind: EventLine, Text: strings.TrimSuffix(line, "\r"), Level: level})
+	}
 }
 
 // EmitTable preserves table structure for width-aware interactive renderers.

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 	"github.com/johnnyipcom/tgdownloader/pkg/telegram"
@@ -48,7 +49,7 @@ func TestPromptTUIRendersWrappedExpectedCommandErrorOnceAndConcise(t *testing.T)
 	m = updated.(*promptModel)
 	m, _ = updatePromptCommandAndDrain(t, m, cmd())
 
-	view := m.render()
+	view := ansi.Strip(m.render())
 	if got := strings.Count(view, "Error: expected failure"); got != 1 {
 		t.Fatalf("concise error count = %d, want 1: %q", got, view)
 	}

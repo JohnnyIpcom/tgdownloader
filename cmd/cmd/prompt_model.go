@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -127,6 +126,7 @@ const (
 type promptOutputBlock struct {
 	kind     promptOutputBlockKind
 	text     string
+	level    renderer.LineLevel
 	table    renderer.TableData
 	progress renderer.Event
 }
@@ -454,15 +454,7 @@ func (m *promptModel) submitLine() (tea.Model, tea.Cmd) {
 
 func (m *promptModel) finishCommand(msg promptCommandDoneMsg) {
 	if msg.Err != nil {
-		if errors.Is(msg.Err, context.Canceled) {
-			m.appendTranscriptText("Interrupted")
-		} else {
-			var rendered strings.Builder
-			renderer.RenderErrorConcise(&rendered, msg.Err)
-			if text := sanitizePromptModelText(rendered.String()); text != "" {
-				m.appendTranscriptText(text)
-			}
-		}
+		m.applyRendererEvent(renderer.ErrorEvent(msg.Err))
 	}
 
 	m.syncViewportContent()
@@ -645,7 +637,7 @@ func (m *promptModel) applyRendererEvent(event renderer.Event) {
 
 	if event.Kind == renderer.EventLine || event.ID == "" {
 		if event.Text != "" {
-			m.appendTranscriptText(event.Text)
+			m.appendTranscriptLine(event.Text, event.Level)
 			m.syncViewportContent()
 		}
 		return
@@ -915,12 +907,7 @@ func (m *promptModel) finishStartup(msg promptStartupDoneMsg) (tea.Model, tea.Cm
 		m.editor.SetValue("")
 		m.editor.Blur()
 
-		var rendered strings.Builder
-		renderer.RenderErrorConcise(&rendered, msg.Err)
-		if value := sanitizePromptModelText(rendered.String()); value != "" {
-			m.appendTranscriptText(value)
-			m.syncViewportContent()
-		}
+		m.applyRendererEvent(renderer.ErrorEvent(msg.Err))
 
 		return m, nil
 	}
@@ -1032,9 +1019,13 @@ func (m *promptModel) syncViewportContent() {
 }
 
 func (m *promptModel) appendTranscriptText(value string) {
+	m.appendTranscriptLine(value, renderer.LinePlain)
+}
+
+func (m *promptModel) appendTranscriptLine(value string, level renderer.LineLevel) {
 	m.ensureOutputBlocks()
 	m.transcript = append(m.transcript, value)
-	m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputText, text: value})
+	m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputText, text: value, level: level})
 }
 
 func (m *promptModel) appendTranscriptTable(data renderer.TableData) {
@@ -1068,7 +1059,11 @@ func (m *promptModel) renderOutputBlocks(width int) []string {
 		case promptOutputProgress:
 			lines = append(lines, renderer.FormatProgress(block.progress, width, m.progressFrame))
 		default:
-			lines = append(lines, strings.Split(block.text, "\n")...)
+			if block.level == renderer.LinePlain {
+				lines = append(lines, strings.Split(block.text, "\n")...)
+			} else {
+				lines = append(lines, renderRuntimeText(block, width)...)
+			}
 		}
 	}
 

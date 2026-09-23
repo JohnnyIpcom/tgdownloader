@@ -2,13 +2,11 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 )
 
@@ -291,11 +289,7 @@ func (m *oneShotModel) finalizeCommand(runID string) tea.Cmd {
 		m.commandCancel = nil
 	}
 	if done.Err != nil {
-		if errors.Is(done.Err, context.Canceled) {
-			m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputText, text: "Interrupted"})
-		} else {
-			m.appendError(done.Err)
-		}
+		m.appendError(done.Err)
 	}
 
 	return tea.Quit
@@ -309,7 +303,7 @@ func (m *oneShotModel) applyRendererEvent(event renderer.Event) {
 	switch event.Kind {
 	case renderer.EventLine:
 		if event.Text != "" {
-			m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputText, text: event.Text})
+			m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputText, text: event.Text, level: event.Level})
 		}
 
 	case renderer.EventTable:
@@ -351,12 +345,7 @@ func (m *oneShotModel) removeActiveRowID(id string) {
 }
 
 func (m *oneShotModel) appendError(err error) {
-	var rendered strings.Builder
-	renderer.RenderErrorConcise(&rendered, err)
-
-	if text := sanitizePromptModelText(rendered.String()); text != "" {
-		m.outputBlocks = append(m.outputBlocks, promptOutputBlock{kind: promptOutputText, text: text})
-	}
+	m.applyRendererEvent(renderer.ErrorEvent(err))
 }
 
 func (m *oneShotModel) render() string {
@@ -393,7 +382,7 @@ func renderOneShotOutputBlocks(blocks []promptOutputBlock, width, frame int) []s
 		case promptOutputProgress:
 			lines = append(lines, renderer.FormatProgress(block.progress, width, frame))
 		default:
-			lines = append(lines, strings.Split(ansi.Wrap(block.text, max(1, width), " "), "\n")...)
+			lines = append(lines, renderRuntimeText(block, width)...)
 		}
 	}
 

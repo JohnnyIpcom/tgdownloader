@@ -95,7 +95,7 @@ func TestPromptStartupFailureStaysVisibleUntilCtrlC(t *testing.T) {
 	}
 
 	view := m.render()
-	if !strings.Contains(view, "Error: startup secret failure") || strings.Contains(view, "\x1b[2J") {
+	if !strings.Contains(sanitizePromptModelText(view), "Error: startup secret failure") || strings.Contains(view, "\x1b[2J") {
 		t.Fatalf("startup error rendering = %q", view)
 	}
 

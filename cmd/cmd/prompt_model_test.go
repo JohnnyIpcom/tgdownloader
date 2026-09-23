@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/johnnyipcom/tgdownloader/internal/renderer"
 	"github.com/johnnyipcom/tgdownloader/pkg/apperr"
 )
@@ -651,12 +652,12 @@ func TestPromptModelScrollsOutputWithCtrlArrows(t *testing.T) {
 
 func TestPromptModelSanitizesAllModelBoundText(t *testing.T) {
 	m := newPromptModel(promptModelOptions{
-		Username: "dialog\x1b[31m-name\x1b[0m\u202e",
+		Username: "dialog\x1b[35m-name\x1b[0m\u202e",
 		Version:  "v0.6.0\x1b]0;owned\a",
 	})
 	m.applyRendererEvent(renderer.Event{
 		Kind: renderer.EventLine,
-		Text: "dialog Safe\x1b[31m Red\x1b[0m\x1b]0;owned\a\u202e\x00 end",
+		Text: "dialog Safe\x1b[35m Red\x1b[0m\x1b]0;owned\a\u202e\x00 end",
 	})
 	m.applyRendererEvent(renderer.Event{
 		Kind:  renderer.EventProgressCreate,
@@ -666,7 +667,7 @@ func TestPromptModelSanitizesAllModelBoundText(t *testing.T) {
 	m.finishCommand(promptCommandDoneMsg{Err: errors.New("failure\x1b[2J\x1b]52;c;owned\a\u202e end")})
 
 	view := m.render()
-	for _, forbidden := range []string{"\x1b[31m", "\x1b[2J", "\x1b]", "\u009b", "\u009d", "\x00", "\a", "\u202e", "\u2066"} {
+	for _, forbidden := range []string{"\x1b[35m", "\x1b[2J", "\x1b]", "\u009b", "\u009d", "\x00", "\a", "\u202e", "\u2066"} {
 		if strings.Contains(view, forbidden) {
 			t.Fatalf("view contains unsafe terminal text %q: %q", forbidden, view)
 		}
@@ -720,7 +721,7 @@ func TestPromptModelRendersWrappedExpectedErrorOnceAndConcise(t *testing.T) {
 	err := apperr.New("cmd.download.stop", apperr.KindNetwork, errors.New("download failed"))
 	m.finishCommand(promptCommandDoneMsg{Err: err})
 
-	view := m.render()
+	view := ansi.Strip(m.render())
 	if got := strings.Count(view, "Error: download failed"); got != 1 {
 		t.Fatalf("concise error count = %d, want 1: %q", got, view)
 	}

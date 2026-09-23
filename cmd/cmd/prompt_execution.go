@@ -116,7 +116,7 @@ func (r *Root) persistPromptHistory(done *promptCommandDoneMsg, history *promptH
 
 	stored, err := history.Record(done.Line, done.Args)
 	if err != nil {
-		events.Emit(renderer.Event{Kind: renderer.EventLine, Text: fmt.Sprintf("Error: %v", err)})
+		events.Emit(renderer.ErrorEvent(err))
 		return
 	}
 
