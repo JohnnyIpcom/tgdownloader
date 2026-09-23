@@ -23,8 +23,8 @@ type dialogCacheStore struct {
 	peerStorage storage.PeerStorage
 }
 
-// refreshPeerStorage is the optional revision-aware extension used only by a
-// paginated dialog refresh.
+// refreshPeerStorage is the optional revision-aware extension used by dialog
+// refreshes and on-demand peer discovery.
 type refreshPeerStorage interface {
 	AddRefresh(context.Context, storage.Peer, uint64) error
 }

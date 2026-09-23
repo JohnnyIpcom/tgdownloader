@@ -57,6 +57,15 @@ func (c *peerService) ResolveTDLibID(ctx context.Context, ID constant.TDLibPeerI
 
 	peer, err := c.client.peerMgr.ResolveTDLibID(ctx, ID)
 	if err != nil {
+		var notFound *peers.PeerNotFoundError
+		if ID.IsChannel() && errors.As(err, &notFound) {
+			if discussion, found, discoverErr := c.resolveDiscussionChannel(ctx, ID.ToPlain()); discoverErr != nil {
+				return nil, fmt.Errorf("discover discussion channel %d: %w", ID.ToPlain(), discoverErr)
+			} else if found {
+				return discussion, nil
+			}
+		}
+
 		return nil, err
 	}
 
